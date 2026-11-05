@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/banner.png" alt="Claude Pool" width="100%">
+  <img src="docs/images/banner.png?v=3" alt="Claude Pool" width="100%">
 </p>
 
 <p align="center">
@@ -13,37 +13,34 @@
   <a href="README.md">English</a> · <b>简体中文</b>
 </p>
 
-<h3 align="center">多个 Claude 账号，一个 Claude Desktop 全用上。</h3>
+<h3 align="center">多个 Claude 账号，在一个 Claude Desktop 里共享额度。</h3>
 
-<p align="center">一个账号额度用完，下一个自动接上。<br>还是同一段对话，不用退出重登，也不用重新开始。</p>
+<p align="center">一个用完了，另一个接上。你的隐私信息也会被保护好。</p>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/pool-zh-Hans-dark.png">
-  <img alt="Claude Pool：多个 Claude 账号的剩余额度" src="docs/images/pool-zh-Hans-light.png">
-</picture>
+<table>
+  <tr>
+    <td width="66%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/pool-zh-Hans-dark.png"><img alt="Claude Pool：多个 Claude 账号的剩余额度" src="docs/images/pool-zh-Hans-light.png"></picture></td>
+    <td width="34%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/menu-zh-Hans-dark.png"><img alt="菜单栏里每个账号的剩余额度" src="docs/images/menu-zh-Hans-light.png"></picture></td>
+  </tr>
+</table>
 
 ## Claude Pool 适合你吗？
 
-你有不止一个 Claude 订阅，可在 Claude Desktop 里用起来很折腾：
+你有不止一个 Claude 账号，在 Claude Desktop 里常遇到：
 
-- 聊到一半，账号的 5 小时或每周额度用完，对话只能停下。
-- 换账号要退出、重新登录，原来的对话也带不过去。
-- 哪个账号还有余量，只能一个个登进去看。
-- 有的账号早早用完，有的一直闲着；没用过的额度也不会开始下一个周期。
-- 贴代码、日志或配置提问时，密钥、密码和个人信息也跟着发了出去。
+- 账号额度用完，对话就停了。
+- 换账号要退出重登，对话也接不上。
+- 看不到每个账号还剩多少。
+- 担心贴进去的密钥、密码或个人信息被发出去。
 
-Claude Pool 把这些账号放在同一个连接背后。Claude Desktop 只连一次，由 Pool 决定哪个账号来回答。
+## 它能做什么
 
-## 为什么用 Claude Pool
-
-- **额度用完也能接着聊。** 账号快用完时，下一轮提问会换到还有余量的账号，对话一起带过去。已经开始的回答不会重复发送。
-- **Desktop 只连一次。** 一键把 Claude Desktop 指向 Pool，之后增删账号都不用再动 Desktop。断开时恢复你原来的设置。
-- **所有账号的额度一目了然。** 菜单栏和主面板显示每个账号还剩多少、什么时候重置。
-- **花钱买的额度一点不浪费。** 新对话交给余量最多的账号；额度一重置，Pool 可以马上开始新周期，下次重置也来得更早。
-- **敏感信息留在本机。** 消息和工具结果里的密钥、密码、邮箱等个人信息，在请求发出前就在本机替换掉，回复里再还原。识别由本机的 [AstrLink Guard](https://huggingface.co/QuantumNous/astrlink-guard) 模型完成，不经过任何远程脱敏服务。
-- **用量心里有数。** 按模型、套餐、账号查看 token、缓存命中和估算费用。
-- **只用官方客户端。** 每个请求都经由官方 Claude Code，用各账号自己的登录。不用 API Key，不复制 token。
-- **不用操心维护。** Claude Code 的安装、更新和首次设置都由 Pool 自动完成。
+- **所有账号共享额度。** 一个用完了，另一个接上，对话照常继续。
+- **Desktop 里都能用。** Chat、Cowork、Code 都走它。
+- **保护你的隐私。** 密钥、密码、邮箱等隐私信息，发出前就在你的 Mac 上藏好，回复里再还原。
+- **剩多少一眼看清。** 菜单栏显示每个账号的剩余额度和重置时间。
+- **一键连接。** 不用退出登录，不用配置，随时可以断开。
+- **用官方 Claude Code** 和你自己的账号，不用 API Key。
 
 <table>
   <tr>
@@ -69,28 +66,30 @@ Claude Pool 把这些账号放在同一个连接背后。Claude Desktop 只连�
 
 ## 开始使用
 
-1. **打开 Claude Pool。** 它会自己安装官方 Claude Code 客户端和本地脱敏模型。
-2. **添加账号。** 每个账号都走 Claude 自己的登录流程，以验证过的邮箱作为标识。
-3. **连接 Claude Desktop。** Pool 把网关配置写进 Desktop 的设置并打开 Desktop；如果 Desktop 正在运行，会先问你再重启。
-4. **照常使用 Desktop。** Pool 在背后分配对话，随时可以断开并恢复 Desktop 原来的设置。
+1. **打开 Claude Pool。** 需要的东西它会自己装好。
+2. **添加账号。** 用 Claude 官方的登录页面登录，有几个加几个。
+3. **点「连接」。** Claude Desktop 就会开始用这些账号。
+4. **照常用 Desktop。** 换账号的事交给 Pool，想停用随时点「断开」，一切恢复原样。
 
-你平时的 Desktop 登录、已有对话，以及你自己安装的 Claude Code 都各自独立，不受影响。
+你平时的 Claude Desktop 登录和以前的对话都不受影响。通过 Pool 聊的对话只保存在这台 Mac 上，不会出现在网页端或手机上。
 
 ## 工作原理
 
 ```
-Claude Desktop ──► 本地网关（仅本机回环地址，需验证）
-                       │  本地脱敏
-                       ▼
-                    账号分配 ──► 官方 Claude Code（交互模式）
-                                  每个账号一个独立文件夹
+Claude Desktop
+      │
+      ▼
+Claude Pool         ← 先藏好隐私信息
+      │
+      ▼
+你的 Claude 账号    ← 哪个有额度用哪个
 ```
 
-Desktop 把请求发到 Pool 的本地网关。Pool 先做脱敏，再选账号，把这一轮交给该账号的交互式 Claude Code 会话。回复按 Claude Code 收到的样子流式传回；Desktop 的工具通过 MCP 桥交还给 Desktop，仍由 Desktop 执行。详见 [架构](docs/architecture.md)、[兼容性](docs/compatibility.md) 和 [产品约定](docs/product.md)（英文）。
+Claude Desktop 把问题交给 Pool。Pool 先把隐私信息藏好，再挑一个还有额度的账号，用官方 Claude Code 去问，答案原路送回 Desktop。想了解细节可以看 [架构](docs/architecture.md)（英文）。
 
 ## 从源码构建
 
-需要装有 Swift 6 工具链的 Xcode 命令行工具。
+需要 Xcode 26 或更高版本。App 本身支持 macOS 14 及以上。
 
 ```bash
 git clone https://github.com/uiuing/claude-desktop-pool.git
@@ -105,10 +104,12 @@ open "dist/Claude Pool.app" --args --demo
 
 ## 隐私
 
-- Pool 从不读取、复制或记录你的 Claude 凭据，凭据由 Claude Code 保存在各自的账号文件夹里。
-- 应用日志只记录决策、计数和耗时，不记录对话内容。
-- 脱敏完全在你的 Mac 上进行，处理文本和工具的结构化数据，不识别图片内容；和任何检测器一样，它也可能漏检或误判。设置里有本地预览可以检查效果。
-- 网关只监听本机回环地址，需要密钥，并拒绝来自浏览器网页的请求。
+- **账号安全：** Pool 不碰你的密码和登录凭据，登录全部交给 Claude 官方。
+- **隐私信息：** 密钥、密码、邮箱这类内容，发出去之前就在你的 Mac 上替换掉，回复里再换回来，全程不经过别的服务器。
+- **日志干净：** 日志只记录 Pool 做了什么，不记录你聊了什么。
+- **只在本机：** Pool 只接受这台 Mac 上 Claude Desktop 的请求。
+
+隐私保护只处理文字，不识别图片里的内容，偶尔也可能漏掉。设置里可以预览它会替换哪些内容。
 
 ## 致谢
 

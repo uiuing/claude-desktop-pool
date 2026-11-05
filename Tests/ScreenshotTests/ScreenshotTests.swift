@@ -90,6 +90,17 @@ final class ScreenshotTests: XCTestCase {
         }
         try await capture(MenuPanel(model: model), size: .init(width: 320, height: 720), dark: false,
                           to: output.appendingPathComponent("banner-menu-en-light.png"))
+        // The menu bar item the panel opens from, drawn as the menu bar draws it, at 4x.
+        let figure = MenuBarFigure.image(model.menuBarFigures)
+        let scale: CGFloat = 4
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(figure.size.width * scale), pixelsHigh: Int(figure.size.height * scale),
+                                                    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                                    colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+        figure.draw(in: NSRect(x: 0, y: 0, width: figure.size.width * scale, height: figure.size.height * scale))
+        NSGraphicsContext.restoreGraphicsState()
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: output.appendingPathComponent("banner-status-en-light.png"))
     }
 
     func testRenderUsageScales() async throws {

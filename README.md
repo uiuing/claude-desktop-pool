@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/banner.png" alt="Claude Pool" width="100%">
+  <img src="docs/images/banner.png?v=3" alt="Claude Pool" width="100%">
 </p>
 
 <p align="center">
@@ -13,37 +13,34 @@
   <b>English</b> · <a href="README.zh-CN.md">简体中文</a>
 </p>
 
-<h3 align="center">All your Claude accounts. One Claude Desktop.</h3>
+<h3 align="center">All your Claude accounts share their quota in one Claude Desktop.</h3>
 
-<p align="center">When one account hits its limit, the next one takes over.<br>Same conversation, no signing out, no starting over.</p>
+<p align="center">When one runs out, another takes over. Your private info stays protected.</p>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/pool-en-dark.png">
-  <img alt="Claude Pool: quota left across a pool of Claude accounts" src="docs/images/pool-en-light.png">
-</picture>
+<table>
+  <tr>
+    <td width="66%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/pool-en-dark.png"><img alt="Claude Pool: quota left across your Claude accounts" src="docs/images/pool-en-light.png"></picture></td>
+    <td width="34%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/menu-en-dark.png"><img alt="Every account's quota in the menu bar" src="docs/images/menu-en-light.png"></picture></td>
+  </tr>
+</table>
 
 ## Is Claude Pool for you?
 
-You pay for more than one Claude subscription, and using them in Claude Desktop is a chore:
+You have more than one Claude account, and in Claude Desktop:
 
-- A long conversation stops when its account reaches the 5-hour or weekly limit.
-- Switching means signing out, signing in again and leaving the conversation behind.
-- You can't tell which account still has room without checking each one.
-- Some accounts run dry while others sit unused, and an unused limit doesn't start its next cycle.
-- Pasting code, logs or configs can send keys, passwords and personal data along with your question.
+- Your conversation stops when an account runs out.
+- Switching accounts means signing out and in, and losing the conversation.
+- You can't see how much each account has left.
+- You worry about keys, passwords or personal info in what you paste.
 
-Claude Pool puts all of those accounts behind one connection. Claude Desktop connects once, and Pool decides which account answers.
+## What it does
 
-## Why use Claude Pool
-
-- **Keep talking past a limit.** When an account runs low, the next turn moves to one with room, and the conversation goes with it. A reply that has started is never sent twice.
-- **Connect Desktop once.** One click points Claude Desktop at Pool, and adding or removing accounts never touches Desktop again. Disconnect restores your previous settings.
-- **See every account's quota at a glance.** The menu bar and dashboard show what is left on each account and exactly when it resets.
-- **Use every limit you pay for.** New conversations go to the account with the most room, and Pool can start a limit the moment it resets, so the next reset comes sooner.
-- **Keep secrets on your Mac.** Keys, passwords, emails and other personal data in your messages and tool results are masked locally before a request leaves, and put back in the reply. Detection runs on the [AstrLink Guard](https://huggingface.co/QuantumNous/astrlink-guard) model on your Mac; nothing goes to a remote redaction service.
-- **Know where your usage goes.** Tokens, cache hits and estimated cost by model, plan and account.
-- **Stay on the official client.** Every request runs through the official Claude Code with each account's own sign-in. No API keys, no copied tokens.
-- **Nothing to maintain.** Pool installs and updates Claude Code by itself and handles its first-run setup.
+- **Shares the quota of all your accounts.** When one runs out, another takes over and the conversation keeps going.
+- **Works everywhere in Desktop.** Chat, Cowork and Code all use it.
+- **Protects your privacy.** Keys, passwords, emails and other private info are hidden on your Mac before anything is sent, and put back in the reply.
+- **Shows what's left.** Every account's quota and reset time, in the menu bar.
+- **Connects in one click.** No signing out, no setup; disconnect any time.
+- **Uses the official Claude Code** with your own accounts. No API keys.
 
 <table>
   <tr>
@@ -69,28 +66,30 @@ Requires macOS 14 or later, on Apple silicon or Intel. Each release lists its SH
 
 ## Getting started
 
-1. **Open Claude Pool.** It installs the official Claude Code client and the local redaction model by itself.
-2. **Add accounts.** Each one signs in through Claude's own login; its verified email identifies it.
-3. **Connect Claude Desktop.** Pool writes its gateway profile into Desktop's settings and opens Desktop, or asks before restarting it.
-4. **Keep using Desktop.** Pool routes conversations behind the connection. Disconnect at any time to restore Desktop's previous settings.
+1. **Open Claude Pool.** It sets up everything it needs by itself.
+2. **Add your accounts.** Sign in with Claude's own login page, as many as you have.
+3. **Click Connect.** Claude Desktop starts using those accounts.
+4. **Use Desktop as usual.** Pool handles the switching. Click Disconnect any time and everything goes back as it was.
 
-Your normal Desktop sign-in, existing conversations and any Claude Code you installed yourself stay separate and untouched.
+Your normal Claude Desktop sign-in and past conversations are not affected. Conversations made through Pool stay on this Mac and don't show up on the web or your phone.
 
 ## How it works
 
 ```
-Claude Desktop ──► local gateway (loopback, authenticated)
-                       │  local redaction
-                       ▼
-                  account router ──► official Claude Code (interactive)
-                                       one isolated folder per account
+Claude Desktop
+      │
+      ▼
+Claude Pool            ← hides your private info
+      │
+      ▼
+your Claude accounts   ← uses one with quota left
 ```
 
-Desktop sends its requests to Pool's local gateway. Pool redacts sensitive text, chooses an account, and hands the turn to an interactive Claude Code session for that account. Replies stream back as Claude Code receives them, and Desktop's tools are returned to Desktop through an MCP bridge so Desktop still runs them. See [architecture](docs/architecture.md), [compatibility](docs/compatibility.md) and the [product contract](docs/product.md) for details.
+Claude Desktop hands your question to Pool. Pool hides your private info, picks an account that still has quota, asks through the official Claude Code, and sends the answer back to Desktop. See [architecture](docs/architecture.md) for the details.
 
 ## Build from source
 
-Requires Xcode command line tools with a Swift 6 toolchain.
+Requires Xcode 26 or later. The app itself runs on macOS 14 and later.
 
 ```bash
 git clone https://github.com/uiuing/claude-desktop-pool.git
@@ -105,10 +104,12 @@ open "dist/Claude Pool.app" --args --demo
 
 ## Privacy
 
-- Pool never reads, copies or logs your Claude credentials; Claude Code keeps them in its own account folders.
-- The app log records decisions, counts and timings, not conversation text.
-- Redaction runs entirely on your Mac. It works on text and typed tool data; image pixels are not inspected, and like any detector it can miss or misclassify a value. Settings includes a local preview.
-- The gateway listens on loopback only, requires a key and rejects browser origins.
+- **Your accounts stay safe.** Pool never touches your passwords or sign-in details; Claude's own login handles all of that.
+- **Private info is hidden.** Keys, passwords, emails and the like are replaced on your Mac before anything is sent, and put back in the reply. Nothing goes through another server.
+- **Clean logs.** The log records what Pool did, never what you said.
+- **Only this Mac.** Pool only takes requests from Claude Desktop on this Mac.
+
+Privacy protection works on text, not on what's inside images, and it can occasionally miss something. Settings has a preview that shows what it would replace.
 
 ## Acknowledgements
 

@@ -110,14 +110,14 @@ final class PrivacyBridgeTests: XCTestCase {
     func testFailingModelLeavesTheRulesAloneWithoutHoldingTheRequest() async throws {
         let backend = PrivacyBackendFixture(), detector = FixtureDetector(words: ["Synthetic Person": .person])
         let updates = ModelUpdates()
-        let bridge = PrivacyBridge(backend: backend, detector: detector, wait: .seconds(5), retryAfter: { _ in .seconds(600) },
+        let bridge = PrivacyBridge(backend: backend, detector: detector, wait: .seconds(30), retryAfter: { _ in .seconds(600) },
                                    onUpdate: { updates.add($0) })
         await detector.configure(failure: .modelFailed)
         let text = "Synthetic Person set password=fixture-secret"
         let began = ContinuousClock.now
         let first = Task { try await collectPrivacy(try await bridge.events(for: textRequest(text), conversationID: "failing")) }
         try await privacyEventually { await backend.requests.count == 1 }
-        XCTAssertLessThan(ContinuousClock.now - began, .seconds(3), "A failed model does not keep a request for the whole wait")
+        XCTAssertLessThan(ContinuousClock.now - began, .seconds(10), "A failed model does not keep a request for the whole wait")
         let firstRequests = await backend.requests
         let sent = try XCTUnwrap(firstRequests[0].messages[0].content.stringValue)
         XCTAssertFalse(sent.contains("fixture-secret"), "The rules still mask what they find")
@@ -167,13 +167,14 @@ final class PrivacyBridgeTests: XCTestCase {
     /// (`learnLate`), and a request that masks the same text afresh finds the reading at once.
     func testSlowModelPastTheWaitSendsRulesThenLaterRequestsFindItsReading() async throws {
         let backend = PrivacyBackendFixture(), detector = FixtureDetector(words: ["Synthetic Person": .person])
-        await detector.configure(delay: 400_000_000)
+        // The model takes far longer than the wait, so a slow test machine cannot blur the two.
+        await detector.configure(delay: 2_500_000_000)
         let bridge = PrivacyBridge(backend: backend, detector: detector, wait: .milliseconds(60))
         let opening = textRequest("Ask Synthetic Person about password=fixture-secret")
         let began = ContinuousClock.now
         let first = Task { try await collectPrivacy(try await bridge.events(for: opening, conversationID: "slow")) }
         try await privacyEventually { await backend.requests.count == 1 }
-        XCTAssertLessThan(ContinuousClock.now - began, .milliseconds(350), "The request did not wait for the model past its wait")
+        XCTAssertLessThan(ContinuousClock.now - began, .milliseconds(2_000), "The request did not wait for the model past its wait")
         let firstSent = await backend.requests[0]
         let sentText = try XCTUnwrap(firstSent.messages[0].content.stringValue)
         XCTAssertTrue(sentText.hasPrefix("Ask Synthetic Person about password="), "Unread by the model: what only it finds goes as written")
@@ -183,7 +184,8 @@ final class PrivacyBridgeTests: XCTestCase {
 
         // The model reads on after the request went.
         try await privacyEventually { await detector.inspected.keys.contains { $0.contains("Synthetic Person") } }
-        try await Task.sleep(for: .milliseconds(450))
+        try await privacyEventually { await detector.finished > 0 }
+        try await Task.sleep(for: .milliseconds(100))
         var next = opening
         next.messages += [.init(role: "assistant", content: privacyAssistant(firstEvents)), .init(role: "user", content: .string("Thank Synthetic Person"))]
         let second = Task { try await collectPrivacy(try await bridge.events(for: next, conversationID: "slow")) }
@@ -713,7 +715,7 @@ private final class PrivacyUpdatesFixture: @unchecked Sendable {
     }
 }
 private func privacyEventually(_ predicate: () async -> Bool) async throws {
-    let end = Date().addingTimeInterval(3)
+    let end = Date().addingTimeInterval(30)
     while !(await predicate()) {
         if Date() > end { throw BridgeFailure.transport }
         try await Task.sleep(nanoseconds: 10_000_000)

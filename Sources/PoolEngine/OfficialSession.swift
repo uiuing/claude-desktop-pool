@@ -638,11 +638,11 @@ public actor OfficialSession: SessionWorker {
         return input.joined(separator: "\n")
     }
 
-    nonisolated(unsafe) private static let ansi = try! NSRegularExpression(pattern:
+    private static let ansi = try! NSRegularExpression(pattern:
         #"\x1b\[[0-9;?<>=]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[P^_][^\x1b]*\x1b\\|\x1b."#)
     /// An image's mark with the spaces taken out: a long input wraps wherever its row is full, so
     /// "[Image #10]" can be drawn as "[Image" and "#10]" on two rows.
-    nonisolated(unsafe) private static let imageMark = try! NSRegularExpression(pattern: "\\[Image#([0-9]+)\\]")
+    private static let imageMark = try! NSRegularExpression(pattern: "\\[Image#([0-9]+)\\]")
 
     /// What the client drew since the last paste, its escapes taken out (tui.go plain).
     private func drawnText() -> String {

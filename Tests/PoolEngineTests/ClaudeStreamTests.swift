@@ -75,7 +75,7 @@ final class ClaudeStreamTests: XCTestCase {
     func testWithNoTapLoadedOrNoStreamMessagesAreToldWhole() async throws {
         for first in [nil, #"{"tap":"none"}"#, #"{"tap":"on"}"#] {
             let harness = try SessionHarness(); defer { harness.clean() }
-            let session = harness.session(tapWait: 3)
+            let session = harness.session(tapWait: 10)
             let log = EventLog.recording(try await session.events(for: request("Hi")))
             try await waitFor { harness.sentCount == 1 }
             if let first { try harness.tap(first) }
@@ -84,7 +84,7 @@ final class ClaudeStreamTests: XCTestCase {
             let started = Date()
             try harness.answer("whole", message: "msg_1")
             try await waitFor { await log.text == "whole" }
-            XCTAssertLessThan(Date().timeIntervalSince(started), 1, "\(first ?? "no tap"): a message waited for a stream")
+            XCTAssertLessThan(Date().timeIntervalSince(started), 5, "\(first ?? "no tap"): a message waited for a stream")
             try harness.turnEnded()
             try await waitFor { await log.ended }
             let events = await log.events

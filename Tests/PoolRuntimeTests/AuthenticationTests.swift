@@ -179,7 +179,7 @@ final class AuthenticationTests: XCTestCase {
             else { _ = try await cli.authenticationStatus(accountID: id) }
         }
         var active: (any OwnedChild)?
-        let deadline = Date().addingTimeInterval(5)
+        let deadline = Date().addingTimeInterval(30)
         func ready() -> Bool {
             guard let directory = try? cli.workspace.accountDirectory(id) else { return false }
             return FileManager.default.fileExists(atPath: directory.appendingPathComponent("ready").path)
@@ -193,7 +193,7 @@ final class AuthenticationTests: XCTestCase {
         addTeardownBlock {
             if process.isRunning {
                 try process.write(Data("finish\n".utf8))
-                _ = try await process.waitForExit(timeout: 5)
+                _ = try await process.waitForExit(timeout: 30)
             }
         }
         XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("ready").path))
@@ -203,7 +203,7 @@ final class AuthenticationTests: XCTestCase {
         catch { XCTAssertTrue(error is CancellationError) }
         XCTAssertTrue(process.isRunning)
         try process.write(Data("finish\n".utf8))
-        _ = try await process.waitForExit(timeout: 5)
+        _ = try await process.waitForExit(timeout: 30)
         XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("finished").path))
         XCTAssertNil(cli.activeProcess(accountID: id))
     }

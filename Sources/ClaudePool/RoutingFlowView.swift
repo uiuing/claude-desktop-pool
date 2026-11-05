@@ -99,7 +99,11 @@ struct RoutingFlowView: View {
     private static func laneCenters(count: Int, height: CGFloat) -> [CGFloat] {
         let total = CGFloat(count) * laneHeight + CGFloat(max(0, count - 1)) * laneGap
         let top = (height - total) / 2 - 10
-        return (0..<count).map { max(laneHeight / 2, top + laneHeight / 2 + CGFloat($0) * (laneHeight + laneGap)) }
+        let half: CGFloat = laneHeight / 2, step: CGFloat = laneHeight + laneGap
+        return (0..<count).map { index -> CGFloat in
+            let center: CGFloat = top + half + CGFloat(index) * step
+            return Swift.max(half, center)
+        }
     }
 
     /// One account on the right: who, and how it is used, with the same badges as everywhere else.

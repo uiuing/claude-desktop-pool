@@ -17,7 +17,7 @@ Thanks for your interest in improving Claude Pool. Bug reports, fixes, translati
 
 ## Development setup
 
-macOS 14 or later with a Swift 6 toolchain (Xcode or the command line tools).
+Xcode 26 or later; the tests use the macOS 26 SDK. The app itself runs on macOS 14 and later.
 
 ```bash
 swift build
@@ -48,6 +48,24 @@ Tests never call Claude or any outside service. Use synthetic identities such as
 ## Localization
 
 UI strings live in the catalogs under `Sources/PoolCore/Localizations`. English, Simplified Chinese, Traditional Chinese, Japanese and Korean are updated together; the localization check fails if a key is missing in any of them. Keep copy short and errors actionable.
+
+## Commit messages
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+<type>(<optional scope>): <summary in the imperative, lower case, no period>
+
+<optional body: what changed and why>
+```
+
+Types: `feat` (a user-visible feature), `fix` (a bug fix), `docs`, `refactor`, `perf`, `test`, `build` (build, packaging, CI), `chore`. Common scopes: `gateway`, `routing`, `privacy`, `desktop`, `ui`, `l10n`, `release`. Examples:
+
+```
+feat(desktop): turn on Chat when connecting
+fix(build): split expressions that time out the type checker in CI
+docs(readme): describe the app in plain words
+```
 
 ## Pull requests
 

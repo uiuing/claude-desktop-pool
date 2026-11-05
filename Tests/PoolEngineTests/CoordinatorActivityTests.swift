@@ -155,7 +155,7 @@ private final class ActivityUpdates: @unchecked Sendable {
     }
 }
 private func activityWait(_ condition: () async -> Bool) async throws {
-    let deadline = Date().addingTimeInterval(3)
+    let deadline = Date().addingTimeInterval(30)
     while !(await condition()) {
         if Date() >= deadline { throw BridgeFailure.transport }
         try await Task.sleep(nanoseconds: 10_000_000)

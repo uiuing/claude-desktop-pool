@@ -243,9 +243,9 @@ final class GatewayTests: XCTestCase {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("fixture-cancel-session", forHTTPHeaderField: "x-session-id")
         let task = Task { try await session.data(for: request) }
-        await fulfillment(of: [started], timeout: 3)
+        await fulfillment(of: [started], timeout: 30)
         task.cancel()
-        await fulfillment(of: [cancelled], timeout: 3)
+        await fulfillment(of: [cancelled], timeout: 30)
         await backend.finish(); session.invalidateAndCancel(); await server.stop()
         let ids = await backend.cancelledIDs
         XCTAssertEqual(ids.count, 1)

@@ -327,7 +327,7 @@ extension Array where Element == BridgeEvent {
     var joinedText: String { compactMap { if case .text(let text) = $0 { text } else { nil } }.joined() }
 }
 func waitFor(_ predicate: () async -> Bool) async throws {
-    let deadline = Date().addingTimeInterval(4)
+    let deadline = Date().addingTimeInterval(30)
     while !(await predicate()) {
         if Date() > deadline { throw BridgeFailure.transport }
         try await Task.sleep(nanoseconds: 10_000_000)

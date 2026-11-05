@@ -134,15 +134,13 @@ struct MenuPanel: View {
                 HStack(alignment: .top, spacing: 14) {
                     ForEach(shown.isEmpty ? Array(plan.windows.prefix(2)) : shown) { limitColumn($0) }
                 }
-                HStack(spacing: 6) {
+                // One short line each, so neither is cut; the process count is the dashboard's detail.
+                VStack(alignment: .leading, spacing: 4) {
                     Text(model.useSummaryText)
-                    Text("·").foregroundStyle(.tertiary)
+                        .help(model.runsInUseText + " · " + model.runsBreakdownText).accessibilityIdentifier("menu.runsInUse")
                     Text(model.newConversationText).foregroundStyle(model.newConversationAccount == nil ? PoolPalette.amber : .secondary)
-                }.font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                    .accessibilityElement(children: .combine).accessibilityIdentifier("menu.next")
-                Text(model.runsInUseText + " · " + model.runsBreakdownText).font(.system(size: 11)).lineLimit(1).truncationMode(.tail)
-                    .foregroundStyle(.secondary)
-                    .help(model.runsExplainedText).accessibilityIdentifier("menu.runsInUse")
+                        .truncationMode(.middle).accessibilityIdentifier("menu.next")
+                }.font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
             }.padding(12).background(PoolPalette.panelCard, in: RoundedRectangle(cornerRadius: 10))
         } else {
             Text(model.t(model.isReadingQuota ? "Reading quota…" : "Quota appears when Claude reports it."))

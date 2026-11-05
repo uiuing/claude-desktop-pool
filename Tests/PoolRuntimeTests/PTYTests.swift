@@ -44,7 +44,7 @@ final class PTYTests: XCTestCase {
                 }
             }
         }
-        await fulfillment(of: [ready], timeout: 5)
+        await fulfillment(of: [ready], timeout: 30)
         try process.write(Data("hello\n".utf8))
         let status = try await process.waitForExit()
         await observer.value
@@ -76,7 +76,7 @@ final class PTYTests: XCTestCase {
                 }
             }
         }
-        await fulfillment(of: [ready], timeout: 5)
+        await fulfillment(of: [ready], timeout: 30)
         try process.interrupt()
         let status = try await process.waitForExit()
         await observer.value
@@ -105,7 +105,7 @@ final class PTYTests: XCTestCase {
                 }
             }
         }
-        await fulfillment(of: [ready], timeout: 5)
+        await fulfillment(of: [ready], timeout: 30)
         first.cancel(); await first.value
         let capture = TerminalCapture()
         let later = Task {

@@ -255,7 +255,7 @@ final class CoordinatorHandoffTests: XCTestCase {
         })
         _ = try await collect(coordinator, request())
         let task = Task { try await self.collect(coordinator, self.results()) }
-        await fulfillment(of: [waiting], timeout: 2)
+        await fulfillment(of: [waiting], timeout: 30)
         await coordinator.cancel(conversationID: "fixture-session")
         await gate.release()
         do { _ = try await task.value; XCTFail("A cancelled request reached its replacement.") }

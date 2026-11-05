@@ -222,9 +222,12 @@ final class PoolAppModel {
     }
     /// The next time any account's figures change by themselves: a limit renews or a cooldown ends.
     func nextQuotaBoundary(after date: Date) -> Date? {
-        snapshot.accounts.flatMap { account in
-            account.windows.filter { $0.state == .reported }.map(\.recoversAt) + [account.cooldownUntil].compactMap { $0 }
-        }.filter { $0 > date }.min()
+        var times: [Date] = []
+        for account in snapshot.accounts {
+            for window in account.windows where window.state == .reported { times.append(window.recoversAt) }
+            if let cooldown = account.cooldownUntil { times.append(cooldown) }
+        }
+        return times.filter { $0 > date }.min()
     }
     func t(_ source: String, _ arguments: String...) -> String {
         L10n.tr(source, language: preferences.language, arguments: arguments)

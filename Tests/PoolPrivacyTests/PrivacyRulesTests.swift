@@ -183,6 +183,8 @@ actor FixtureDetector: PrivacyEntityDetector {
     var invalid = false
     var delay: UInt64 = 0
     var inspected: [String: Int] = [:]
+    /// Readings that ran to the end, so a test waits for the model rather than for a guessed time.
+    var finished = 0
     init(words: [String: PrivacyCategory] = [:]) { self.words = words }
     func configure(failure: PrivacyFailure? = nil, invalid: Bool = false, delay: UInt64 = 0) {
         self.failure = failure; self.invalid = invalid; self.delay = delay
@@ -191,6 +193,7 @@ actor FixtureDetector: PrivacyEntityDetector {
         inspected[text, default: 0] += 1
         if let failure { throw failure }
         if delay > 0 { try await Task.sleep(nanoseconds: delay) }
+        finished += 1
         if invalid && !text.isEmpty { return [.init(start: -1, end: 2, category: .person)] }
         // Every occurrence: the bridge's reader joins several texts into one chunk.
         let ns = text as NSString

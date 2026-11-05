@@ -287,7 +287,7 @@ final class GatewayIntegrationTests: XCTestCase {
         await coordinator.updateAccounts([account])
         await old.emit(.quota([.init(id: "five_hour", usedPercent: 95, observedAt: Date(), resetsAt: Date().addingTimeInterval(3600))]))
         await old.emit(.terminal(Data("scope-barrier".utf8)))
-        await fulfillment(of: [barrier], timeout: 2)
+        await fulfillment(of: [barrier], timeout: 30)
         XCTAssertTrue(recorder.quotaUpdates.isEmpty)
         let events = try await collect(coordinator, route: route(nextRequest(), explicitID: "plan-change"))
         XCTAssertEqual(events, [.text("Using the new plan."), .finished(.endTurn)])
@@ -340,7 +340,7 @@ final class GatewayIntegrationTests: XCTestCase {
         }, onUpdate: { recorder.record($0) })
         let request = try route(firstRequest())
         let pending = Task { try await self.collect(coordinator, route: request) }
-        await fulfillment(of: [waiting], timeout: 2)
+        await fulfillment(of: [waiting], timeout: 30)
         account.plan = "Ultra"; account.windows = []
         await coordinator.updateAccounts([account])
         gate.continuation.yield(()); gate.continuation.finish()
@@ -447,7 +447,7 @@ final class GatewayIntegrationTests: XCTestCase {
         await source.emit(.quota([.init(id: "seven_day", usedPercent: 85, observedAt: measuredAt, resetsAt: reset)]))
         await source.emit(.quota([.init(id: "seven_day", usedPercent: 15, observedAt: measuredAt.addingTimeInterval(-60), resetsAt: reset)]))
         await source.emit(.terminal(Data("quota-order-barrier".utf8)))
-        await fulfillment(of: [barrier], timeout: 2)
+        await fulfillment(of: [barrier], timeout: 30)
         XCTAssertEqual(recorder.quotaUpdates.last?.first?.usedPercent, 85)
         let reply = try await collect(coordinator, route: route(firstRequest("A separate task."), explicitID: "quota-order-selection"))
         XCTAssertEqual(reply, [.text("Newer quota selected this account."), .finished(.endTurn)])

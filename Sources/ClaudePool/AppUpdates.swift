@@ -4,7 +4,7 @@ import Foundation
 import Observation
 import PoolCore
 import PoolRuntime
-import UserNotifications
+@preconcurrency import UserNotifications
 
 /// Claude Pool's own release check, as Claude Switch does it: the public latest-release redirect on
 /// GitHub, at most once a day while the app is open, and a manual check at most once a minute.

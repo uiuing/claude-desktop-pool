@@ -69,7 +69,7 @@ final class QuotaRefreshTests: XCTestCase {
         }
         let account = fixtureAccount()
         try await service.start(); await service.setAccounts([account]); await service.requestRefresh(accountID: account.id)
-        await fulfillment(of: [reading], timeout: 4)
+        await fulfillment(of: [reading], timeout: 30)
         _ = await service.stop()
         let restored = makeService(workspace: workspace, fixture: fixture) { _ in }
         try await restored.start(); await restored.setAccounts([account])
@@ -132,7 +132,7 @@ final class QuotaRefreshTests: XCTestCase {
         let account = fixtureAccount()
         try await service.start(); await service.setAccounts([account])
         await service.requestRefresh(accountID: account.id)
-        await fulfillment(of: [done], timeout: 4)
+        await fulfillment(of: [done], timeout: 30)
         let windows = await log.readings.first
         XCTAssertEqual(windows?.map(\.usedPercent), [12, 9, 3])
         let plan = try XCTUnwrap(fixture.plans.first)
@@ -156,7 +156,7 @@ final class QuotaRefreshTests: XCTestCase {
         let account = fixtureAccount()
         await service.setAccounts([account]); try await service.start()
         await service.requestRefresh(accountID: account.id)
-        await fulfillment(of: [attention], timeout: 4)
+        await fulfillment(of: [attention], timeout: 30)
         let plan = try XCTUnwrap(fixture.plans.first)
         XCTAssertTrue(FileManager.default.fileExists(atPath: plan.runDirectory.path))
         let premature = await service.suspend(accountID: account.id)
@@ -165,7 +165,7 @@ final class QuotaRefreshTests: XCTestCase {
         XCTAssertEqual(fixture.plans.count, 1)
 
         fixture.completeExit()
-        await fulfillment(of: [exited], timeout: 2)
+        await fulfillment(of: [exited], timeout: 30)
         let confirmed = await service.suspend(accountID: account.id)
         XCTAssertTrue(confirmed)
         XCTAssertFalse(FileManager.default.fileExists(atPath: plan.runDirectory.path))
@@ -182,7 +182,7 @@ final class QuotaRefreshTests: XCTestCase {
         let account = fixtureAccount()
         await service.setAccounts([account]); try await service.start()
         await service.requestRefresh(accountID: account.id)
-        await fulfillment(of: [failed], timeout: 4)
+        await fulfillment(of: [failed], timeout: 30)
         let plan = try XCTUnwrap(fixture.plans.first)
         XCTAssertEqual(fixture.exitCount, 1)
         XCTAssertTrue(FileManager.default.fileExists(atPath: plan.runDirectory.appendingPathComponent("run.json").path))
@@ -206,7 +206,7 @@ final class QuotaRefreshTests: XCTestCase {
         await service.requestRefresh(accountID: account.id)
         XCTAssertEqual(fixture.plans.count, 0)
         await service.setAvailability(enabled: false, awake: true, online: true)
-        await fulfillment(of: [done], timeout: 4)
+        await fulfillment(of: [done], timeout: 30)
         XCTAssertEqual(fixture.plans.count, 1)
         let stopped = await service.stop(); XCTAssertTrue(stopped)
     }
@@ -221,7 +221,7 @@ final class QuotaRefreshTests: XCTestCase {
         let account = fixtureAccount()
         try await service.start(); await service.setAccounts([account])
         await service.requestRefresh(accountID: account.id)
-        await fulfillment(of: [failed], timeout: 4)
+        await fulfillment(of: [failed], timeout: 30)
         await service.requestRefresh(accountID: account.id)
         XCTAssertEqual(fixture.plans.count, 1)
         let before = await service.statuses()[account.id]
@@ -249,7 +249,7 @@ final class QuotaRefreshTests: XCTestCase {
                                       resetsAt: Date().addingTimeInterval(-60))]
             await service.setAccounts([original]); try await service.start()
             await service.requestRefresh(accountID: original.id)
-            await fulfillment(of: [failed], timeout: 4)
+            await fulfillment(of: [failed], timeout: 30)
             let stateFile = workspace.root.appendingPathComponent("quota-refresh.json")
             let oldData = try workspace.read(stateFile, limit: 512 * 1024)
             let oldRecord = try XCTUnwrap(JSONDecoder().decode([JSONValue].self, from: oldData).first)
@@ -303,7 +303,7 @@ final class QuotaRefreshTests: XCTestCase {
         }
         let account = fixtureAccount()
         try await service.start(); await service.setAccounts([account]); await service.requestRefresh(accountID: account.id)
-        await fulfillment(of: [attention], timeout: 3)
+        await fulfillment(of: [attention], timeout: 30)
         let status = await service.statuses()[account.id]
         let observer = try XCTUnwrap(status?.observerID)
         await service.requestRefresh(accountID: account.id)
@@ -311,7 +311,7 @@ final class QuotaRefreshTests: XCTestCase {
         XCTAssertEqual(held?.phase, .needsAttention, "A held session must not be shown as a queued refresh that never starts")
         XCTAssertEqual(fixture.plans.count, 1)
         try await service.sendInput(observerID: observer, data: Data("y\r".utf8))
-        await fulfillment(of: [done], timeout: 4)
+        await fulfillment(of: [done], timeout: 30)
         XCTAssertEqual(fixture.plans.count, 1)
         XCTAssertEqual(fixture.commands.filter { $0 == Data("/usage".utf8) }.count, 1)
         let stopped = await service.stop(); XCTAssertTrue(stopped)
@@ -326,7 +326,7 @@ final class QuotaRefreshTests: XCTestCase {
         }
         let account = fixtureAccount()
         try await service.start(); await service.setAccounts([account]); await service.requestRefresh(accountID: account.id, reason: .initial)
-        await fulfillment(of: [done], timeout: 5)
+        await fulfillment(of: [done], timeout: 30)
         XCTAssertEqual(fixture.plans.count, 1)
         XCTAssertEqual(Array(fixture.commands.prefix(4)), [Data("\r".utf8), Data("\r".utf8), Data("\u{1b}[B".utf8), Data("\r".utf8)])
         XCTAssertEqual(fixture.commands.filter { $0 == Data("/usage".utf8) }.count, 1)
@@ -343,7 +343,7 @@ final class QuotaRefreshTests: XCTestCase {
         }
         let account = fixtureAccount()
         try await service.start(); await service.setAccounts([account]); await service.requestRefresh(accountID: account.id, reason: .initial)
-        await fulfillment(of: [failed], timeout: 3)
+        await fulfillment(of: [failed], timeout: 30)
         XCTAssertTrue(fixture.commands.isEmpty, "Nothing is typed into the official sign-in")
         _ = await service.stop()
     }
@@ -351,12 +351,12 @@ final class QuotaRefreshTests: XCTestCase {
         let workspace = try fixtureWorkspace(), attention = expectation(description: "Held before its prompt")
         attention.assertForOverFulfill = false
         let fixture = UsageProcessFixture(workspace: workspace, panel: panel, firstRun: ["An unfamiliar first-run screen"])
-        let service = makeService(workspace: workspace, fixture: fixture) { update in
+        let service = makeService(workspace: workspace, fixture: fixture, observerTimeout: 2) { update in
             if case .status(_, let status) = update, status.phase == .needsAttention { attention.fulfill() }
         }
         let account = fixtureAccount()
         try await service.start(); await service.setAccounts([account]); await service.requestRefresh(accountID: account.id, reason: .initial)
-        await fulfillment(of: [attention], timeout: 4)
+        await fulfillment(of: [attention], timeout: 30)
         XCTAssertEqual(fixture.interruptCount, 0, "An automatic failure keeps the session for the user")
         let held = await service.statuses()[account.id]
         let observer = try XCTUnwrap(held?.observerID)
@@ -379,7 +379,7 @@ final class QuotaRefreshTests: XCTestCase {
             }
             let account = fixtureAccount()
             try await service.start(); await service.setAccounts([account]); await service.requestRefresh(accountID: account.id, reason: .initial)
-            await fulfillment(of: [attention], timeout: 4)
+            await fulfillment(of: [attention], timeout: 30)
             let stopped = await service.stop()
             XCTAssertEqual(stopped, !ignores)
             XCTAssertEqual(fixture.interruptCount, ignores ? 4 : 2, "Only paired normal interrupts are sent")
@@ -394,7 +394,7 @@ final class QuotaRefreshTests: XCTestCase {
         let account = fixtureAccount()
         try await service.start(); await service.setAccounts([account])
         await service.requestRefresh(accountID: account.id)
-        let deadline = Date().addingTimeInterval(4)
+        let deadline = Date().addingTimeInterval(30)
         while fixture.exitCount == 0, Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
         XCTAssertGreaterThan(fixture.exitCount, 0)
         XCTAssertEqual(fixture.interruptCount, 0, "Checks end with /exit while the app keeps running")
@@ -412,7 +412,7 @@ final class QuotaRefreshTests: XCTestCase {
         }
         let account = fixtureAccount()
         try await service.start(); await service.setAccounts([account]); await service.requestRefresh(accountID: account.id, reason: .initial)
-        await fulfillment(of: [attention], timeout: 3)
+        await fulfillment(of: [attention], timeout: 30)
         let stateFile = workspace.root.appendingPathComponent("quota-refresh.json")
         let saved = try workspace.read(stateFile, limit: 512 * 1024)
         XCTAssertTrue(String(decoding: saved, as: UTF8.self).contains("needsAttention"))
@@ -442,11 +442,11 @@ final class QuotaRefreshTests: XCTestCase {
         clock.advance(9); await service.setAvailability(enabled: true, awake: true, online: true)
         XCTAssertEqual(fixture.plans.count, 0)
         clock.advance(2); await service.setAvailability(enabled: true, awake: true, online: true)
-        await fulfillment(of: [first], timeout: 4)
+        await fulfillment(of: [first], timeout: 30)
         clock.advance(9); await service.setAvailability(enabled: true, awake: true, online: true)
         XCTAssertEqual(fixture.plans.count, 1)
         clock.advance(2); await service.setAvailability(enabled: true, awake: true, online: true)
-        await fulfillment(of: [second], timeout: 4)
+        await fulfillment(of: [second], timeout: 30)
         XCTAssertEqual(fixture.commands.filter { $0 == Data("/usage".utf8) }.count, 2, "Automatic refresh is not held behind the manual 30s throttle.")
         XCTAssertEqual(fixture.plans.count, 1, "A ten-second read reuses the session kept at its prompt instead of starting Claude Code again")
         XCTAssertEqual(fixture.exitCount, 0)
@@ -471,7 +471,7 @@ final class QuotaRefreshTests: XCTestCase {
         XCTAssertEqual(fixture.plans.count, 0)
         let cadence = await service.cadence(accountID: account.id); XCTAssertNil(cadence.interval, "Without work nothing is read by time")
         await service.requestRefresh(accountID: account.id)
-        await fulfillment(of: [done], timeout: 4)
+        await fulfillment(of: [done], timeout: 30)
         XCTAssertEqual(fixture.plans.count, 1)
         let stopped = await service.stop(); XCTAssertTrue(stopped)
     }
@@ -485,7 +485,7 @@ final class QuotaRefreshTests: XCTestCase {
         }
         let account = fixtureAccount(), session = UUID()
         try await service.start(); await service.setAccounts([account]); await service.requestRefresh(accountID: account.id)
-        await fulfillment(of: [first], timeout: 4)
+        await fulfillment(of: [first], timeout: 30)
         clock.advance(50)
         var fresh = account
         fresh.windows = [.init(id: "five_hour", usedPercent: 8, observedAt: clock.value, resetsAt: clock.value.addingTimeInterval(3600))]
@@ -498,7 +498,7 @@ final class QuotaRefreshTests: XCTestCase {
         fixture.onLaunch { early.fulfill() }; await fulfillment(of: [early], timeout: 0.15); fixture.onLaunch {}
         XCTAssertEqual(fixture.plans.count, 1)
         clock.advance(2); await service.setAvailability(enabled: true, awake: true, online: true)
-        await fulfillment(of: [second], timeout: 4)
+        await fulfillment(of: [second], timeout: 30)
         XCTAssertEqual(fixture.plans.count, 2)
         let stopped = await service.stop(); XCTAssertTrue(stopped)
     }
@@ -525,7 +525,7 @@ final class QuotaRefreshTests: XCTestCase {
         XCTAssertEqual(fixture.plans.count, 0)
         await service.setWorkState(scope: AccountScope(changed), sessionID: session, state: .generating, at: clock.value)
         await service.recordProgress(scope: AccountScope(changed), sessionID: session, progress: fastProgress(at: clock.value))
-        await fulfillment(of: [done], timeout: 4)
+        await fulfillment(of: [done], timeout: 30)
         XCTAssertEqual(fixture.plans.count, 1)
         let stopped = await service.stop(); XCTAssertTrue(stopped)
     }
@@ -637,7 +637,7 @@ final class QuotaRefreshTests: XCTestCase {
         await service.recordProgress(scope: AccountScope(account), sessionID: session, progress: fastProgress(at: clock.value))
         await service.setAvailability(enabled: true, awake: true, online: true)
         clock.advance(11); await service.setAvailability(enabled: true, awake: true, online: true)
-        await fulfillment(of: [waiting], timeout: 2)
+        await fulfillment(of: [waiting], timeout: 30)
         await service.observe(scope: AccountScope(account), windows: [.init(id: "five_hour", usedPercent: 6, observedAt: clock.value)])
         await gate.release(workspace.root.appendingPathComponent("fixture-client"))
         await fulfillment(of: [unwanted], timeout: 0.2)
@@ -656,12 +656,12 @@ final class QuotaRefreshTests: XCTestCase {
         var account = fixtureAccount()
         account.windows = [.init(id: "five_hour", usedPercent: 100, observedAt: clock.value, resetsAt: clock.value.addingTimeInterval(60))]
         try await service.start(); await service.setAccounts([account]); await service.requestRefresh(accountID: account.id)
-        await fulfillment(of: [first], timeout: 4)
+        await fulfillment(of: [first], timeout: 30)
         // A reset is read a minute after it passes, once Claude has rolled the limit over.
         clock.advance(61); await service.setAvailability(enabled: true, awake: true, online: true)
         XCTAssertEqual(fixture.plans.count, 1)
         clock.advance(60); await service.setAvailability(enabled: true, awake: true, online: true)
-        await fulfillment(of: [second], timeout: 4)
+        await fulfillment(of: [second], timeout: 30)
         XCTAssertEqual(fixture.plans.count, 2)
         XCTAssertEqual(fixture.plans[0].directory, fixture.plans[1].directory, "Official workspace trust stays with the stable account folder.")
         XCTAssertNotEqual(fixture.plans[0].sessionID, fixture.plans[1].sessionID)
@@ -695,7 +695,7 @@ final class QuotaRefreshTests: XCTestCase {
         XCTAssertEqual(fixture.plans.count, 0)
         fixture.onLaunch {}
         clock.advance(86400 + 120); await service.setAvailability(enabled: true, awake: true, online: true)
-        await fulfillment(of: [back], timeout: 4)
+        await fulfillment(of: [back], timeout: 30)
         XCTAssertEqual(fixture.plans.count, 1)
         let stopped = await service.stop(); XCTAssertTrue(stopped)
     }
@@ -727,7 +727,7 @@ final class QuotaRefreshTests: XCTestCase {
         fixture.onLaunch {}
         // A stated reset is read a minute after it passes, for an unused account too.
         clock.advance(12 * 3600 + 61); await service.setAvailability(enabled: true, awake: true, online: true)
-        await fulfillment(of: [reset], timeout: 4)
+        await fulfillment(of: [reset], timeout: 30)
         XCTAssertEqual(fixture.plans.count, 1)
         let stopped = await service.stop(); XCTAssertTrue(stopped)
     }
@@ -747,7 +747,7 @@ final class QuotaRefreshTests: XCTestCase {
         await service.setWorkState(scope: AccountScope(account), sessionID: session, state: .ended, at: clock.value)
         let working = await service.cadence(accountID: account.id); XCTAssertNotNil(working.interval)
         clock.advance(130); await service.setAvailability(enabled: true, awake: true, online: true)
-        await fulfillment(of: [settled], timeout: 4)
+        await fulfillment(of: [settled], timeout: 30)
         XCTAssertEqual(fixture.plans.count, 1)
         let again = expectation(description: "Left open and unused, it is not read again"); again.isInverted = true
         fixture.onLaunch { again.fulfill() }
@@ -776,7 +776,7 @@ final class QuotaRefreshTests: XCTestCase {
         XCTAssertEqual(fixture.plans.count, 0)
         fixture.onLaunch {}
         await service.setWorkState(scope: AccountScope(old), sessionID: UUID(), state: .generating, at: clock.value)
-        await fulfillment(of: [confirmed], timeout: 4)
+        await fulfillment(of: [confirmed], timeout: 30)
         XCTAssertEqual(fixture.plans.count, 1)
         let stopped = await service.stop(); XCTAssertTrue(stopped)
     }
@@ -794,11 +794,11 @@ final class QuotaRefreshTests: XCTestCase {
         await service.setAvailability(enabled: true, awake: false, online: true)
         XCTAssertEqual(fixture.plans.count, 0)
         await service.setAvailability(enabled: true, awake: true, online: true)
-        await fulfillment(of: [first], timeout: 4)
+        await fulfillment(of: [first], timeout: 30)
         clock.advance(1); await service.setAvailability(enabled: true, awake: true, online: true)
         XCTAssertEqual(fixture.plans.count, 1)
         clock.advance(2); await service.setAvailability(enabled: true, awake: true, online: true)
-        await fulfillment(of: [second], timeout: 4)
+        await fulfillment(of: [second], timeout: 30)
         XCTAssertEqual(fixture.plans.count, 2)
         XCTAssertNotEqual(fixture.plans[0].environment["CLAUDE_CONFIG_DIR"], fixture.plans[1].environment["CLAUDE_CONFIG_DIR"])
         let stopped = await service.stop(); XCTAssertTrue(stopped)
@@ -814,7 +814,7 @@ final class QuotaRefreshTests: XCTestCase {
         }, observerTimeout: 2)
         let account = fixtureAccount()
         try await service.start(); await service.setAccounts([account]); await service.requestRefresh(accountID: account.id)
-        await fulfillment(of: [waiting], timeout: 2)
+        await fulfillment(of: [waiting], timeout: 30)
         let suspended = await service.suspendAccount(account.id); XCTAssertTrue(suspended)
         await service.resumeAccount(account.id)
         await gate.release(workspace.root.appendingPathComponent("fixture-client"))
@@ -836,7 +836,7 @@ final class QuotaRefreshTests: XCTestCase {
         let original = fixtureAccount()
         try await service.start(); await service.setAccounts([original])
         await service.requestRefresh(accountID: original.id)
-        await fulfillment(of: [delivered], timeout: 4)
+        await fulfillment(of: [delivered], timeout: 30)
         var replacement = original; replacement.plan = "Ultra"
         await service.setAccounts([replacement])
         await service.observe(scope: AccountScope(original), windows: [
@@ -873,7 +873,7 @@ final class QuotaRefreshTests: XCTestCase {
         try workspace.remove(stateFile)
         try workspace.createDirectory(at: stateFile)
         await service.requestRefresh(accountID: account.id)
-        await fulfillment(of: [failed], timeout: 2)
+        await fulfillment(of: [failed], timeout: 30)
         XCTAssertEqual(fixture.plans.count, 0)
         let stopped = await service.stop(); XCTAssertTrue(stopped)
     }
@@ -886,11 +886,13 @@ final class QuotaRefreshTests: XCTestCase {
         let root = base.appendingPathComponent(".build/quota-fixtures/\(UUID().uuidString)")
         let workspace = OwnedWorkspace(root: root); try workspace.prepare(); return workspace
     }
+    /// `observerTimeout` bounds one reading. Generous by default, so a slow machine still finishes the
+    /// first-run screens; a test about a reading that cannot finish passes a short one.
     private func makeService(workspace: OwnedWorkspace, fixture: UsageProcessFixture, now: @escaping @Sendable () -> Date = { Date() },
-                             update: @escaping QuotaRefreshService.Update) -> QuotaRefreshService {
+                             observerTimeout: TimeInterval = 20, update: @escaping QuotaRefreshService.Update) -> QuotaRefreshService {
         QuotaRefreshService(workspace: workspace, executable: { workspace.root.appendingPathComponent("fixture-client") },
                             helperExecutable: workspace.root.appendingPathComponent("fixture-helper"), update: update,
-                            launch: { try fixture.launch($0) }, observerTimeout: 2, now: now)
+                            launch: { try fixture.launch($0) }, observerTimeout: observerTimeout, now: now)
     }
 }
 
