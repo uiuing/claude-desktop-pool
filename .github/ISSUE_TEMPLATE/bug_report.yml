@@ -1,0 +1,47 @@
+name: Bug report
+description: Something in Claude Pool does not work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please leave out emails, tokens and conversation text. For security problems, use [private reporting](https://github.com/uiuing/claude-desktop-pool/security/advisories/new) instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+  - type: input
+    id: pool
+    attributes:
+      label: Claude Pool version
+      description: Settings › About
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac
+      placeholder: macOS 15.1, Apple silicon
+    validations:
+      required: true
+  - type: input
+    id: clients
+    attributes:
+      label: Claude Code and Claude Desktop versions
+      description: Claude Code's version is in Settings; Desktop's is in Claude › About Claude.
+  - type: textarea
+    id: log
+    attributes:
+      label: Log excerpt
+      description: Settings › open the log folder. The log records decisions and timings, not conversation text, but please check it before pasting.
+      render: text

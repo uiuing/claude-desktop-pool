@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/uiuing/claude-desktop-pool/security/advisories/new
+    about: Report security problems privately.
+  - name: Claude Code or Claude Desktop problem
+    url: https://github.com/anthropics/claude-code/issues
+    about: Problems in Anthropic's own apps belong with Anthropic.

@@ -1,0 +1,608 @@
+{
+  "model": "AstrLink Guard 0.1.2",
+  "license": "Apache-2.0",
+  "base_model": {
+    "name": "microsoft/Multilingual-MiniLM-L12-H384",
+    "revision": "6e8c1ec6b4ec4e3fc6eb7d2cd834fcd582b61daf",
+    "license": "MIT",
+    "license_files": [
+      "licenses/MiniLM-MIT.txt",
+      "licenses/MiniLM-README.md"
+    ]
+  },
+  "license_files": {
+    "MiniLM-MIT.txt": {
+      "license": "MIT",
+      "url": "https://github.com/microsoft/unilm/blob/master/LICENSE",
+      "sha256": "904dc4d8749877f1dba1cda48200d2462dccbeb7c134d5e4ef6fa75e0198c8fe",
+      "bytes": 1104
+    },
+    "MiniLM-README.md": {
+      "license": "MIT",
+      "url": "https://huggingface.co/microsoft/Multilingual-MiniLM-L12-H384",
+      "sha256": "b00de73ad9d05ed170233a4d6551d931142fae681547f24152c52738c3da1145",
+      "bytes": 6289
+    },
+    "CredData-Apache-2.0.txt": {
+      "license": "Apache-2.0",
+      "url": "https://github.com/Samsung/CredData",
+      "sha256": "3ddf9be5c28fe27dad143a5dc76eea25222ad1dd68934a047064e56ed2fa40c5",
+      "bytes": 11560
+    },
+    "Nemotron-PII.md": {
+      "license": "CC-BY-4.0",
+      "url": "https://huggingface.co/datasets/nvidia/Nemotron-PII",
+      "sha256": "18c6215fb72c66e5c9fc833130f589e407cae906760f8977409deba0f1f5af4e",
+      "bytes": 4969
+    },
+    "nym-pii-multilingual-data.md": {
+      "license": "MIT",
+      "url": "https://huggingface.co/datasets/Wismut/nym-pii-multilingual-data",
+      "sha256": "dfcc37fcab0e48ac88eea97dd015bb67e7fb819117a564211d0fe255a8426251",
+      "bytes": 3559
+    }
+  },
+  "public_training_data": [
+    {
+      "type": "dataset",
+      "name": "Wismut/nym-pii-multilingual-data",
+      "revision": "abe23bf08c305f5824b1643dc4f079f06ccb2ad1",
+      "license": "MIT",
+      "url": "https://huggingface.co/datasets/Wismut/nym-pii-multilingual-data"
+    },
+    {
+      "type": "open-source code",
+      "name": "go-acme/lego",
+      "commit": "190b38c76a806c277059da0850737bf22379229d",
+      "license": "MIT-style",
+      "url": "https://github.com/go-acme/lego/tree/190b38c76a806c277059da0850737bf22379229d",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/go-acme__lego/LICENSE"
+      ]
+    },
+    {
+      "type": "dataset",
+      "name": "nvidia/Nemotron-PII",
+      "revision": "b70ffaf5ff39e079776134c5bf4381f00a9fd1ed",
+      "license": "CC-BY-4.0",
+      "url": "https://huggingface.co/datasets/nvidia/Nemotron-PII"
+    },
+    {
+      "type": "open-source code",
+      "name": "django/django",
+      "commit": "faba5b702a9c5bb9452a543100928bcb5f66ebcf",
+      "license": "BSD-3-Clause",
+      "url": "https://github.com/django/django/tree/faba5b702a9c5bb9452a543100928bcb5f66ebcf",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/django__django/LICENSE",
+        "licenses/code-repositories/django__django/LICENSE.python",
+        "licenses/code-repositories/django__django/django/contrib/admin/static/admin/fonts/LICENSE.txt",
+        "licenses/code-repositories/django__django/django/contrib/admin/static/admin/img/LICENSE",
+        "licenses/code-repositories/django__django/django/contrib/admin/static/admin/js/vendor/jquery/LICENSE.txt",
+        "licenses/code-repositories/django__django/django/contrib/admin/static/admin/js/vendor/select2/LICENSE.md",
+        "licenses/code-repositories/django__django/django/contrib/admin/static/admin/js/vendor/xregexp/LICENSE.txt",
+        "licenses/code-repositories/django__django/django/contrib/gis/gdal/LICENSE",
+        "licenses/code-repositories/django__django/django/contrib/gis/geos/LICENSE",
+        "licenses/code-repositories/django__django/django/dispatch/license.txt",
+        "licenses/code-repositories/django__django/docs/_theme/djangodocs/static/fontawesome/LICENSE.txt"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "cloudfoundry/credhub",
+      "commit": "262e02dd2f29dc37d7e01b1445d95ef953fc332d",
+      "license": "Apache-2.0",
+      "url": "https://github.com/cloudfoundry/credhub/tree/262e02dd2f29dc37d7e01b1445d95ef953fc332d",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/cloudfoundry__credhub/LICENSE",
+        "licenses/code-repositories/cloudfoundry__credhub/NOTICE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "phpseclib/phpseclib",
+      "commit": "b6988f8ced123b20e27c845df66a134f67d1ba1b",
+      "license": "MIT-style",
+      "url": "https://github.com/phpseclib/phpseclib/tree/b6988f8ced123b20e27c845df66a134f67d1ba1b",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/phpseclib__phpseclib/LICENSE",
+        "licenses/code-repositories/phpseclib__phpseclib/phpseclib/File/ASN1/Maps/NoticeReference.php"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "panva/jose",
+      "commit": "e431c508f55c876627beb27b499888d869bf4aa3",
+      "license": "MIT-style",
+      "url": "https://github.com/panva/jose/tree/e431c508f55c876627beb27b499888d869bf4aa3",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/panva__jose/LICENSE.md"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "pennersr/django-allauth",
+      "commit": "c50a30acc0e4553297b0ddb697d55a290ed6d038",
+      "license": "MIT-style",
+      "url": "https://github.com/pennersr/django-allauth/tree/c50a30acc0e4553297b0ddb697d55a290ed6d038",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/pennersr__django-allauth/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "postmanlabs/postman-collection-transformer",
+      "commit": "724d6b35a6d36a618da1e095c84780bfea177377",
+      "license": "Apache-2.0",
+      "url": "https://github.com/postmanlabs/postman-collection-transformer/tree/724d6b35a6d36a618da1e095c84780bfea177377",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/postmanlabs__postman-collection-transformer/LICENSE.md"
+      ]
+    },
+    {
+      "type": "open-source documentation",
+      "name": "ant-design/ant-design",
+      "commit": "a5471756d2684b88a11228fdf079a44efcd03c83",
+      "license": "MIT",
+      "url": "https://github.com/ant-design/ant-design/tree/a5471756d2684b88a11228fdf079a44efcd03c83",
+      "license_files": [
+        "licenses/code-repositories/ant-design__ant-design/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "binarylogic/authlogic",
+      "commit": "5e0253dcd91ea72c9a5acc5f62590142b7f4bdb4",
+      "license": "MIT-style",
+      "url": "https://github.com/binarylogic/authlogic/tree/5e0253dcd91ea72c9a5acc5f62590142b7f4bdb4",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/binarylogic__authlogic/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "tornadoweb/tornado",
+      "commit": "a9fbbeeec9abfe9ff54365160ce476ba853ba203",
+      "license": "Apache-2.0",
+      "url": "https://github.com/tornadoweb/tornado/tree/a9fbbeeec9abfe9ff54365160ce476ba853ba203",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/tornadoweb__tornado/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "docker/docker-py",
+      "commit": "96c12726fdb9b24e985b4de74d5c82145ccd8185",
+      "license": "Apache-2.0",
+      "url": "https://github.com/docker/docker-py/tree/96c12726fdb9b24e985b4de74d5c82145ccd8185",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/docker__docker-py/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "boto/boto3",
+      "commit": "ee51177d30b40d29e60916adf56ef96e1b0d80f6",
+      "license": "Apache-2.0",
+      "url": "https://github.com/boto/boto3/tree/ee51177d30b40d29e60916adf56ef96e1b0d80f6",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/boto__boto3/LICENSE",
+        "licenses/code-repositories/boto__boto3/NOTICE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "nextauthjs/next-auth",
+      "commit": "8ff7dbb18f07ecf3fc0075725014279c45402208",
+      "license": "ISC",
+      "url": "https://github.com/nextauthjs/next-auth/tree/8ff7dbb18f07ecf3fc0075725014279c45402208",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/nextauthjs__next-auth/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "vueComponent/ant-design-vue-pro",
+      "commit": "44a9ee06748e9b18d611e6c8471b395f864de70a",
+      "license": "MIT-style",
+      "url": "https://github.com/vueComponent/ant-design-vue-pro/tree/44a9ee06748e9b18d611e6c8471b395f864de70a",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/vueComponent__ant-design-vue-pro/LICENSE",
+        "licenses/code-repositories/vueComponent__ant-design-vue-pro/src/components/NoticeIcon/NoticeIcon.vue"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "tipsy/javalin",
+      "commit": "14af98f4360677e6127253bcf0cd8cdaef30eee7",
+      "license": "Apache-2.0",
+      "url": "https://github.com/tipsy/javalin/tree/14af98f4360677e6127253bcf0cd8cdaef30eee7",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/tipsy__javalin/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "xo/usql",
+      "commit": "ff6a33d39fc8fd768774a474131e6b37e7ad6924",
+      "license": "MIT-style",
+      "url": "https://github.com/xo/usql/tree/ff6a33d39fc8fd768774a474131e6b37e7ad6924",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/xo__usql/LICENSE",
+        "licenses/code-repositories/xo__usql/text/license.go"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "encode/starlette",
+      "commit": "b6f3578bb2cf6c60e3efe110143409b47f368d36",
+      "license": "BSD-style",
+      "url": "https://github.com/encode/starlette/tree/b6f3578bb2cf6c60e3efe110143409b47f368d36",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/encode__starlette/LICENSE.md"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "fecshop/yii2_fecshop",
+      "commit": "a230a87f8e60d2d8a8f7aafafd687a5e8e991bb0",
+      "license": "BSD-style",
+      "url": "https://github.com/fecshop/yii2_fecshop/tree/a230a87f8e60d2d8a8f7aafafd687a5e8e991bb0",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/fecshop__yii2_fecshop/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "alibaba/canal",
+      "commit": "474063af3b51c86b173bd6753ff98727aca1e44a",
+      "license": "Apache-2.0",
+      "url": "https://github.com/alibaba/canal/tree/474063af3b51c86b173bd6753ff98727aca1e44a",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/alibaba__canal/LICENSE.txt",
+        "licenses/code-repositories/alibaba__canal/admin/admin-ui/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "dromara/Sa-Token",
+      "commit": "ecb18f5b45165fc91abda4ae28fa5125f3996d63",
+      "license": "Apache-2.0",
+      "url": "https://github.com/dromara/Sa-Token/tree/ecb18f5b45165fc91abda4ae28fa5125f3996d63",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/dromara__Sa-Token/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "tiangolo/full-stack-fastapi-postgresql",
+      "commit": "490c554e23343eec0736b06e59b2108fdd057fdc",
+      "license": "MIT-style",
+      "url": "https://github.com/tiangolo/full-stack-fastapi-postgresql/tree/490c554e23343eec0736b06e59b2108fdd057fdc",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/tiangolo__full-stack-fastapi-postgresql/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "danger/danger",
+      "commit": "af3d856d5cbaaebf534b853df347373dbd0ee30b",
+      "license": "MIT-style",
+      "url": "https://github.com/danger/danger/tree/af3d856d5cbaaebf534b853df347373dbd0ee30b",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/danger__danger/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "Dreampie/Resty",
+      "commit": "9ef059c065d1894c79e7d69c150e588a61eb1cd5",
+      "license": "Apache-2.0",
+      "url": "https://github.com/Dreampie/Resty/tree/9ef059c065d1894c79e7d69c150e588a61eb1cd5",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/Dreampie__Resty/LICENSE.md"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "wuyouzhuguli/SpringAll",
+      "commit": "614d2578d9495acf53cc02f2dee9c6131cc5e51a",
+      "license": "MIT-style",
+      "url": "https://github.com/wuyouzhuguli/SpringAll/tree/614d2578d9495acf53cc02f2dee9c6131cc5e51a",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/wuyouzhuguli__SpringAll/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "open-falcon/falcon-plus",
+      "commit": "0a3e2f7e932d1d56578c8dbef0cc349cf997f8f3",
+      "license": "Apache-2.0",
+      "url": "https://github.com/open-falcon/falcon-plus/tree/0a3e2f7e932d1d56578c8dbef0cc349cf997f8f3",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/open-falcon__falcon-plus/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/NOTICE",
+        "licenses/code-repositories/open-falcon__falcon-plus/common/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/common/NOTICE",
+        "licenses/code-repositories/open-falcon__falcon-plus/docs/LICENSE.md",
+        "licenses/code-repositories/open-falcon__falcon-plus/modules/agent/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/modules/agent/NOTICE",
+        "licenses/code-repositories/open-falcon__falcon-plus/modules/alarm/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/modules/alarm/NOTICE",
+        "licenses/code-repositories/open-falcon__falcon-plus/modules/graph/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/modules/graph/NOTICE",
+        "licenses/code-repositories/open-falcon__falcon-plus/modules/hbs/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/modules/hbs/NOTICE",
+        "licenses/code-repositories/open-falcon__falcon-plus/modules/judge/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/modules/judge/NOTICE",
+        "licenses/code-repositories/open-falcon__falcon-plus/modules/transfer/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/modules/transfer/NOTICE",
+        "licenses/code-repositories/open-falcon__falcon-plus/scripts/mysql/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/scripts/mysql/NOTICE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/astaxie/beego/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/emirpasic/gods/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/fsnotify/fsnotify/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/garyburd/redigo/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/gin-gonic/gin/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/golang/protobuf/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/gopherjs/gopherjs/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/hashicorp/hcl/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/inconshreveable/mousetrap/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/influxdata/influxdb/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/jinzhu/gorm/License",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/jinzhu/inflection/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/jtolds/gls/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/juju/errors/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/magiconair/properties/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/manucorporat/sse/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/masato25/resty/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/masato25/yaag/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/mattn/go-isatty/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/mindprince/gonvml/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/mitchellh/mapstructure/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/niean/go-metrics-lite/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/niean/gotools/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/open-falcon/rrdlite/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/pelletier/go-toml/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/satori/go.uuid/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/sirupsen/logrus/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/smartystreets/assertions/LICENSE.md",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/smartystreets/assertions/internal/go-diff/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/smartystreets/assertions/internal/go-render/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/smartystreets/assertions/internal/oglematchers/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/spf13/afero/LICENSE.txt",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/spf13/cast/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/spf13/cobra/LICENSE.txt",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/spf13/jwalterweatherman/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/spf13/pflag/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/spf13/viper/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/toolkits/consistent/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/github.com/toolkits/cron/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/golang.org/x/crypto/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/golang.org/x/mod/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/golang.org/x/net/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/golang.org/x/sys/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/golang.org/x/text/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/golang.org/x/tools/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/golang.org/x/xerrors/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/gopkg.in/go-playground/validator.v8/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/gopkg.in/yaml.v2/LICENSE",
+        "licenses/code-repositories/open-falcon__falcon-plus/vendor/gopkg.in/yaml.v2/LICENSE.libyaml"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "macrozheng/mall",
+      "commit": "dcaa93b3150352e5044708d7211b5bed0af4509f",
+      "license": "Apache-2.0",
+      "url": "https://github.com/macrozheng/mall/tree/dcaa93b3150352e5044708d7211b5bed0af4509f",
+      "license_files": [
+        "licenses/code-repositories/macrozheng__mall/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "justauth/JustAuth",
+      "commit": "41559fc95494235471039217ad9c3b3a79d006b7",
+      "license": "MIT-style",
+      "url": "https://github.com/justauth/JustAuth/tree/41559fc95494235471039217ad9c3b3a79d006b7",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/justauth__JustAuth/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "alibaba/fastjson2",
+      "commit": "017e08880203c32228e0e7186f924bb5dd89f21d",
+      "license": "Apache-2.0",
+      "url": "https://github.com/alibaba/fastjson2/tree/017e08880203c32228e0e7186f924bb5dd89f21d",
+      "license_files": [
+        "licenses/code-repositories/alibaba__fastjson2/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "expressjs/express",
+      "commit": "28db2c2c5cf992c897d1fbbc6b119ee02fe32ab1",
+      "license": "MIT-style",
+      "url": "https://github.com/expressjs/express/tree/28db2c2c5cf992c897d1fbbc6b119ee02fe32ab1",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/expressjs__express/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "linlinjava/litemall",
+      "commit": "a1ef964a718b7277925b19ea26afe78ea3a1d325",
+      "license": "MIT",
+      "url": "https://github.com/linlinjava/litemall/tree/a1ef964a718b7277925b19ea26afe78ea3a1d325",
+      "license_files": [
+        "licenses/code-repositories/linlinjava__litemall/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source documentation",
+      "name": "google/eng-practices",
+      "commit": "3bb3ec25b3b0199f4940b1aa75f0ac5c5753301c",
+      "license": "CC-BY-3.0",
+      "url": "https://github.com/google/eng-practices/tree/3bb3ec25b3b0199f4940b1aa75f0ac5c5753301c",
+      "license_files": [
+        "licenses/code-repositories/google__eng-practices/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "dromara/hutool",
+      "commit": "8870454b2a0c29cc6ffd31dcf5667c8ceb2fc442",
+      "license": "MulanPSL-2.0",
+      "url": "https://github.com/dromara/hutool/tree/8870454b2a0c29cc6ffd31dcf5667c8ceb2fc442",
+      "license_files": [
+        "licenses/code-repositories/dromara__hutool/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "pydanny/cookiecutter-django",
+      "commit": "0adf0d0423865c5ccc5e3ef3c66d427b58109eef",
+      "license": "BSD-style",
+      "url": "https://github.com/pydanny/cookiecutter-django/tree/0adf0d0423865c5ccc5e3ef3c66d427b58109eef",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/pydanny__cookiecutter-django/LICENSE",
+        "licenses/code-repositories/pydanny__cookiecutter-django/{{cookiecutter.project_slug}}/COPYING",
+        "licenses/code-repositories/pydanny__cookiecutter-django/{{cookiecutter.project_slug}}/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "eddycjy/go-gin-example",
+      "commit": "28f372bf41f9e67a9cec5980fd1c365363064ebc",
+      "license": "MIT-style",
+      "url": "https://github.com/eddycjy/go-gin-example/tree/28f372bf41f9e67a9cec5980fd1c365363064ebc",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/eddycjy__go-gin-example/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/360EntSecGroup-Skylar/excelize/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/PuerkitoBio/purell/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/PuerkitoBio/urlesc/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/Unknwon/com/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/alecthomas/template/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/astaxie/beego/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/boombuler/barcode/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/dgrijalva/jwt-go/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/gin-contrib/sse/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/gin-gonic/gin/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/go-ini/ini/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/go-openapi/jsonpointer/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/go-openapi/jsonreference/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/go-openapi/spec/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/go-openapi/spec/license.go",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/go-openapi/swag/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/go-sql-driver/mysql/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/golang/freetype/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/golang/protobuf/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/gomodule/redigo/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/jinzhu/gorm/License",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/jinzhu/inflection/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/json-iterator/go/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/mailru/easyjson/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/mattn/go-isatty/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/modern-go/concurrent/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/modern-go/reflect2/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/pkg/errors/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/swaggo/gin-swagger/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/swaggo/swag/license",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/tealeg/xlsx/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/github.com/ugorji/go/codec/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/golang.org/x/image/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/golang.org/x/net/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/golang.org/x/sys/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/golang.org/x/text/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/golang.org/x/tools/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/google.golang.org/appengine/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/gopkg.in/go-playground/validator.v8/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/gopkg.in/yaml.v2/LICENSE",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/gopkg.in/yaml.v2/LICENSE.libyaml",
+        "licenses/code-repositories/eddycjy__go-gin-example/vendor/gopkg.in/yaml.v2/NOTICE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "redisson/redisson",
+      "commit": "e223321de9e3ad9214722d044c2212733ed06000",
+      "license": "Apache-2.0",
+      "url": "https://github.com/redisson/redisson/tree/e223321de9e3ad9214722d044c2212733ed06000",
+      "via": "Samsung/CredData@c09c0c52fc6dae4ae5438ae69ba486f9f8059f0d",
+      "license_files": [
+        "licenses/code-repositories/redisson__redisson/LICENSE.txt",
+        "licenses/code-repositories/redisson__redisson/redisson/LICENSE.txt",
+        "licenses/code-repositories/redisson__redisson/redisson/src/main/resources/META-INF/LICENSE.txt",
+        "licenses/code-repositories/redisson__redisson/redisson/src/main/resources/META-INF/NOTICE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "go-pay/gopay",
+      "commit": "68245f430d6b5dfce6aa3117233611ada90f404f",
+      "license": "Apache-2.0",
+      "url": "https://github.com/go-pay/gopay/tree/68245f430d6b5dfce6aa3117233611ada90f404f",
+      "license_files": [
+        "licenses/code-repositories/go-pay__gopay/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "validatorjs/validator.js",
+      "commit": "9ff342479591ca5a43cb30000195bcf55c1bbed9",
+      "license": "MIT",
+      "url": "https://github.com/validatorjs/validator.js/tree/9ff342479591ca5a43cb30000195bcf55c1bbed9",
+      "license_files": [
+        "licenses/code-repositories/validatorjs__validator.js/LICENSE"
+      ]
+    },
+    {
+      "type": "open-source code",
+      "name": "baomidou/mybatis-plus",
+      "commit": "bf67d907478c724120bf76292da54abf9e73c2b3",
+      "license": "Apache-2.0",
+      "url": "https://github.com/baomidou/mybatis-plus/tree/bf67d907478c724120bf76292da54abf9e73c2b3",
+      "license_files": [
+        "licenses/code-repositories/baomidou__mybatis-plus/LICENSE",
+        "licenses/code-repositories/baomidou__mybatis-plus/license.txt"
+      ]
+    }
+  ],
+  "notes": [
+    "Entries with \"via\" are open-source repositories referenced by the Samsung/CredData dataset. Each is covered by its own license; the files under licenses/code-repositories/ are copied from the listed commits.",
+    "MIT-style and BSD-style mean the repository license matches that family; the exact text is in license_files.",
+    "Django (BSD-3-Clause): this model is not endorsed by the Django project or its contributors.",
+    "The model was also trained on synthetic, fictional examples written for this project; they add no third-party license and are not listed here.",
+    "No training data is included in this repository."
+  ]
+}

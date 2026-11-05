@@ -1,0 +1,10 @@
+.build/
+dist/
+.DS_Store
+.swiftpm/
+*.xcuserstate
+*.dSYM/
+__pycache__/
+.claude/
+logs/
+*.log

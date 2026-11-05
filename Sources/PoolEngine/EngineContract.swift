@@ -1,0 +1,144 @@
+import Foundation
+import PoolCore
+import PoolRuntime
+
+public enum EngineUpdate: Sendable {
+    case session(PoolSession)
+    case progress(scope: AccountScope, sessionID: UUID, progress: QuotaProgress)
+    case workState(scope: AccountScope, sessionID: UUID, state: QuotaWorkState, at: Date)
+    case quota(scope: AccountScope, windows: [QuotaWindow])
+    case accountState(scope: AccountScope, state: AccountState, cooldownUntil: Date?)
+    /// The account refused for its limit without proof of which limit. Its usage should be read
+    /// now; the read, never a guess, decides whether it is limited.
+    case limitUnconfirmed(scope: AccountScope)
+    case terminal(sessionID: UUID, data: Data)
+    case route(RouteDecision)
+    /// A reply's tokens as the official client reported them, once per reply, for the usage ledger.
+    case usage(scope: AccountScope, model: String, name: String, usage: BridgeUsage, at: Date, generationSeconds: TimeInterval?)
+    /// What a model alias runs on now, as a session on it reported.
+    case model(ModelIdentity)
+}
+
+public enum WorkerObservation: Sendable {
+    case terminal(Data), quota([QuotaWindow]), accountState(AccountState), working, attention, idle, ended
+    case model(ModelIdentity)
+}
+
+/// Created inside the engine only after the original worker accepted its matching tool results.
+public struct VerifiedToolReplay: Sendable {
+    public let request: BridgeRequest
+    init(request: BridgeRequest) { self.request = request }
+}
+
+/// A run's own Claude Code session, kept once its run was let go for its conversation's next turn:
+/// that turn starts Claude Code with `--resume` on it, told only the messages since, so Anthropic is asked the
+/// conversation as the run would have asked it, a prefix it has cached.
+public struct ShelvedSession: Sendable {
+    /// Claude Code's session id, as its transcript is named.
+    public let session: String
+    public let accountID: UUID
+    /// Removes the session's files, once its conversation is not coming back for it.
+    public let discard: @Sendable () -> Void
+    public init(session: String, accountID: UUID, discard: @escaping @Sendable () -> Void) {
+        self.session = session; self.accountID = accountID; self.discard = discard
+    }
+}
+
+public protocol SessionWorker: Sendable {
+    var id: UUID { get }
+    var accountSnapshot: PoolAccount? { get }
+    func events(for request: BridgeRequest) async throws -> AsyncThrowingStream<BridgeEvent, Error>
+    func events(replaying replay: VerifiedToolReplay) async throws -> AsyncThrowingStream<BridgeEvent, Error>
+    func observations() async -> AsyncStream<WorkerObservation>
+    func sendInput(_ data: Data) async throws
+    func cancel() async
+    func close() async -> Bool
+    func requestExit() async -> Bool
+    /// Ends the idle run normally and keeps its session for the conversation's next turn;
+    /// nil when it could not be kept, the run then ended as `close` ends it, or still running.
+    func shelve() async -> ShelvedSession?
+    /// Before its first request: the run goes on from a shelved session of its account (unshelve), and
+    /// is then told only what came since the conversation's last reply. False when it cannot.
+    func resume(from saved: ShelvedSession) async -> Bool
+}
+public extension SessionWorker {
+    var accountSnapshot: PoolAccount? { nil }
+    func requestExit() async -> Bool { await close() }
+    func events(replaying replay: VerifiedToolReplay) async throws -> AsyncThrowingStream<BridgeEvent, Error> {
+        throw BridgeFailure.invalidRequest("This session cannot continue completed tool history.")
+    }
+    func shelve() async -> ShelvedSession? { nil }
+    func resume(from saved: ShelvedSession) async -> Bool { false }
+}
+
+public struct SessionLaunch: Sendable {
+    public var executable: URL
+    public var arguments: [String]
+    public var environment: [String: String]
+    public var directory: URL
+    public var runDirectory: URL
+    public var sessionID: UUID
+}
+
+public struct SessionTransport: Sendable {
+    public var events: AsyncStream<PTYEvent>
+    public var write: @Sendable (Data) throws -> Void
+    public var interrupt: @Sendable () throws -> Void
+    public var exit: @Sendable () throws -> Void
+    public var waitForExit: @Sendable () async throws -> Int32
+    public init(events: AsyncStream<PTYEvent>, write: @escaping @Sendable (Data) throws -> Void,
+                interrupt: @escaping @Sendable () throws -> Void, exit: @escaping @Sendable () throws -> Void,
+                waitForExit: @escaping @Sendable () async throws -> Int32 = { throw BridgeFailure.busy }) {
+        self.events = events; self.write = write; self.interrupt = interrupt; self.exit = exit
+        self.waitForExit = waitForExit
+    }
+    public static func launch(_ plan: SessionLaunch) throws -> SessionTransport {
+        let child = try OwnedPTY.start(executable: plan.executable, arguments: plan.arguments,
+                                      environment: plan.environment, directory: plan.directory)
+        return SessionTransport(events: child.events, write: { try child.write($0) },
+                                interrupt: { try child.interrupt() }, exit: { try child.exitWhenIdle() },
+                                waitForExit: { try await child.waitForExit(timeout: 5) })
+    }
+}
+
+enum RequestContent {
+    static func text(_ content: JSONValue) throws -> String {
+        if let string = content.stringValue { return string }
+        guard let blocks = content.arrayValue else { throw BridgeFailure.invalidRequest("Messages must contain text blocks.") }
+        return try blocks.map { block in
+            guard block["type"]?.stringValue == "text", let text = block["text"]?.stringValue else {
+                throw BridgeFailure.unsupported("This Claude connection currently accepts text and client tools.")
+            }
+            return text
+        }.joined(separator: "\n")
+    }
+
+    static func toolResults(_ request: BridgeRequest) throws -> [(String, JSONValue)] {
+        guard let last = request.messages.last, last.role == "user", let blocks = last.content.arrayValue else { return [] }
+        return try blocks.compactMap { block in
+            guard block["type"]?.stringValue == "tool_result" else { return nil }
+            guard let id = block["tool_use_id"]?.stringValue, !id.isEmpty else {
+                throw BridgeFailure.invalidRequest("A tool result must identify its original call.")
+            }
+            let content = block["content"] ?? .string("")
+            let parts: JSONValue
+            if let text = content.stringValue {
+                parts = .array([.object(["type": .string("text"), "text": .string(text)])])
+            } else {
+                guard let blocks = content.arrayValue else { throw BridgeFailure.invalidRequest("Invalid tool result content.") }
+                parts = .array(try blocks.map { block in
+                    if block["type"]?.stringValue == "text", block["text"]?.stringValue != nil { return block }
+                    guard block["type"]?.stringValue == "image", let source = block["source"], source["type"]?.stringValue == "base64",
+                          let mime = source["media_type"]?.stringValue, ["image/png", "image/jpeg", "image/webp", "image/gif"].contains(mime),
+                          let data = source["data"]?.stringValue, data.utf8.count <= 6 * 1024 * 1024,
+                          let decoded = Data(base64Encoded: data), !decoded.isEmpty, decoded.count <= 4 * 1024 * 1024 else {
+                        throw BridgeFailure.unsupported("This tool result must contain text or an attached image.")
+                    }
+                    return .object(["type": .string("image"), "data": .string(data), "mimeType": .string(mime)])
+                })
+            }
+            return (id, .object(["content": parts, "isError": .bool(block["is_error"]?.boolValue ?? false)]))
+        }
+    }
+
+}
