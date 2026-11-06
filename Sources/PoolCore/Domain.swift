@@ -530,7 +530,11 @@ public enum PoolRouting {
     /// what is left of the 5-hour limit and of the week weigh about the same; a 5-hour limit that is
     /// about to renew counts for a little more than it reads, a week about to reset makes its unused
     /// share worth spending first, and each conversation already on the account weighs against it.
+    /// A week nearly used up caps the 5-hour limit: below `weekCaps` percent left, the 5-hour share
+    /// counts only in proportion, since the account stops when its week does, however full the 5 hours.
     /// Nil when a limit's figure is unknown.
+    /// Weekly percent left below which the week limits what the 5-hour share is worth.
+    public static let weekCaps = 25.0
     public static func score(_ account: PoolAccount, model: String, now: Date = Date(), load: Int = 0) -> Double? {
         guard assessment(account, model: model, now: now).state == .available else { return nil }
         let windows = account.windows.filter { $0.applies(to: model) && !$0.isNotApplicable(at: now) }
@@ -547,6 +551,7 @@ public enum PoolRouting {
             // Up to half of what is used comes back in the score as the reset nears.
             sessionValue = value + (100 - value) * 0.5 * max(0, 1 - until / (5 * 3600))
         }
+        if let (value, _) = week { sessionValue *= min(1, max(0, value) / weekCaps) }
         let weekValue = week?.0 ?? sessionValue
         var expiring = 0.0
         if let (value, until) = week, let until { expiring = value * max(0, 1 - until / (2 * 86400)) }

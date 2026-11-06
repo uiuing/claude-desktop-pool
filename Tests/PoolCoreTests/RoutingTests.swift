@@ -114,6 +114,29 @@ final class RoutingTests: XCTestCase {
         XCTAssertEqual(PoolRouting.candidates([spentSession, fullSession], model: "sonnet", now: now).first?.email, "s@example.com")
     }
 
+    func testAFullFiveHoursDoesNotHideAWeekThatIsNearlyGone() {
+        func pool(_ email: String, session: Double, sessionReset: TimeInterval, week: Double, weekReset: TimeInterval) -> PoolAccount {
+            .init(email: email, plan: "Pro", state: .ready, windows: [
+                .init(id: "five_hour", usedPercent: 100 - session, observedAt: now, resetsAt: now.addingTimeInterval(sessionReset)),
+                .init(id: "seven_day", usedPercent: 100 - week, observedAt: now, resetsAt: now.addingTimeInterval(weekReset))], createdAt: now)
+        }
+        // As the menu showed them: four accounts with full 5 hours and 2–5% of the week left, and one
+        // with a conversation, 11% of its 5 hours (renewing within the hour) and 80% of its week.
+        let nearlyGone = [
+            pool("a@example.com", session: 100, sessionReset: 4 * 3600, week: 5, weekReset: 5 * 86400),
+            pool("b@example.com", session: 100, sessionReset: 3 * 3600, week: 3, weekReset: 3 * 86400),
+            pool("c@example.com", session: 100, sessionReset: 4 * 3600, week: 3, weekReset: 3 * 86400),
+            pool("d@example.com", session: 100, sessionReset: 4 * 3600, week: 2, weekReset: 4 * 86400)]
+        let working = pool("e@example.com", session: 11, sessionReset: 3600, week: 80, weekReset: 6 * 86400)
+        let ranked = PoolRouting.candidates(nearlyGone + [working], model: "sonnet", now: now, load: [working.id: 1])
+        XCTAssertEqual(ranked.first?.email, "e@example.com")
+        XCTAssertEqual(ranked.dropFirst().map(\.email), ["a@example.com", "b@example.com", "c@example.com", "d@example.com"])
+        // Above the cap the week does not decide: a full 5 hours with 60% of the week still beats 15% with 95%.
+        let healthy = pool("f@example.com", session: 100, sessionReset: 3600, week: 30, weekReset: 6 * 86400)
+        let spent = pool("g@example.com", session: 15, sessionReset: 4 * 3600, week: 95, weekReset: 6 * 86400)
+        XCTAssertEqual(PoolRouting.candidates([spent, healthy], model: "sonnet", now: now).first?.email, "f@example.com")
+    }
+
     func testUnknownHeadroomRanksBehindMeasuredHeadroomWithoutBecomingZeroQuota() {
         let unknown = account()
         let known = account("b•••@gmail.com", week: 90)
