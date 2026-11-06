@@ -110,6 +110,93 @@ final class CoordinatorLifecycleTests: XCTestCase {
         await worker.simulateExit()
     }
 
+    /// A real conversation (11-06): its run had answered, yet was not idle at the next turn, and the
+    /// turn was refused; Desktop started a new client session and the conversation moved accounts.
+    func testARunThatCannotTakeItsNextTurnIsReplacedOnTheSameAccount() async throws {
+        let (pool, factory, used, first, second) = twoAccountPool()
+        let opening = ask("First")
+        _ = try await drain(pool, opening, id: "conversation")
+        let opened = await used.accounts
+        let original = try XCTUnwrap(opened.first)
+        // The other account now has more left: the conversation still stays where its cache is.
+        await pool.updateAccounts(original == first.id ? [first, better(second)] : [better(first), second])
+        let worker = try await factory.worker(0)
+        await worker.needAttention()
+        try await lifecycleWait { await pool.sessions().contains { $0.id == worker.id && $0.state == .attention } }
+        _ = try await drain(pool, followUp(opening), id: "conversation")
+        let accounts = await used.accounts
+        XCTAssertEqual(accounts, [original, original])
+        _ = await pool.shutdown()
+    }
+
+    func testANewClientSessionOfTheSameConversationStaysOnItsAccount() async throws {
+        let (pool, factory, used, first, second) = twoAccountPool()
+        let opening = ask("First")
+        _ = try await drain(pool, opening, id: "session-1#shape")
+        let opened = await used.accounts
+        let original = try XCTUnwrap(opened.first)
+        await pool.updateAccounts(original == first.id ? [first, better(second)] : [better(first), second])
+        // Its run is gone (Desktop restarted the client): the next turn arrives under a new session id.
+        let worker = try await factory.worker(0)
+        await worker.simulateExit()
+        try await lifecycleWait { await pool.sessions().isEmpty }
+        _ = try await drain(pool, followUp(opening), id: "session-2#shape")
+        let accounts = await used.accounts
+        XCTAssertEqual(accounts, [original, original])
+        // Another conversation goes where most is left.
+        let resumed = try await factory.worker(1)
+        await resumed.simulateExit()
+        try await lifecycleWait { await pool.sessions().isEmpty }
+        _ = try await drain(pool, followUp(ask("Other")), id: "session-3#shape")
+        let third = await used.accounts.last
+        XCTAssertNotEqual(third, original)
+        _ = await pool.shutdown()
+    }
+
+    private func twoAccountPool() -> (PoolCoordinator, LifecycleFactory, UsedAccounts, PoolAccount, PoolAccount) {
+        let clock = LifecycleClock(), factory = LifecycleFactory(), used = UsedAccounts()
+        let window = { (used: Double) in [QuotaWindow(id: "five_hour", usedPercent: used, observedAt: clock.now, resetsAt: clock.now.addingTimeInterval(3 * 3600)),
+                                          QuotaWindow(id: "seven_day", usedPercent: used, observedAt: clock.now, resetsAt: clock.now.addingTimeInterval(5 * 86400))] }
+        let first = PoolAccount(email: "one@example.com", plan: "Pro", state: .ready, windows: window(40))
+        let second = PoolAccount(email: "two@example.com", plan: "Pro", state: .ready, windows: window(50))
+        let pool = PoolCoordinator(accounts: [first, second], maximumWorkers: 4, idleTimeout: 600, idleKeep: 600, roomWait: 0,
+                                   now: { clock.now }, factory: { account, _ in await used.add(account.id); return await factory.make() })
+        return (pool, factory, used, first, second)
+    }
+    private func better(_ account: PoolAccount) -> PoolAccount {
+        var account = account
+        for index in account.windows.indices { account.windows[index].usedPercent = 0 }
+        return account
+    }
+    private func followUp(_ request: BridgeRequest) -> BridgeRequest {
+        var next = request
+        next.messages += [.init(role: "assistant", content: .array([.object(["type": .string("text"), "text": .string("Reply")])])),
+                          .init(role: "user", content: .string("Continue"))]
+        return next
+    }
+
+    /// Every run state change and every account pick is in the log, so a run that cannot take
+    /// its next turn, or a conversation that moved, can be explained from the log alone.
+    func testRunStatesAndPicksAreLoggedOncePerChange() async throws {
+        let lines = LoggedLines()
+        Diagnostics.install { lines.add($0) }
+        defer { Diagnostics.install(nil) }
+        let (pool, factory, _, _, _) = twoAccountPool()
+        _ = try await drain(pool, ask("First"), id: "conversation")
+        let worker = try await factory.worker(0)
+        let run = Diagnostics.id(worker.id)
+        await worker.needAttention()
+        try await lifecycleWait { lines.all.contains { $0.contains("event=coordinator.state run=\(run)") && $0.contains("to=attention") } }
+        let states = lines.all.filter { $0.hasPrefix("event=coordinator.state run=\(run)") }
+        XCTAssertTrue(states.first?.contains("from=new to=starting") == true || states.first?.contains("from=new to=running") == true, "\(states)")
+        XCTAssertEqual(states.filter { $0.contains("to=attention") }.count, 1)
+        let pick = try XCTUnwrap(lines.all.first { $0.hasPrefix("event=coordinator.pick") })
+        XCTAssertTrue(pick.contains("kept=none") && pick.contains("candidates="), pick)
+        XCTAssertTrue(lines.all.contains { $0.hasPrefix("event=coordinator.decision reason=") && $0.contains(" run=\(run) ") },
+                      lines.all.filter { $0.contains("decision") }.joined(separator: "\n"))
+        _ = await pool.shutdown()
+    }
+
     func testActiveResponseIsNotRetiredToMakeSpace() async throws {
         let factory = LifecycleFactory(mode: .held)
         let pool = coordinator(factory, capacity: 1)
@@ -207,6 +294,15 @@ final class CoordinatorLifecycleTests: XCTestCase {
     }
 }
 
+private final class LoggedLines: @unchecked Sendable {
+    private let lock = NSLock(); private var values: [String] = []
+    func add(_ line: String) { lock.withLock { values.append(line) } }
+    var all: [String] { lock.withLock { values } }
+}
+private actor UsedAccounts {
+    private(set) var accounts: [UUID] = []
+    func add(_ id: UUID) { accounts.append(id) }
+}
 private actor LifecycleFactory {
     enum Mode { case reply, tool, held }
     private var workers: [LifecycleWorker] = []
@@ -260,6 +356,7 @@ private actor LifecycleWorker: SessionWorker {
     func cancel() { cancelled = true; held?.finish(throwing: BridgeFailure.cancelled); held = nil }
     func close() -> Bool { closeAttempts += 1; if canClose { observer?.yield(.ended); observer?.finish() }; return canClose }
     func simulateExit() { observer?.yield(.ended); observer?.finish() }
+    func needAttention() { observer?.yield(.attention) }
 }
 private final class LifecycleClock: @unchecked Sendable {
     private let lock = NSLock()

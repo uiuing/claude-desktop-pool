@@ -96,6 +96,12 @@ public actor PoolCoordinator: BridgeBackend {
     /// edited) still goes back to that account while it can take it. Set when a run for the conversation
     /// starts, so a handoff to another account moves it at once, and renewed at each reply. Tags only.
     private var recentAccounts: [String: (account: UUID, until: Date)] = [:]
+    /// Each run's state as last written to the log, so every change is logged once.
+    private var loggedStates: [UUID: SessionState] = [:]
+    private var healthTicks = 0
+    /// The same, by how a conversation began: Desktop starts a new client session for a
+    /// conversation after an error or a restart, and its next turns then carry a new session id.
+    private var recentOpenings: [String: (account: UUID, until: Date)] = [:]
     private static let recentAccountsMost = 256
     private static let shelfMost = 64
     private static let unconfirmedRest: TimeInterval = 60
@@ -130,6 +136,28 @@ public actor PoolCoordinator: BridgeBackend {
         self.parkLongest = max(0, parkLongest); self.runTimeout = max(1, runTimeout); self.parkedMost = max(0, parkedMost)
         self.duplicateWait = max(0, duplicateWait)
     }
+    /// Which account each recent conversation is on, by content-free tags only, so a restart of the
+    /// app keeps conversations on their accounts and their prompt caches.
+    private struct Remembered: Codable { var conversations: [String: Entry]; var openings: [String: Entry]
+        struct Entry: Codable { var account: UUID; var until: Date } }
+    public func rememberedAccounts() -> Data? {
+        let date = now()
+        for binding in bindings.values { rememberAccount(binding) }
+        func pack(_ table: [String: (account: UUID, until: Date)]) -> [String: Remembered.Entry] {
+            table.filter { $0.value.until > date }.mapValues { .init(account: $0.account, until: $0.until) }
+        }
+        return try? JSONEncoder().encode(Remembered(conversations: pack(recentAccounts), openings: pack(recentOpenings)))
+    }
+    public func restoreRememberedAccounts(_ data: Data) {
+        guard let saved = try? JSONDecoder().decode(Remembered.self, from: data) else { return }
+        let date = now(), known = Set(accounts.map(\.id))
+        for (key, entry) in saved.conversations where entry.until > date && known.contains(entry.account) && recentAccounts[key] == nil {
+            recentAccounts[key] = (entry.account, entry.until)
+        }
+        for (key, entry) in saved.openings where entry.until > date && known.contains(entry.account) && recentOpenings[key] == nil {
+            recentOpenings[key] = (entry.account, entry.until)
+        }
+    }
     public func updateAccounts(_ accounts: [PoolAccount]) { self.accounts = accounts }
     public func updateRoutingPolicy(_ policy: RoutingPolicy) { routingPolicy = policy }
     public func setPaused(_ paused: Bool) { self.paused = paused }
@@ -161,6 +189,19 @@ public actor PoolCoordinator: BridgeBackend {
         (request.tools ?? []).isEmpty && !request.messages.contains { $0.role == "assistant" }
     }
     /// The account a conversation's latest run is on, while one is.
+    /// A content-free tag of a conversation's first exchange, once it has one: its first message
+    /// and the reply to it. Nil before a reply, so two conversations that open alike stay apart.
+    static func openingTag(_ messages: [BridgeMessage]) -> String? {
+        guard messages.count >= 2, messages[0].role == "user", messages[1].role == "assistant" else { return nil }
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        guard let data = try? encoder.encode(Array(messages.prefix(2))) else { return nil }
+        return Diagnostics.tag(String(decoding: data, as: UTF8.self))
+    }
+    private func openingAccount(of request: BridgeRequest) -> UUID? {
+        // Only a turn that goes on from a reply: a first message alone is a new conversation.
+        guard request.messages.count >= 3, let tag = Self.openingTag(request.messages), let recent = recentOpenings[tag], recent.until > now() else { return nil }
+        return recent.account
+    }
     private func leadAccount(of conversation: String) -> UUID? {
         if let live = bindings.values.filter({ $0.session.conversation == conversation && $0.session.state != .ended })
             .max(by: { $0.lastActive < $1.lastActive })?.session.accountID { return live }
@@ -172,6 +213,13 @@ public actor PoolCoordinator: BridgeBackend {
         let date = now()
         recentAccounts[conversation] = (binding.session.accountID, binding.lastActive.addingTimeInterval(idleTimeout))
         recentAccounts = recentAccounts.filter { $0.value.until > date }
+        if let opening = Self.openingTag(binding.history) {
+            recentOpenings[opening] = (binding.session.accountID, binding.lastActive.addingTimeInterval(idleTimeout))
+        }
+        recentOpenings = recentOpenings.filter { $0.value.until > date }
+        while recentOpenings.count > Self.recentAccountsMost, let oldest = recentOpenings.min(by: { $0.value.until < $1.value.until }) {
+            recentOpenings.removeValue(forKey: oldest.key)
+        }
         while recentAccounts.count > Self.recentAccountsMost, let oldest = recentAccounts.min(by: { $0.value.until < $1.value.until }) {
             recentAccounts.removeValue(forKey: oldest.key)
         }
@@ -235,19 +283,19 @@ public actor PoolCoordinator: BridgeBackend {
                     "conversation": Diagnostics.tag(requestAlias), "messages": String(request.messages.count)])
                 bindingID = try await create(request: request, model: model, generation: generation)
             } else {
-                guard binding.session.state == .idle else { throw BridgeFailure.permissionRequired }
                 let lowQuota = shouldHandoff(binding, model: model)
                 let turn = compatible(binding, request: request) ? nextTurn(of: binding, request: request, alias: requestAlias) : nil
-                if let turn, eligible(binding, model: model), !lowQuota {
+                if binding.session.state != .idle {
+                    Diagnostics.record("coordinator.route", ["decision": "run_not_idle", "state": binding.session.state.rawValue,
+                        "conversation": Diagnostics.tag(requestAlias), "messages": String(request.messages.count)])
+                }
+                if binding.session.state == .idle, let turn, eligible(binding, model: model), !lowQuota {
                     bindingID = existing; workerRequest = turn
                     route(id: existing, model: model.id, reason: .sessionAffinity)
                 } else {
                     if lowQuota { route(id: existing, model: model.id, reason: .lowQuota) }
                     else if !eligible(binding, model: model) { route(id: existing, model: model.id, reason: unavailableReason(binding, model: model)) }
-                    guard await binding.worker.close() else { throw BridgeFailure.permissionRequired }
-                    remove(existing)
-                    bindingID = try await create(request: request, model: model, generation: generation,
-                        excluding: lowQuota ? [binding.session.accountID] : [], minimumHeadroom: lowQuota ? routingPolicy.reservePercent : nil)
+                    bindingID = try await replaceRun(existing, alias: requestAlias, request: request, model: model, generation: generation, lowQuota: lowQuota)
                 }
             }
         } else {
@@ -263,10 +311,7 @@ public actor PoolCoordinator: BridgeBackend {
                 }
                 else {
                     route(id: only, model: model.id, reason: lowQuota ? .lowQuota : unavailableReason(candidate, model: model))
-                    guard await candidate.worker.close() else { throw BridgeFailure.permissionRequired }
-                    remove(only)
-                    bindingID = try await create(request: request, model: model, generation: generation,
-                        excluding: lowQuota ? [candidate.session.accountID] : [], minimumHeadroom: lowQuota ? routingPolicy.reservePercent : nil)
+                    bindingID = try await replaceRun(only, alias: requestAlias, request: request, model: model, generation: generation, lowQuota: lowQuota)
                 }
             } else if let (entry, turn) = takeShelved(request, model: model) {
                 // The conversation's next turn goes on from its run's own session, on its
@@ -300,7 +345,7 @@ public actor PoolCoordinator: BridgeBackend {
         bindings[bindingID] = binding; aliases[requestAlias] = bindingID
         active[generation]?.binding = bindingID
         handedOff = true
-        onUpdate(.session(binding.session))
+        logState(bindingID, binding); onUpdate(.session(binding.session))
         let stream = AsyncThrowingStream<BridgeEvent, Error> { continuation in
             let task = Task { [weak self] in
                 await self?.serve(bindingID, request: request, workerRequest: workerRequest, replay: replay, model: model,
@@ -471,6 +516,10 @@ public actor PoolCoordinator: BridgeBackend {
         sameIdentity(binding) && PoolRouting.candidates(accounts, model: model.cliAlias, excluding: restingAccounts(), policy: routingPolicy)
             .contains { $0.id == binding.session.accountID }
     }
+    /// Conversations each account serves now, from the runs that have not been stopped.
+    private func conversationLoad() -> [UUID: Int] {
+        PoolRouting.conversationLoad(bindings.values.filter { !$0.stopped }.map(\.session))
+    }
     private func restingAccounts() -> Set<UUID> {
         let date = now()
         resting = resting.filter { $0.value > date }
@@ -526,6 +575,33 @@ public actor PoolCoordinator: BridgeBackend {
         }
     }
 
+    /// A conversation's run that cannot take its next turn ends, and the turn starts a new run told
+    /// the whole conversation. Unless the account is low, the new run stays on the same account, so
+    /// the conversation keeps its prompt cache. A run that does not leave its idle prompt normally
+    /// gets the client's own Ctrl-C; one that still does not end is kept for the user and reported,
+    /// and the turn goes on without it rather than being refused.
+    private func replaceRun(_ id: UUID, alias: String, request: BridgeRequest, model: PoolModel, generation: UInt64,
+                            lowQuota: Bool) async throws -> UUID {
+        guard let binding = bindings[id] else { return try await create(request: request, model: model, generation: generation) }
+        let account = binding.session.accountID
+        var ended = await binding.worker.close()
+        if !ended { ended = await binding.worker.requestExit() }
+        if ended { remove(id) }
+        else {
+            bindings[id]?.stopped = true; bindings[id]?.session.state = .attention
+            if aliases[alias] == id { aliases.removeValue(forKey: alias) }
+            publish(id)
+        }
+        Diagnostics.record("coordinator.route", ["decision": "run_replaced", "ended": ended ? "yes" : "no",
+            "same_account": lowQuota ? "no" : "tried", "conversation": Diagnostics.tag(alias)])
+        if lowQuota {
+            return try await create(request: request, model: model, generation: generation,
+                                    excluding: [account], minimumHeadroom: routingPolicy.reservePercent)
+        }
+        do { return try await create(request: request, model: model, generation: generation, only: account) }
+        catch BridgeFailure.unavailable { return try await create(request: request, model: model, generation: generation) }
+    }
+
     /// `continuing`: the run is for tool results already delivered, which pause still lets finish.
     private func create(request: BridgeRequest, model: PoolModel, generation: UInt64, excluding: Set<UUID> = [], minimumHeadroom: Double? = nil,
                         reasonOverride: RoutingReason? = nil, continuing: Bool = false, only: UUID? = nil) async throws -> UUID {
@@ -540,11 +616,12 @@ public actor PoolCoordinator: BridgeBackend {
         var selection: (PoolAccount, any SessionWorker)?
         var rejectedAccount = false
         let conversation = active[generation].flatMap { Self.conversationTag($0.alias) }
-        let lead = conversation.flatMap { leadAccount(of: $0) }
+        let lead = conversation.flatMap { leadAccount(of: $0) } ?? (Self.isOneOff(request) ? nil : openingAccount(of: request))
         while selection == nil {
             guard !Task.isCancelled, !cancelledGenerations.contains(generation) else { throw BridgeFailure.cancelled }
             guard !blocked() else { throw BridgeFailure.paused }
-            var candidates = PoolRouting.candidates(accounts, model: model.cliAlias, excluding: excluded.union(restingAccounts()), policy: routingPolicy)
+            var candidates = PoolRouting.candidates(accounts, model: model.cliAlias, excluding: excluded.union(restingAccounts()), now: now(),
+                                                    policy: routingPolicy, load: conversationLoad())
                 .filter { only == nil || $0.id == only }
             // A side request of a conversation (a title, a summary) goes to the account the conversation is on
             // while that account would take a new conversation, so one conversation uses one account.
@@ -556,6 +633,15 @@ public actor PoolCoordinator: BridgeBackend {
                 guard let minimumHeadroom else { return true }
                 return PoolRouting.assessment(candidate, model: model.cliAlias).headroom.map { $0 > minimumHeadroom } ?? false
             }) else { route(model: model.id, reason: .noAvailableAccount); throw BridgeFailure.unavailable }
+            // Why this account: what the conversation asked for and how the others scored.
+            let load = conversationLoad(), date = now()
+            let scored = candidates.prefix(5).map { candidate in
+                Diagnostics.id(candidate.id) + ":" + (PoolRouting.score(candidate, model: model.cliAlias, now: date, load: load[candidate.id] ?? 0)
+                    .map { String(Int($0.rounded())) } ?? "?") + "/" + String(load[candidate.id] ?? 0)
+            }
+            Diagnostics.record("coordinator.pick", ["account": Diagnostics.id(account.id), "conversation": conversation ?? "-",
+                "kept": lead.map { $0 == account.id ? "yes" : "no:" + Diagnostics.id($0) } ?? "none", "only": only.map(Diagnostics.id) ?? "-",
+                "excluded": String(excluded.count), "candidates": scored.joined(separator: ",")])
             do { selection = (account, try await factory(account, model)) }
             catch BridgeFailure.accountUnavailable(let state) {
                 markUnavailable(AccountScope(account), state: state)
@@ -578,6 +664,7 @@ public actor PoolCoordinator: BridgeBackend {
         observationTasks[worker.id] = Task { [weak self] in
             for await event in observations { await self?.observe(event, sessionID: worker.id) }
         }
+        if let created = bindings[worker.id] { logState(worker.id, created) }
         onUpdate(.session(session))
         startRetirementTimer()
         guard !blocked(), !Task.isCancelled, !cancelledGenerations.contains(generation), let binding = bindings[worker.id], eligible(binding, model: model) else {
@@ -692,8 +779,8 @@ public actor PoolCoordinator: BridgeBackend {
                                             generationSeconds: seconds > 0 ? seconds : nil))
                             // Which run on which account read the prompt cache or wrote it again: tags and counts only.
                             Diagnostics.record("coordinator.usage", [
-                                "conversation": Diagnostics.tag(alias), "run": Diagnostics.tag(id.uuidString),
-                                "account": Diagnostics.tag(binding.accountAtStart.id.uuidString), "replay": replay ? "yes" : "no",
+                                "conversation": Diagnostics.tag(alias), "run": Diagnostics.id(id),
+                                "account": Diagnostics.id(binding.accountAtStart.id), "replay": replay ? "yes" : "no",
                                 "cache_r": String(max(0, usage.cacheReadInputTokens ?? 0)),
                                 "cache_w": String(max(0, usage.cacheCreationInputTokens ?? 0))])
                         }
@@ -878,12 +965,47 @@ public actor PoolCoordinator: BridgeBackend {
         bindings[id]?.workState = state
         onUpdate(.workState(scope: AccountScope(binding.accountAtStart), sessionID: id, state: state, at: date))
     }
-    private func publish(_ id: UUID) { if let session = bindings[id]?.session { onUpdate(.session(session)) } }
+    private func publish(_ id: UUID) {
+        guard let binding = bindings[id] else { return }
+        logState(id, binding)
+        onUpdate(.session(binding.session))
+    }
+    /// Every change of a run's state, where it is published: what it was, what it is, and the
+    /// flags that decide whether it can take its conversation's next turn.
+    private func logState(_ id: UUID, _ binding: Binding) {
+        let state = binding.session.state
+        guard loggedStates[id] != state else { return }
+        Diagnostics.record("coordinator.state", ["run": Diagnostics.id(id), "account": Diagnostics.id(binding.session.accountID),
+            "from": loggedStates[id]?.rawValue ?? "new", "to": state.rawValue, "busy": binding.busy ? "yes" : "no",
+            "pending": String(binding.pending.count), "stopped": binding.stopped ? "yes" : "no", "retiring": binding.retiring ? "yes" : "no"])
+        loggedStates[id] = state
+    }
     private func route(id: UUID? = nil, model: String, reason: RoutingReason) {
-        onUpdate(.route(RouteDecision(sessionID: id, accountID: id.flatMap { bindings[$0]?.session.accountID },
-                                      model: model, reason: reason, strategy: routingPolicy.strategy)))
+        let account = id.flatMap { bindings[$0]?.session.accountID }
+        Diagnostics.record("coordinator.decision", ["reason": reason.rawValue, "run": id.map(Diagnostics.id) ?? "-",
+                                                    "account": account.map(Diagnostics.id) ?? "-", "model": model])
+        onUpdate(.route(RouteDecision(sessionID: id, accountID: account, model: model, reason: reason, strategy: routingPolicy.strategy)))
+    }
+    /// Every five minutes while runs exist: how many in each state, the longest busy and parked.
+    private func logHealth() {
+        healthTicks += 1
+        guard healthTicks % 5 == 0, !bindings.isEmpty else { return }
+        let date = now(), runs = Array(bindings.values)
+        func count(_ state: SessionState) -> String { String(runs.filter { $0.session.state == state }.count) }
+        let busiest = runs.filter(\.busy).map { date.timeIntervalSince($0.lastActive) }.max()
+        let parked = runs.compactMap(\.parkedAt).map { date.timeIntervalSince($0) }.max()
+        Diagnostics.record("coordinator.health", ["runs": String(runs.count), "running": count(.running), "waiting": count(.waiting),
+            "idle": count(.idle), "attention": count(.attention), "stopped": String(runs.filter(\.stopped).count),
+            "busy_longest_s": busiest.map { String(Int($0)) } ?? "-", "parked_longest_s": parked.map { String(Int($0)) } ?? "-",
+            "accounts": String(Set(runs.map(\.session.accountID)).count)])
     }
     private func remove(_ id: UUID) {
+        if let binding = bindings[id] {
+            Diagnostics.record("coordinator.state", ["run": Diagnostics.id(id), "account": Diagnostics.id(binding.session.accountID),
+                "from": loggedStates[id]?.rawValue ?? "new", "to": "removed", "busy": binding.busy ? "yes" : "no",
+                "pending": String(binding.pending.count), "stopped": binding.stopped ? "yes" : "no", "retiring": binding.retiring ? "yes" : "no"])
+        }
+        loggedStates.removeValue(forKey: id)
         setWorkState(id, state: .ended)
         observationTasks.removeValue(forKey: id)?.cancel()
         bindings.removeValue(forKey: id)
@@ -1002,6 +1124,7 @@ public actor PoolCoordinator: BridgeBackend {
                 try? await Task.sleep(nanoseconds: 60_000_000_000)
                 guard !Task.isCancelled, self != nil else { return }
                 await self?.retireIdle()
+                await self?.logHealth()
             }
         }
     }

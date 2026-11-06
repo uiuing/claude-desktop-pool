@@ -253,7 +253,13 @@ final class PoolAppModel {
     var preferredColorScheme: ColorScheme? {
         switch preferences.appearance { case "light": return .light; case "dark": return .dark; default: return nil }
     }
-    var readyAccounts: [PoolAccount] { PoolRouting.candidates(snapshot.accounts, model: PoolRouting.anyModel, now: now, policy: preferences.routingPolicy) }
+    var readyAccounts: [PoolAccount] {
+        PoolRouting.candidates(snapshot.accounts, model: PoolRouting.anyModel, now: now, policy: preferences.routingPolicy, load: conversationLoad)
+    }
+    /// Conversations each account serves now, counted as routing counts them.
+    var conversationLoad: [UUID: Int] {
+        PoolRouting.conversationLoad(snapshot.sessions)
+    }
     var quotaSummary: QuotaPoolSummary { QuotaPoolSummary.evaluate(snapshot.accounts, model: PoolRouting.anyModel, now: now) }
     var confirmedReadyCount: Int { quotaSummary.usableAccounts }
     var planQuotas: [PlanQuota] {
@@ -296,7 +302,9 @@ final class PoolAppModel {
         return figures.session == nil && figures.week == nil ? nil : figures
     }
     /// Accounts best first: usable by what is left, then unread, then coming back soonest, unusable last.
-    var rankedAccounts: [PoolAccount] { AccountOrdering.ranked(snapshot.accounts, now: now) }
+    var rankedAccounts: [PoolAccount] {
+        AccountOrdering.ranked(snapshot.accounts, now: now, policy: preferences.routingPolicy, load: conversationLoad)
+    }
     /// The account a turn moves to when its conversation's account runs low: the first usable account
     /// no conversation is on. Its quota is confirmed before the move; it is not shown as a label.
     var nextAccount: PoolAccount? {

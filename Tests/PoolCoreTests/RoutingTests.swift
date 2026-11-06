@@ -93,6 +93,27 @@ final class RoutingTests: XCTestCase {
             policy: .init(strategy: .ordered, accountOrder: [b.id, a.id])).first?.id, b.id)
     }
 
+    /// A real pool (11-06): the account with 3 conversations and the lowest of its two figures
+    /// highest kept taking new ones, while one with 94% of its week and 57% of its 5-hour limit waited.
+    func testNewConversationsWeighBothLimitsTheirResetsAndLoad() {
+        func pool(_ email: String, session: Double, sessionReset: TimeInterval, week: Double, weekReset: TimeInterval) -> PoolAccount {
+            .init(email: email, plan: "Pro", state: .ready, windows: [
+                .init(id: "five_hour", usedPercent: 100 - session, observedAt: now, resetsAt: now.addingTimeInterval(sessionReset)),
+                .init(id: "seven_day", usedPercent: 100 - week, observedAt: now, resetsAt: now.addingTimeInterval(weekReset))], createdAt: now)
+        }
+        let busy = pool("u@example.com", session: 60, sessionReset: 4800, week: 65, weekReset: 6 * 86400)
+        let roomy = pool("m@example.com", session: 57, sessionReset: 10_000, week: 94, weekReset: 7 * 86400)
+        let fresh = pool("g@example.com", session: 100, sessionReset: 3000, week: 58, weekReset: 2 * 86400)
+        let ranked = PoolRouting.candidates([busy, roomy, fresh], model: "sonnet", now: now, load: [busy.id: 3]).map(\.email)
+        XCTAssertEqual(ranked.last, "u@example.com", "Three conversations already on it weigh against it")
+        XCTAssertNotEqual(ranked.first, "u@example.com")
+        // The week does not override the 5-hour limit: an almost spent 5-hour limit is not chosen
+        // over a full one just for a larger week.
+        let spentSession = pool("w@example.com", session: 15, sessionReset: 4 * 3600, week: 95, weekReset: 6 * 86400)
+        let fullSession = pool("s@example.com", session: 100, sessionReset: 3600, week: 60, weekReset: 6 * 86400)
+        XCTAssertEqual(PoolRouting.candidates([spentSession, fullSession], model: "sonnet", now: now).first?.email, "s@example.com")
+    }
+
     func testUnknownHeadroomRanksBehindMeasuredHeadroomWithoutBecomingZeroQuota() {
         let unknown = account()
         let known = account("b•••@gmail.com", week: 90)
@@ -348,6 +369,54 @@ final class RoutingTests: XCTestCase {
         let ranked = AccountOrdering.ranked([signedOut, weekUsed, later, soon, unread, low, high], now: now)
         XCTAssertEqual(ranked.compactMap(\.email), ["{{EMAIL_whlbyowf}}", "{{EMAIL_tzwtqgad}}", "{{EMAIL_yyfzvrc5}}", "{{EMAIL_pvn5usjf}}",
                                                     "{{EMAIL_wk11vsss}}", "{{EMAIL_cfwurx73}}", "{{EMAIL_bzbaq7ca}}"])
+    }
+
+    /// A real pool (11-06): a conversation's new run started while the run it replaced wound down, so
+    /// its account counted two conversations for five minutes and sank below accounts with far less week.
+    func testAConversationCountsOnceWhileItsRunsOverlap() {
+        let busy = account("busy@example.com", session: 54, week: 12)
+        let spentWeek = account("spent-week@example.com", session: 0, week: 95)
+        let replaced = PoolSession(accountID: busy.id, name: "a", model: "opus", state: .idle, conversation: "9b783dc39a06f580")
+        let current = PoolSession(accountID: busy.id, name: "b", model: "opus", state: .running, conversation: "9b783dc39a06f580")
+        let title = PoolSession(accountID: busy.id, name: "c", model: "haiku", state: .running, conversation: "9b783dc39a06f580", isOneOff: true)
+        let ended = PoolSession(accountID: spentWeek.id, name: "d", model: "opus", state: .ended, conversation: "2510c47caead5add")
+        let unnamed = PoolSession(accountID: spentWeek.id, name: "e", model: "opus", state: .running)
+        let load = PoolRouting.conversationLoad([replaced, current, title, ended, unnamed])
+        XCTAssertEqual(load[busy.id], 1, "Two live runs of one conversation are one conversation; a one-off ask is none")
+        XCTAssertEqual(load[spentWeek.id], 1, "An ended run does not count; a run with no conversation counts alone")
+        let ranked = AccountOrdering.ranked([spentWeek, busy], now: now, load: [busy.id: 1])
+        XCTAssertEqual(ranked.first?.id, busy.id, "46/88 with one conversation leads 100/5")
+    }
+
+    /// A real pool (11-06): 100/3, 100/2 and 100/3 within half a point of each other were taken as equal
+    /// and kept their saved order, so 2% of the week sat between two accounts with 3%.
+    func testCloseScoresStillOrderByScore() {
+        let first = account("first@example.com", session: 0, week: 97)
+        let least = account("least@example.com", session: 0, week: 98)
+        let second = account("second@example.com", session: 0, week: 97)
+        let ranked = AccountOrdering.ranked([first, least, second], now: now)
+        XCTAssertEqual(ranked.map(\.id), [first.id, second.id, least.id])
+        XCTAssertEqual(PoolRouting.candidates([least, first], model: PoolRouting.anyModel, now: now).first?.id, first.id)
+    }
+
+    func testUsableAccountsListInTheOrderRoutingGivesNewConversations() {
+        // Remaining 54/94 with a conversation, 52/64, 97/51 with a conversation, 100/41: the smaller
+        // figure alone ranks them in that order, while routing weighs both limits and each conversation.
+        let busyHigh = account("busy-high@example.com", session: 46, week: 6)
+        let middle = account("middle@example.com", session: 48, week: 36)
+        let busyFresh = account("busy-fresh@example.com", session: 3, week: 49)
+        let fresh = account("fresh@example.com", session: 0, week: 59)
+        let accounts = [busyHigh, middle, busyFresh, fresh]
+        let load = [busyHigh.id: 1, busyFresh.id: 1]
+        let routed = PoolRouting.candidates(accounts, model: PoolRouting.anyModel, now: now, load: load)
+        let ranked = AccountOrdering.ranked(accounts, now: now, load: load)
+        XCTAssertEqual(ranked.map(\.id), routed.map(\.id), "The list shows usable accounts in routing order")
+        XCTAssertEqual(ranked.first?.id, routed.first?.id, "The first account listed is where a new conversation goes")
+        let bySmallerFigure = accounts.sorted {
+            (PoolRouting.assessment($0, model: PoolRouting.anyModel, now: now).headroom ?? -1) >
+                (PoolRouting.assessment($1, model: PoolRouting.anyModel, now: now).headroom ?? -1)
+        }
+        XCTAssertNotEqual(ranked.map(\.id), bySmallerFigure.map(\.id), "These accounts are ordered differently by the smaller figure alone")
     }
 
     func testExplicitNotApplicableIsRetainedWithoutInventingASessionReset() {

@@ -399,17 +399,22 @@ public struct QuotaPoolSummary: Equatable, Sendable {
     }
 }
 
-/// Accounts best first: usable ones by what they have left, then the unread, then those coming
-/// back soonest, and those that cannot be used last. Ties keep their saved order.
+/// Accounts best first: usable ones in the order routing would give them a new conversation, then
+/// the unread, then those coming back soonest, and those that cannot be used last. Ties keep their
+/// saved order. The first account listed is the one a new conversation goes to.
 public enum AccountOrdering {
-    public static func ranked(_ accounts: [PoolAccount], now: Date) -> [PoolAccount] {
-        let keyed = accounts.enumerated().map { index, account -> (account: PoolAccount, standing: AccountStanding, left: Double, back: Date, index: Int) in
+    public static func ranked(_ accounts: [PoolAccount], now: Date, policy: RoutingPolicy = .init(), load: [UUID: Int] = [:]) -> [PoolAccount] {
+        let routed = PoolRouting.candidates(accounts, model: PoolRouting.anyModel, now: now, policy: policy, load: load)
+        let routeIndex = Dictionary(routed.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
+        let keyed = accounts.enumerated().map { index, account -> (account: PoolAccount, standing: AccountStanding, route: Int, left: Double, back: Date, index: Int) in
             var back = Date.distantFuture
             if case .scheduled(let date) = QuotaRecovery.account(account, model: PoolRouting.anyModel, now: now) { back = date }
-            return (account, account.standing(at: now), PoolRouting.assessment(account, model: PoolRouting.anyModel, now: now).headroom ?? -1, back, index)
+            return (account, account.standing(at: now), routeIndex[account.id] ?? Int.max,
+                    PoolRouting.assessment(account, model: PoolRouting.anyModel, now: now).headroom ?? -1, back, index)
         }
         return keyed.sorted { a, b in
             if a.standing != b.standing { return a.standing < b.standing }
+            if a.route != b.route { return a.route < b.route }
             if a.left != b.left { return a.left > b.left }
             if a.back != b.back { return a.back < b.back }
             return a.index < b.index
@@ -511,8 +516,46 @@ public enum PoolRouting {
     /// Assess only the limits that apply to every model. Pool readiness and totals are never
     /// filtered by one model; a model's own weekly limit is shown as its own figure.
     public static let anyModel = ""
+    /// Conversations each account serves now. A conversation counts once however many of its runs
+    /// are still live (a new run starts while the one it replaces winds down); a run that named no
+    /// conversation counts on its own, and one-off asks and ended runs not at all.
+    public static func conversationLoad(_ sessions: [PoolSession]) -> [UUID: Int] {
+        var seen: [UUID: Set<String>] = [:]
+        for session in sessions where session.state != .ended && !session.isOneOff {
+            seen[session.accountID, default: []].insert(session.conversation ?? session.id.uuidString)
+        }
+        return seen.mapValues(\.count)
+    }
+    /// How well an account suits a new conversation, from 0 to about 100. Nothing decides alone:
+    /// what is left of the 5-hour limit and of the week weigh about the same; a 5-hour limit that is
+    /// about to renew counts for a little more than it reads, a week about to reset makes its unused
+    /// share worth spending first, and each conversation already on the account weighs against it.
+    /// Nil when a limit's figure is unknown.
+    public static func score(_ account: PoolAccount, model: String, now: Date = Date(), load: Int = 0) -> Double? {
+        guard assessment(account, model: model, now: now).state == .available else { return nil }
+        let windows = account.windows.filter { $0.applies(to: model) && !$0.isNotApplicable(at: now) }
+        func left(_ id: String) -> (Double, TimeInterval?)? {
+            let found = windows.filter { $0.id == id || (id == "seven_day" && $0.id.hasPrefix("seven_day")) }
+            guard let tightest = found.compactMap({ w in w.remaining(at: now).map { (w, $0) } }).min(by: { $0.1 < $1.1 }) else { return nil }
+            let (w, value) = tightest
+            return (value, w.isRenewed(at: now) ? nil : w.resetsAt.map { max(0, $0.timeIntervalSince(now)) })
+        }
+        let session = left("five_hour"), week = left("seven_day")
+        guard session != nil || week != nil else { return nil }
+        var sessionValue = session?.0 ?? week!.0
+        if let (value, until) = session, let until {
+            // Up to half of what is used comes back in the score as the reset nears.
+            sessionValue = value + (100 - value) * 0.5 * max(0, 1 - until / (5 * 3600))
+        }
+        let weekValue = week?.0 ?? sessionValue
+        var expiring = 0.0
+        if let (value, until) = week, let until { expiring = value * max(0, 1 - until / (2 * 86400)) }
+        let total = 0.45 * sessionValue + 0.40 * weekValue + 0.15 * expiring - 8 * Double(max(0, load))
+        return total
+    }
     public static func candidates(_ accounts: [PoolAccount], model: String, preferred: UUID? = nil,
-                                  excluding: Set<UUID> = [], now: Date = Date(), policy: RoutingPolicy = .init()) -> [PoolAccount] {
+                                  excluding: Set<UUID> = [], now: Date = Date(), policy: RoutingPolicy = .init(),
+                                  load: [UUID: Int] = [:]) -> [PoolAccount] {
         let originalOrder = Dictionary(accounts.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
         let configuredOrder = Dictionary(policy.accountOrder.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: { first, _ in first })
         func rank(_ id: UUID) -> Int { configuredOrder[id] ?? (policy.accountOrder.count + (originalOrder[id] ?? accounts.count)) }
@@ -523,8 +566,9 @@ public enum PoolRouting {
         }.sorted { a, b in
             if (a.id == preferred) != (b.id == preferred) { return a.id == preferred }
             if policy.strategy == .mostHeadroom {
-                let qa = assessment(a, model: model, now: now).headroom, qb = assessment(b, model: model, now: now).headroom
-                if qa != qb { return (qa ?? -1) > (qb ?? -1) }
+                let qa = score(a, model: model, now: now, load: load[a.id] ?? 0), qb = score(b, model: model, now: now, load: load[b.id] ?? 0)
+                if (qa == nil) != (qb == nil) { return qa != nil }
+                if let qa, let qb, qa != qb { return qa > qb }
             }
             if rank(a.id) != rank(b.id) { return rank(a.id) < rank(b.id) }
             return a.id.uuidString < b.id.uuidString
