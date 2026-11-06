@@ -14,7 +14,7 @@ struct MenuPanel: View {
     private let terminateApplication: @MainActor () -> Void
     @MainActor init(model: PoolAppModel, navigator: PoolWindowNavigator? = nil,
          openMainWindow: (@MainActor () -> Void)? = nil, dismissMenu: (@MainActor () -> Void)? = nil,
-         terminateApplication: @escaping @MainActor () -> Void = { NSApp.terminate(nil) }) {
+         terminateApplication: @escaping @MainActor () -> Void = { PoolQuit.request() }) {
         self.model = model; self.navigator = navigator ?? .shared
         self.openMainWindow = openMainWindow; self.dismissMenu = dismissMenu
         self.terminateApplication = terminateApplication

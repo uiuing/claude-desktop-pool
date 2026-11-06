@@ -1371,7 +1371,7 @@ final class AppServices {
             .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
         guard let other = others.first else { return }
         other.activate()
-        NSApp.terminate(nil)
+        PoolQuit.request()
     }
 
     func showWindow() {

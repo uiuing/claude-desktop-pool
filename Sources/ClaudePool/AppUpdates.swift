@@ -39,7 +39,7 @@ final class AppUpdates {
     @ObservationIgnored private let installer: AppUpdateInstaller?
     @ObservationIgnored private var staged: URL?
     /// Asks the app to quit; the delegate swaps the bundle in once quitting is agreed.
-    @ObservationIgnored var restart: @MainActor () -> Void = { NSApp.terminate(nil) }
+    @ObservationIgnored var restart: @MainActor () -> Void = { PoolQuit.request() }
     /// A packaged copy in a folder the user can write updates itself; otherwise the releases page opens.
     var canInstall: Bool { installer?.canReplace == true }
     /// The newer version whose banner was closed; a later version shows its own.

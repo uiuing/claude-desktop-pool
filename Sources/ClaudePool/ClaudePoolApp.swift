@@ -97,6 +97,14 @@ private struct PoolMainWindowContent: View {
     }
 }
 
+/// Asks the app to quit from the main run loop's next turn. `terminate` waits for the delegate's
+/// answer in a nested run loop; called from inside a main-actor task, that loop cannot run the
+/// main queue the task is on, so the quit task never starts and the app hangs.
+@MainActor
+enum PoolQuit {
+    static func request() { RunLoop.main.perform { NSApp.terminate(nil) } }
+}
+
 @MainActor
 final class PoolApplicationDelegate: NSObject, NSApplicationDelegate {
     var services: AppServices?
