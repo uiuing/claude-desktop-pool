@@ -172,6 +172,12 @@ public struct OwnedWorkspace: Sendable {
         try remove(Entry(parent: parent, name: name, device: runInfo.st_dev, inode: runInfo.st_ino), directory: true)
     }
 
+    /// A tool call's id as it may name a result file: the one rule its writers and cleanup share.
+    public static func isCallID(_ id: String) -> Bool {
+        !id.isEmpty && id.utf8.count <= 128 &&
+            id.utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 95 }
+    }
+
     private static func generatedRunFile(_ name: String, scope: String) -> Bool {
         if name.hasPrefix("."), name.hasSuffix(".tmp") {
             var body = String(name.dropFirst().dropLast(4))
@@ -180,7 +186,8 @@ public struct OwnedWorkspace: Sendable {
         }
         switch scope {
         case "": return ["run.json", "tools.json", "tools-listed.json", "settings.json", "mcp.json", "instructions.txt", "cancelled"].contains(name)
-        case "results": return name.hasSuffix(".json") && UUID(uuidString: String(name.dropLast(5))) != nil
+        // Named by the call: the client's own tool-use id, or a UUID from the helper.
+        case "results": return name.hasSuffix(".json") && isCallID(String(name.dropLast(5)))
         case "events":
             guard name.hasSuffix(".json"), let separator = name.firstIndex(of: "-") else { return false }
             let instant = name[..<separator]

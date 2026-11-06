@@ -1195,19 +1195,20 @@ public actor OfficialSession: SessionWorker {
         fail(BridgeFailure.transport)
         return cleanRun()
     }
+    /// The client has ended, so the run has too, whatever its files do: a folder that cannot be
+    /// removed stays behind and is logged, and never keeps the run alive or holds up quitting.
     private func cleanRun() -> Bool {
-        do {
-            if directory != nil {
-                // the session's own record goes with its run: Pool never goes on from it later
-                if let accountDirectory, let workDirectory, plan != nil, !keepSession {
-                    ClaudeReplay.remove(config: accountDirectory, work: workDirectory, session: sessionKey)
-                }
-                tap?.remove(); tap = nil
-                try workspace.removeRun(id); directory = nil; attachmentFiles = []
+        if directory != nil {
+            // the session's own record goes with its run: Pool never goes on from it later
+            if let accountDirectory, let workDirectory, plan != nil, !keepSession {
+                ClaudeReplay.remove(config: accountDirectory, work: workDirectory, session: sessionKey)
             }
-            if !endedPublished { endedPublished = true; observer?.yield(.ended); observer?.finish() }
-            return true
-        } catch { observer?.yield(.attention); return false }
+            tap?.remove(); tap = nil
+            do { try workspace.removeRun(id); directory = nil; attachmentFiles = [] }
+            catch { Diagnostics.record("session.cleanup_failed", ["run": runTag, "error": (error as? RuntimeError).map { "\($0)" } ?? "error"]) }
+        }
+        if !endedPublished { endedPublished = true; observer?.yield(.ended); observer?.finish() }
+        return true
     }
     private func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
     private func clearOwnedDraft() async -> Bool {

@@ -113,7 +113,10 @@ final class CoordinatorLifecycleTests: XCTestCase {
     /// A real conversation (11-06): its run had answered, yet was not idle at the next turn, and the
     /// turn was refused; Desktop started a new client session and the conversation moved accounts.
     func testARunThatCannotTakeItsNextTurnIsReplacedOnTheSameAccount() async throws {
-        let (pool, factory, used, first, second) = twoAccountPool()
+        let ended = LoggedLines()
+        let (pool, factory, used, first, second) = twoAccountPool(onUpdate: { update in
+            if case .session(let session) = update, session.state == .ended { ended.add(session.id.uuidString) }
+        })
         let opening = ask("First")
         _ = try await drain(pool, opening, id: "conversation")
         let opened = await used.accounts
@@ -126,6 +129,8 @@ final class CoordinatorLifecycleTests: XCTestCase {
         _ = try await drain(pool, followUp(opening), id: "conversation")
         let accounts = await used.accounts
         XCTAssertEqual(accounts, [original, original])
+        // The replaced run leaves the app's list too, not just the coordinator.
+        XCTAssertTrue(ended.all.contains(worker.id.uuidString))
         _ = await pool.shutdown()
     }
 
@@ -153,14 +158,14 @@ final class CoordinatorLifecycleTests: XCTestCase {
         _ = await pool.shutdown()
     }
 
-    private func twoAccountPool() -> (PoolCoordinator, LifecycleFactory, UsedAccounts, PoolAccount, PoolAccount) {
+    private func twoAccountPool(onUpdate: @escaping @Sendable (EngineUpdate) -> Void = { _ in }) -> (PoolCoordinator, LifecycleFactory, UsedAccounts, PoolAccount, PoolAccount) {
         let clock = LifecycleClock(), factory = LifecycleFactory(), used = UsedAccounts()
         let window = { (used: Double) in [QuotaWindow(id: "five_hour", usedPercent: used, observedAt: clock.now, resetsAt: clock.now.addingTimeInterval(3 * 3600)),
                                           QuotaWindow(id: "seven_day", usedPercent: used, observedAt: clock.now, resetsAt: clock.now.addingTimeInterval(5 * 86400))] }
         let first = PoolAccount(email: "one@example.com", plan: "Pro", state: .ready, windows: window(40))
         let second = PoolAccount(email: "two@example.com", plan: "Pro", state: .ready, windows: window(50))
         let pool = PoolCoordinator(accounts: [first, second], maximumWorkers: 4, idleTimeout: 600, idleKeep: 600, roomWait: 0,
-                                   now: { clock.now }, factory: { account, _ in await used.add(account.id); return await factory.make() })
+                                   now: { clock.now }, factory: { account, _ in await used.add(account.id); return await factory.make() }, onUpdate: onUpdate)
         return (pool, factory, used, first, second)
     }
     private func better(_ account: PoolAccount) -> PoolAccount {

@@ -334,7 +334,7 @@ public actor PoolCoordinator: BridgeBackend {
         }
         guard var binding = bindings[bindingID], !binding.busy, !binding.retiring else { throw BridgeFailure.busy }
         guard !cancelledGenerations.contains(generation), !Task.isCancelled else {
-            if binding.pending.isEmpty, await binding.worker.close() { remove(bindingID) }
+            if binding.pending.isEmpty, await binding.worker.close() { bindings[bindingID]?.session.state = .ended; publish(bindingID); remove(bindingID) }
             else { bindings[bindingID]?.stopped = true; bindings[bindingID]?.session.state = .attention; publish(bindingID) }
             throw BridgeFailure.cancelled
         }
@@ -589,7 +589,7 @@ public actor PoolCoordinator: BridgeBackend {
         let account = binding.session.accountID
         var ended = await binding.worker.close()
         if !ended { ended = await binding.worker.requestExit() }
-        if ended { remove(id) }
+        if ended { bindings[id]?.session.state = .ended; publish(id); remove(id) }
         else {
             bindings[id]?.stopped = true; bindings[id]?.session.state = .attention
             if aliases[alias] == id { aliases.removeValue(forKey: alias) }
@@ -671,7 +671,7 @@ public actor PoolCoordinator: BridgeBackend {
         onUpdate(.session(session))
         startRetirementTimer()
         guard !blocked(), !Task.isCancelled, !cancelledGenerations.contains(generation), let binding = bindings[worker.id], eligible(binding, model: model) else {
-            if await worker.close() { remove(worker.id) }
+            if await worker.close() { bindings[worker.id]?.session.state = .ended; publish(worker.id); remove(worker.id) }
             else { bindings[worker.id]?.session.state = .attention; publish(worker.id) }
             if Task.isCancelled || cancelledGenerations.contains(generation) { throw BridgeFailure.cancelled }
             throw blocked() ? BridgeFailure.paused : BridgeFailure.unavailable

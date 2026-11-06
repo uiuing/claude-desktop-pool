@@ -110,7 +110,7 @@ final class WorkspaceTests: XCTestCase {
         let account = try workspace.accountDirectory(UUID()).appendingPathComponent("native-owned")
         try workspace.write(Data("keep".utf8), to: account)
         for name in ["tools.json", "tools-listed.json", "settings.json", "mcp.json", "instructions.txt", "cancelled",
-                     "events/1790000000000000-\(UUID().uuidString).json", "results/\(UUID().uuidString).json",
+                     "events/1790000000000000-\(UUID().uuidString).json", "results/\(UUID().uuidString).json", "results/toolu_01AbC-d_9.json",
                      "work/image-\(UUID().uuidString).png", ".\(UUID().uuidString).tmp", "events/.pool-\(UUID().uuidString).tmp"] {
             try workspace.write(Data("generated".utf8), to: directory.appendingPathComponent(name))
         }
@@ -151,6 +151,10 @@ final class WorkspaceTests: XCTestCase {
         try workspace.write(JSONSerialization.data(withJSONObject: ["session_id": UUID().uuidString]), to: marker)
         XCTAssertThrowsError(try workspace.removeRun(id)) { XCTAssertEqual($0 as? RuntimeError, .unsafePath) }
         _ = try run(id, in: workspace)
+        let oddResult = directory.appendingPathComponent("results/call.notes.json")
+        try workspace.write(Data("keep".utf8), to: oddResult)
+        XCTAssertThrowsError(try workspace.removeRun(id)) { XCTAssertEqual($0 as? RuntimeError, .unsafePath) }
+        try workspace.remove(oddResult)
         let unowned = directory.appendingPathComponent("work/notes.txt")
         try workspace.write(Data("keep notes".utf8), to: unowned)
         XCTAssertThrowsError(try workspace.removeRun(id)) { XCTAssertEqual($0 as? RuntimeError, .unsafePath) }

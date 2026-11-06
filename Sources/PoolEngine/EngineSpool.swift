@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import PoolCore
+import PoolRuntime
 
 enum EngineSpool {
     static let maximumBytes = 8 * 1024 * 1024
@@ -8,10 +9,7 @@ enum EngineSpool {
 
     /// A call's id as the helper names its result file by: Claude Code's own tool-use id
     /// (`toolu_…`), or one the helper made.
-    static func isCallID(_ id: String) -> Bool {
-        !id.isEmpty && id.utf8.count <= 128 &&
-            id.utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 95 }
-    }
+    static func isCallID(_ id: String) -> Bool { OwnedWorkspace.isCallID(id) }
 
     static func validate(_ directory: URL) throws -> UUID {
         var info = stat()

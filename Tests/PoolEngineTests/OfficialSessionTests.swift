@@ -434,6 +434,41 @@ final class OfficialSessionTests: XCTestCase {
         XCTAssertEqual(harness.exitCount, 0, "No slash command may be appended to an uncertain draft")
     }
 
+    func testAResultLeftUnderTheClientsToolIdIsCleanedUp() async throws {
+        let harness = try SessionHarness(); defer { harness.clean() }
+        let session = harness.session()
+        let reply = Task { try await collectEvents(try await session.events(for: self.request("Running"))) }
+        try await waitFor { harness.sentCount == 1 }
+        let run = try XCTUnwrap(harness.plan).runDirectory
+        // As a refused call leaves it when the run ends before the helper takes it.
+        try harness.workspace.write(Data("{}".utf8), to: run.appendingPathComponent("results/toolu_01AbCdEf.json"))
+        await session.cancel()
+        do { _ = try await reply.value } catch {}
+        harness.exited()
+        let closed = await session.requestExit()
+        XCTAssertTrue(closed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: run.path))
+    }
+
+    func testAFolderThatCannotBeRemovedDoesNotKeepAnEndedRunOpen() async throws {
+        let harness = try SessionHarness(); defer { harness.clean() }
+        let session = harness.session(), recorder = SessionObservations()
+        let observing = Task { for await observation in await session.observations() { await recorder.add(observation) } }
+        defer { observing.cancel() }
+        let reply = Task { try await collectEvents(try await session.events(for: self.request("Running"))) }
+        try await waitFor { harness.sentCount == 1 }
+        let run = try XCTUnwrap(harness.plan).runDirectory
+        let unknown = run.appendingPathComponent("work/notes.txt")
+        try harness.workspace.write(Data("keep".utf8), to: unknown)
+        await session.cancel()
+        do { _ = try await reply.value } catch {}
+        harness.exited()
+        // The client is gone: quitting goes on, and the file it does not recognize stays.
+        let closed = await session.requestExit()
+        XCTAssertTrue(closed)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unknown.path))
+    }
+
     func testAKeyThatFindsTheChildGoneStillEndsTheExit() async throws {
         let harness = try SessionHarness(); defer { harness.clean() }
         harness.exitAfterInterrupts = 2; harness.exitEventLags = true
