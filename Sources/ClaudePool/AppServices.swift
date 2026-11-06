@@ -1405,10 +1405,21 @@ final class AppServices {
             if wasRunning { await coordinator?.setPaused(false); model.snapshot.mode = .running; await updateQuotaAvailability() }
             showWindow(); return false
         }
+        // An account check is Pool's own and ends by itself (its client has a 15-second limit): quitting
+        // waits for it rather than asking the person to finish a sign-in they never started.
+        let checks = Array(accountChecks.values)
+        if !checks.isEmpty {
+            Diagnostics.record("app.quit", ["outcome": "waiting", "reason": "account_check", "checks": String(checks.count)])
+            for check in checks { _ = try? await check.value }
+        }
         // A sign-in is the person's own; Claude sessions are the pool's, and quitting ends them.
         guard loginProcesses.isEmpty, checkingAccounts.isEmpty else {
-            if let id = loginProcesses.keys.first { presentLogin(id) }
-            return await refuse("Finish or cancel signing in before quitting.", reason: loginProcesses.isEmpty ? "account_check" : "sign_in")
+            if let id = loginProcesses.keys.first {
+                presentLogin(id)
+                return await refuse("An account sign-in is still open. Finish or cancel it in the sign-in window, then quit again.", reason: "sign_in")
+            }
+            // A sign-in just finished and its account is being confirmed; it ends by itself in seconds.
+            return await refuse("Claude Pool is still confirming a new account's sign-in. Try quitting again in a few seconds.", reason: "sign_in_check")
         }
         // Observers and sessions end together: nothing here waits its turn behind a slow child.
         let quota = quotaService, pool = coordinator
