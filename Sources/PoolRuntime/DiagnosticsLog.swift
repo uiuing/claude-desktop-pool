@@ -3,11 +3,11 @@ import Darwin
 import PoolCore
 
 /// Pool's app log: one private file in the
-/// user's Logs folder, renamed to `pool.old.log` at 5 MiB so at most two files exist, folder 0700
+/// user's Logs folder, renamed to `pool.old.log` at 10 MiB so at most two files exist, folder 0700
 /// and file 0600. It holds what Pool did — counts, sizes, timings, reasons — and never what was
 /// said. A last scrub masks anything shaped like a credential.
 public final class DiagnosticsLog: @unchecked Sendable {
-    public static let limit = 5 << 20
+    public static let limit = 10 << 20
     public let directory: URL
     public var file: URL { directory.appendingPathComponent("pool.log") }
     private var old: URL { directory.appendingPathComponent("pool.old.log") }

@@ -94,7 +94,7 @@ public actor WarmUpScheduler {
             // Recorded before sending: a request cut short by a crash is not repeated at once.
             state.retryAt = now().addingTimeInterval(WarmUpPlanner.retryDelay(tries: state.tries))
             states[account.id] = state; persist()
-            if await perform(current) == nil, let daily = plan.daily {
+            if await perform(current, trigger: plan.daily != nil ? "daily" : "reset", windows: plan.windows, tries: state.tries) == nil, let daily = plan.daily {
                 states[account.id]?.daily = daily; persist()
             }
         }
@@ -106,7 +106,7 @@ public actor WarmUpScheduler {
         guard let account = accounts.first(where: { $0.id == id }), account.standing(at: now()) == .usable else {
             throw BridgeFailure.unavailable
         }
-        if let error = await perform(account) { throw error }
+        if let error = await perform(account, trigger: "manual", windows: [], tries: 1) { throw error }
         // The looks leave this stretch be while its reading catches up, as after one of their own.
         var state = states[id] ?? WarmUpState()
         if state.since == nil { state.since = now() }
@@ -115,18 +115,26 @@ public actor WarmUpScheduler {
     }
 
     /// Sends one warm-up; returns why it did not go through, nil when it did.
-    private func perform(_ account: PoolAccount) async -> Error? {
+    private func perform(_ account: PoolAccount, trigger: String, windows: [String], tries: Int) async -> Error? {
         sending = account.id
         defer { sending = nil }
         await update(.sending(account.id))
+        let began = Date()
+        func log(_ outcome: String) {
+            Diagnostics.record("warmup.sent", ["account": Diagnostics.id(account.id), "trigger": trigger,
+                "windows": windows.isEmpty ? "-" : windows.joined(separator: "+"), "try": String(tries), "outcome": outcome,
+                "ms": String(Int(Date().timeIntervalSince(began) * 1000))])
+        }
         do {
             try await send(account)
+            log("ok")
             let date = now()
             states[account.id, default: WarmUpState()].warmedAt = date
             persist()
             await update(.sent(account.id, at: date))
             return nil
         } catch {
+            log(String(describing: type(of: error)))
             let reason = (error as? LocalizedError)?.errorDescription ?? "The warm-up did not go through."
             await update(.failed(account.id, reason: reason))
             return error

@@ -339,6 +339,17 @@ final class AppServices {
                 model.quotaRefresh.removeValue(forKey: previous.id)
                 model.quotaCadence.removeValue(forKey: previous.id)
             }
+            // Every change of an account's state, at the one place the library changes.
+            for account in next.accounts {
+                let before = library.accounts.first { $0.id == account.id }
+                guard before?.state != account.state || before?.plan != account.plan else { continue }
+                Diagnostics.record("account.state", ["account": Diagnostics.id(account.id), "from": before?.state.rawValue ?? "new",
+                    "to": account.state.rawValue, "plan": account.plan ?? "-",
+                    "cooldown_s": account.cooldownUntil.map { String(Int($0.timeIntervalSinceNow)) } ?? "-"])
+            }
+            for account in library.accounts where !next.accounts.contains(where: { $0.id == account.id }) {
+                Diagnostics.record("account.state", ["account": Diagnostics.id(account.id), "from": account.state.rawValue, "to": "removed"])
+            }
             library = next; model.preferences = next.preferences; model.snapshot.accounts = next.accounts
             await coordinator?.updateAccounts(next.accounts)
             await coordinator?.updateRoutingPolicy(next.preferences.routingPolicy)
@@ -768,6 +779,8 @@ final class AppServices {
                     model.notice = model.t("{0} has a subscription again and is back in the pool.", model.displayEmail(status.email))
                 }
             }
+            Diagnostics.record("account.check", ["account": Diagnostics.id(id), "automatic": automatic ? "yes" : "no",
+                "outcome": status.subscription.rawValue, "from": before.map { "\($0.state)" } ?? "-", "to": after.map { "\($0.state)" } ?? "-"])
             return status
         } catch {
             let failure = error
@@ -782,6 +795,8 @@ final class AppServices {
                     next.accounts[index].state = error == .signedOut ? .signedOut : .needsAttention
                 }
             }
+            Diagnostics.record("account.check", ["account": Diagnostics.id(id), "automatic": automatic ? "yes" : "no",
+                "outcome": (failure as? RuntimeError).map { "\($0)" } ?? "error"])
             if !automatic { await quotaService?.resume(accountID: id) }
             throw failure
         }
@@ -1126,7 +1141,13 @@ final class AppServices {
             } else { await quotaService?.requestRefresh(accountID: current.id, reason: .recovery) }
             throw failure
         }
-        let readAfter = library.accounts.first(where: scope.matches)?.windows.map(\.observedAt).max()
+        let after = library.accounts.first(where: scope.matches)
+        let readAfter = after?.windows.map(\.observedAt).max()
+        // Whether the client's own figures showed the limits running, so a warm-up that a reading
+        // still shows idle is visible in the log.
+        let idle = after.map { account in account.windows.filter { WarmUpPlanner.idle($0, at: Date()) }.map(\.id).sorted() } ?? []
+        Diagnostics.record("warmup.reading", ["account": Diagnostics.id(current.id),
+            "read": readAfter == readBefore ? "none" : "status_line", "still_idle": idle.isEmpty ? "-" : idle.joined(separator: "+")])
         if readAfter == readBefore { await quotaService?.requestRefresh(accountID: current.id, reason: .manual) }
     }
 

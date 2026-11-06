@@ -98,6 +98,13 @@ public actor OfficialSession: SessionWorker {
     private var reply: ClaudeReply
     private var tap: ClaudeTap?
     private var tapReported: String?
+    /// This run's recent steps, written out when it fails, stalls or ends unexpectedly.
+    private var trace = Diagnostics.Trace()
+    /// When a reply open since then stopped hearing anything from the client, once logged.
+    private var stalledSince: Date?
+    /// A reply open this long with nothing from the client at all (no hook, stream event or
+    /// transcript row) is logged as stalled, with its steps. Only logged: nothing is ended for it.
+    static let stallAfter: TimeInterval = 90
     /// Stream events read and not yet told: they wait while a message typed in is not yet taken.
     private var streamQueue: [JSONValue] = []
     /// Transcript rows read and not yet handled: the first waits while its message's stream may
@@ -211,6 +218,7 @@ public actor OfficialSession: SessionWorker {
             }
         }
         responseID = token; deadline = results.isEmpty ? nil : Date().addingTimeInterval(timeout)
+        trace.note("reply.open:results=\(results.count)"); stalledSince = nil
         if pollTask != nil { startPolling() }
         reply.newReply(); replyCalls = 0
         // the turn may call what this request lets it, set at each continuation
@@ -467,7 +475,9 @@ public actor OfficialSession: SessionWorker {
     }
 
     private func failed(_ reason: String) {
+        trace.note("failed:" + reason)
         Diagnostics.record("session.failed", ["run": runTag, "reason": reason, "ms": String(Int(Date().timeIntervalSince(launchedAt) * 1000))])
+        Diagnostics.dump("session", subject: ("run", runTag), why: reason, trace: trace)
     }
 
     /// Waits once, at most readyTimeout, for the input box and the helper's tool list, answering
@@ -521,6 +531,7 @@ public actor OfficialSession: SessionWorker {
     /// the message, at most four times.
     private func type(_ pieces: [ClaudePrompt.Piece], busy: Bool, responseToken: UUID) async throws {
         var lastText = "", image = 0
+        trace.note("input.typing:\(pieces.count)")
         draft = .owned
         for (index, piece) in pieces.enumerated() {
             try checkInput(responseToken)
@@ -608,6 +619,8 @@ public actor OfficialSession: SessionWorker {
     /// Each result goes to its call as Claude Code makes it: at once for a call it is waiting on,
     /// held for one it has not made yet, since it makes a message's calls one at a time.
     private func deliver(_ results: [(String, JSONValue)], to directory: URL) throws {
+        let parked = results.filter { waiting.contains($0.0) }.count
+        trace.note("results.delivered:\(parked)/held:\(results.count - parked)")
         for (callID, value) in results {
             outstanding.remove(callID)
             if waiting.remove(callID) != nil {
@@ -732,7 +745,7 @@ public actor OfficialSession: SessionWorker {
             streamQueue += tap.read()
             self.tap = tap
             if let state = tap.state, state != tapReported {
-                tapReported = state
+                tapReported = state; trace.note("tap." + state)
                 Diagnostics.record("session.tap", ["run": runTag, "state": state])
             }
         }
@@ -744,6 +757,7 @@ public actor OfficialSession: SessionWorker {
         if ended { return 40_000_000 }
         reply.listening = canTell
         apply(reply.tick(now: Date()))
+        watchForStall()
         if let deadline, deadline < Date(), response != nil {
             failed("reply_timeout")
             observer?.yield(.attention)
@@ -753,6 +767,24 @@ public actor OfficialSession: SessionWorker {
         }
         if tap?.going(bare: false) == true || holdUntil != nil { return 10_000_000 }
         return response != nil || awaitingAccept ? 40_000_000 : Self.restingLook
+    }
+    /// A reply that has heard nothing from its client for `stallAfter` is logged once, with what
+    /// it waits on and its steps; when the client is heard again, how long it was quiet.
+    private func watchForStall() {
+        let now = Date(), quiet = now.timeIntervalSince(trace.lastActivity)
+        if let since = stalledSince {
+            guard trace.lastActivity > since else { return }
+            Diagnostics.record("session.resumed", ["run": runTag, "quiet_s": String(Int(trace.lastActivity.timeIntervalSince(since)))])
+            stalledSince = nil
+            return
+        }
+        guard response != nil, quiet >= Self.stallAfter else { return }
+        stalledSince = trace.lastActivity
+        let on = awaitingAccept ? "accept" : !waiting.isEmpty ? "results" : !outstanding.isEmpty ? "calls" : "model"
+        Diagnostics.record("session.stalled", ["run": runTag, "quiet_s": String(Int(quiet)), "waits_on": on,
+            "calls_waiting": String(waiting.count), "outstanding": String(outstanding.count), "held": String(heldResults.count),
+            "tap": tapReported ?? "-", "idle": officialIdle ? "yes" : "no"])
+        Diagnostics.dump("session", subject: ("run", runTag), why: "stalled", trace: trace, now: now)
     }
     /// How often a run with no reply open looks: a resting run has nothing it waits for, and a reply opening
     /// starts the looks again at once (`startPolling`). This keeps idle runs from waking
@@ -808,6 +840,12 @@ public actor OfficialSession: SessionWorker {
 
     private func streamEvent(_ event: JSONValue) {
         observedInference = true
+        switch event["type"]?.stringValue {
+        case "message_start", "message_stop", "error": trace.note("stream." + (event["type"]?.stringValue ?? "-"))
+        case "content_block_start": trace.note("stream.block:" + (event["content_block"]?["type"]?.stringValue ?? "-"))
+        case "message_delta": trace.note("stream.stop:" + (event["delta"]?["stop_reason"]?.stringValue ?? "-"))
+        default: trace.touch()
+        }
         if canTell {
             refreshProgressDeadline()
             if event["type"]?.stringValue == "message_start" { observer?.yield(.working) }
@@ -839,6 +877,12 @@ public actor OfficialSession: SessionWorker {
     // MARK: The transcript
 
     private func handle(_ row: ClaudeTranscript.Row) {
+        switch row {
+        case .accepted: trace.note("row.accepted")
+        case .assistant(_, let blocks, _, let stop): trace.note("row.assistant:\(blocks.count):" + (stop ?? "-"))
+        case .apiError(let status, _, _): trace.note("row.api_error:" + (status.map(String.init) ?? "-"))
+        case .turnEnded: trace.note("row.turn_ended")
+        }
         switch row {
         case .accepted:
             acceptedRows += 1
@@ -926,6 +970,8 @@ public actor OfficialSession: SessionWorker {
     // MARK: Hints
 
     private func handleSpool(_ event: JSONValue) {
+        let name = event["event"]?.stringValue ?? "-"
+        trace.note("hook." + name + (event["notification_type"]?.stringValue.map { ":" + $0 } ?? ""))
         switch event["event"]?.stringValue {
         case "toolCall":
             // under Claude Code's own tool-use id, which the stream and the transcript tell it by;
@@ -1030,6 +1076,7 @@ public actor OfficialSession: SessionWorker {
     /// The client asks the person at the session window. Pool never answers for them, and the
     /// caller learns at once instead of waiting out the reply deadline.
     private func awaitUser() {
+        trace.note("await_user")
         observer?.yield(.attention)
         guard response != nil else { return }
         invalidated = true
@@ -1041,6 +1088,7 @@ public actor OfficialSession: SessionWorker {
     /// never required: a reply ends with the usage seen, or zero (anthropic.go:1415-1421, 1734-1751).
     private func finish(_ reason: BridgeStopReason) {
         guard response != nil else { return }
+        trace.note("finish." + reason.rawValue)
         let usage = reply.complete()
         reply.listening = false
         if reason == .toolUse { Diagnostics.record("session.calls", ["run": runTag, "calls": String(replyCalls)]) }
@@ -1048,6 +1096,7 @@ public actor OfficialSession: SessionWorker {
         response = nil; responseID = nil; deadline = nil
     }
     private func fail(_ error: Error) {
+        if response != nil { trace.note("reply.failed") }
         response?.finish(throwing: error)
         response = nil; responseID = nil; deadline = nil
         reply.listening = false
@@ -1088,17 +1137,27 @@ public actor OfficialSession: SessionWorker {
             do { _ = try await transport.waitForExit(); return confirmExit() }
             catch { observer?.yield(.attention); return false }
         }
-        if draft == .owned, !(await clearOwnedDraft()) { return false }
-        if ended { return cleanRun() }
-        guard draft == .none else { return false }
-        guard response == nil, outstanding.isEmpty, waiting.isEmpty, officialIdle, let transport else {
-            return self.transport == nil ? cleanRun() : false
+        // Why a close did not go through, by name only: which of the run's own conditions held it.
+        func held(_ why: String) -> Bool {
+            Diagnostics.record("session.close_held", ["run": runTag, "why": why])
+            Diagnostics.dump("session", subject: ("run", runTag), why: "close_held", trace: trace); return false
         }
+        if draft == .owned, !(await clearOwnedDraft()) { return held("draft_not_cleared") }
+        if ended { return cleanRun() }
+        guard draft == .none else { return held(draft == .submitted ? "draft_submitted" : "draft_uncertain") }
+        guard let transport else { return cleanRun() }
+        if response != nil { return held("reply_open") }
+        if !outstanding.isEmpty { return held("calls_outstanding") }
+        if !waiting.isEmpty { return held("results_waiting") }
+        if !officialIdle { return held("client_not_idle") }
         do {
             try await typeExit(transport)
             _ = try await transport.waitForExit()
             return confirmExit()
-        } catch { observer?.yield(.attention); return false }
+        } catch {
+            Diagnostics.record("session.close_held", ["run": runTag, "why": "exit_wait:" + String(describing: Swift.type(of: error))])
+            observer?.yield(.attention); return false
+        }
     }
     /// `/exit` typed as a command: a character every
     /// 20 ms, a settle for the command menu, then Return on its own.
