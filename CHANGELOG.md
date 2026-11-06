@@ -4,6 +4,14 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-06
+
+### Fixed
+
+- Update and restart no longer freezes the app after the download: the quit it starts now runs, the new version is installed and Claude Pool opens again.
+- Quitting while a conversation is going on no longer asks you to finish or cancel a sign-in. Quit waits a few seconds for Pool's own account check and goes on. Messages about a sign-in now appear only while you are adding an account, and say what is left to do.
+- An account whose week is nearly used up no longer ranks ahead of others just because its 5-hour limit is full: below a quarter of the week left, the 5-hour share counts only in proportion.
+
 ## [0.1.2] - 2026-11-06
 
 ### Fixed
@@ -56,7 +64,8 @@ First public release.
 - Update checks against GitHub Releases with verified one-click install.
 - Option to hide email addresses throughout the app.
 
-[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/uiuing/claude-desktop-pool/releases/tag/v0.1.0
