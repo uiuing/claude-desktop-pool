@@ -4,6 +4,13 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-06
+
+### Fixed
+
+- Claude Pool could not quit after a session refused a tool call: the run's leftover result file kept the session from being cleaned up, so every quit was refused. A run now ends once its client has exited, and a folder it cannot remove is logged and left behind.
+- Sessions replaced or ended during routing leave the app's list, so the session count shown when quitting is correct.
+
 ## [0.1.1] - 2026-11-06
 
 ### Added
@@ -49,6 +56,7 @@ First public release.
 - Update checks against GitHub Releases with verified one-click install.
 - Option to hide email addresses throughout the app.
 
-[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/uiuing/claude-desktop-pool/releases/tag/v0.1.0
