@@ -8,3 +8,5 @@ __pycache__/
 .claude/
 logs/
 *.log
+/Pool/
+/Support/
