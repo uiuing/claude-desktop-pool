@@ -163,6 +163,10 @@ final class ScreenshotTests: XCTestCase {
                 let model = PoolAppModel.demoModel(language: language)
                 try await capture(MenuPanel(model: model), size: .init(width: 320, height: 390), dark: dark,
                                   to: output.appendingPathComponent("menu-\(language)-\(dark ? "dark" : "light").png"))
+                try await capture(QuitIndicatorView(title: model.t("Quitting Claude Pool"),
+                                                    detail: model.t("Ending Claude sessions. This takes a few seconds."))
+                    .padding(16).environment(\.locale, model.locale), size: .init(width: 380, height: 92), dark: dark,
+                                  to: output.appendingPathComponent("quit-\(language)-\(dark ? "dark" : "light").png"))
                 // A large pool takes the lazily built list; this render stays out of docs/images.
                 let large = PoolAppModel.demoModel(language: language)
                 let base = large.snapshot.accounts[1]

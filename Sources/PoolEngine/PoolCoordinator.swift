@@ -56,6 +56,9 @@ public actor PoolCoordinator: BridgeBackend {
     private var toolOwners: [String: UUID] = [:]
     private var observationTasks: [UUID: Task<Void, Never>] = [:]
     private var paused = false
+    /// Quitting has begun ending runs. Unlike a pause, nothing goes on: a continuation admitted now
+    /// would start a run after the others ended and hold quitting for its whole turn.
+    private var closing = false
     private var generations: UInt64 = 0
     private var active: [UInt64: Activity] = [:]
     private var cancelledGenerations = Set<UInt64>()
@@ -160,7 +163,7 @@ public actor PoolCoordinator: BridgeBackend {
     }
     public func updateAccounts(_ accounts: [PoolAccount]) { self.accounts = accounts }
     public func updateRoutingPolicy(_ policy: RoutingPolicy) { routingPolicy = policy }
-    public func setPaused(_ paused: Bool) { self.paused = paused }
+    public func setPaused(_ paused: Bool) { self.paused = paused; if !paused { closing = false } }
     public func sessions() -> [PoolSession] { bindings.values.map(\.session).sorted { $0.startedAt < $1.startedAt } }
     public func conversationAlias(for sessionID: UUID) -> String? {
         let matches = aliases.compactMap { $0.value == sessionID && !$0.key.hasPrefix("request:") ? $0.key : nil }
@@ -233,7 +236,7 @@ public actor PoolCoordinator: BridgeBackend {
         let requestAlias = conversationID ?? "request:\(UUID().uuidString)"
         let results = try RequestContent.toolResults(request)
         guard Set(results.map(\.0)).count == results.count else { throw BridgeFailure.invalidRequest("A tool result was supplied more than once.") }
-        if paused && results.isEmpty { route(model: model.id, reason: .paused); throw BridgeFailure.paused }
+        if closing || (paused && results.isEmpty) { route(model: model.id, reason: .paused); throw BridgeFailure.paused }
         generations += 1
         let generation = generations
         active[generation] = Activity(alias: requestAlias)
@@ -336,7 +339,7 @@ public actor PoolCoordinator: BridgeBackend {
             throw BridgeFailure.cancelled
         }
         // Pause admits continuations so tools already delivered can finish, but no new user turn.
-        if paused && results.isEmpty { throw BridgeFailure.paused }
+        if closing || (paused && results.isEmpty) { throw BridgeFailure.paused }
         binding.busy = true; binding.session.state = .running
         binding.lastActive = now()
         binding.parkedAt = nil; binding.parkEnds = nil; binding.released = false
@@ -605,7 +608,7 @@ public actor PoolCoordinator: BridgeBackend {
     /// `continuing`: the run is for tool results already delivered, which pause still lets finish.
     private func create(request: BridgeRequest, model: PoolModel, generation: UInt64, excluding: Set<UUID> = [], minimumHeadroom: Double? = nil,
                         reasonOverride: RoutingReason? = nil, continuing: Bool = false, only: UUID? = nil) async throws -> UUID {
-        func blocked() -> Bool { paused && !continuing }
+        func blocked() -> Bool { closing || (paused && !continuing) }
         guard !Task.isCancelled, !cancelledGenerations.contains(generation) else { throw BridgeFailure.cancelled }
         guard !blocked() else { throw BridgeFailure.paused }
         await endExpiredParks()
@@ -1197,27 +1200,34 @@ public actor PoolCoordinator: BridgeBackend {
     /// Quitting ends every session the pool runs; nobody has to end one by hand first. An idle
     /// session takes the client's own exit. One answering, waiting on a tool or holding input has
     /// its request cancelled and receives the client's own Ctrl-C (`requestExit`), never a forced
-    /// end. Returns false only when a child did not end; that session is kept and reported.
+    /// end. Sessions end together, so one slow child does not hold up the rest. Returns false only
+    /// when a child did not end; that session is kept and reported.
     public func shutdown() async -> Bool {
-        paused = true
+        paused = true; closing = true
         discardShelf { _ in true }
-        var allEnded = true
-        for (id, binding) in bindings {
-            bindings[id]?.retiring = true
-            var ended = false
-            if !binding.busy && binding.pending.isEmpty { ended = await binding.worker.close() }
-            if !ended {
-                for (generation, activity) in active where activity.binding == id { cancelledGenerations.insert(generation) }
-                ended = await binding.worker.requestExit()
-            }
-            if ended {
-                bindings[id]?.session.state = .ended; publish(id)
-                remove(id)
-            } else {
-                bindings[id]?.retiring = false; bindings[id]?.session.state = .attention; publish(id)
-                allEnded = false
-            }
+        let ids = Array(bindings.keys)
+        return await withTaskGroup(of: Bool.self) { group in
+            for id in ids { group.addTask { await self.endForShutdown(id) } }
+            var allEnded = true
+            for await ended in group where !ended { allEnded = false }
+            return allEnded
         }
-        return allEnded
+    }
+    private func endForShutdown(_ id: UUID) async -> Bool {
+        guard let binding = bindings[id] else { return true }
+        bindings[id]?.retiring = true
+        var ended = false
+        if !binding.busy && binding.pending.isEmpty { ended = await binding.worker.close() }
+        if !ended {
+            for (generation, activity) in active where activity.binding == id { cancelledGenerations.insert(generation) }
+            ended = await binding.worker.requestExit()
+        }
+        if ended {
+            bindings[id]?.session.state = .ended; publish(id)
+            remove(id)
+        } else {
+            bindings[id]?.retiring = false; bindings[id]?.session.state = .attention; publish(id)
+        }
+        return ended
     }
 }

@@ -401,6 +401,8 @@
   "Claude Pool is already running. Quit the other copy first.": "Claude Pool이(가) 이미 실행 중입니다. 다른 사본을 먼저 종료하세요.",
   "No backup account": "백업 계정 없음",
   "Quitting": "종료 중",
+  "Quitting Claude Pool": "Claude Pool 종료 중",
+  "Ending Claude sessions. This takes a few seconds.": "Claude 세션을 종료하는 중입니다. 몇 초 정도 걸립니다.",
   "{0}% left": "{0}% 남음",
   "Quota not read": "한도 확인 안 됨",
   "Available": "사용 가능",

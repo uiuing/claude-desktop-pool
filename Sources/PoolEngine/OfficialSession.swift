@@ -1181,7 +1181,8 @@ public actor OfficialSession: SessionWorker {
         do {
             for _ in 0..<3 {
                 if ended { return cleanRun() }
-                try transport.interrupt()
+                // An earlier key may have ended it already, its exit still on the way here.
+                do { try transport.interrupt() } catch RuntimeError.processExited { break }
                 try await Task.sleep(nanoseconds: 200_000_000)
             }
             if !ended { _ = try await transport.waitForExit() }

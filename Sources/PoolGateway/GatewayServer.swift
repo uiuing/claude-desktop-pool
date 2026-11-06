@@ -52,14 +52,27 @@ public actor GatewayServer {
         }
     }
 
-    /// Stops admission, then waits for accepted HTTP responses. It never ends a Claude process.
-    public func stop() async {
+    /// Stops admission, then waits for accepted HTTP responses, for `limit` seconds at most when
+    /// given. It never ends a Claude process.
+    public func stop(waitingAtMost limit: TimeInterval? = nil) async {
         if listener != nil { Diagnostics.record("gateway.stop", ["port": String(port), "active": String(connections.count)]) }
         accepting = false; stopping = true
         let old = listener; listener = nil; listenerID = nil; old?.cancel()
         startup?.resume(throwing: BridgeFailure.cancelled); startup = nil
         guard !connections.isEmpty else { stopping = false; return }
+        if let limit {
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(max(0, limit) * 1_000_000_000))
+                await self?.stopWaiting()
+            }
+        }
         await withCheckedContinuation { drainWaiters.append($0) }
+    }
+    private func stopWaiting() {
+        guard !drainWaiters.isEmpty else { return }
+        Diagnostics.record("gateway.drain_limit", ["active": String(connections.count)])
+        let waiters = drainWaiters; drainWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
     }
 
     private func stateChanged(_ state: NWListener.State, generation: UUID) {

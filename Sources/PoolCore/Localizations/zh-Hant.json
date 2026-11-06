@@ -401,6 +401,8 @@
   "Claude Pool is already running. Quit the other copy first.": "Claude Pool 已在執行，請先結束另一個。",
   "No backup account": "沒有備用帳號",
   "Quitting": "正在結束",
+  "Quitting Claude Pool": "正在結束 Claude Pool",
+  "Ending Claude sessions. This takes a few seconds.": "正在結束 Claude 工作階段，需要幾秒鐘。",
   "{0}% left": "剩餘 {0}%",
   "Quota not read": "額度未讀取",
   "Available": "可用",

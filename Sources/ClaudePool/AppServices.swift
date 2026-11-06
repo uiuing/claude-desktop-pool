@@ -907,6 +907,10 @@ final class AppServices {
             guard let self else { throw BridgeFailure.unavailable }
             return try await self.prepareWorker(account: account, model: model, workspace: workspace, helper: helper, runtime: managedRuntime)
         }, onUpdate: { [weak self] update in Task { @MainActor in await self?.receive(update) } })
+        // Conversations go on on the accounts they were on before the app was restarted.
+        if let saved = try? workspace.read(workspace.root.appendingPathComponent(Self.conversationAccountsFile), limit: 512 * 1024) {
+            await coordinator.restoreRememberedAccounts(saved)
+        }
         let protection = PrivacyBridge(backend: coordinator, detector: privacyDetector,
             onUpdate: { [weak self] update in Task { @MainActor in await self?.receivePrivacy(update) } })
         let server = try GatewayServer(port: dependencies.gatewayPort ?? library.preferences.port, token: try token(), backend: protection,
@@ -1376,7 +1380,11 @@ final class AppServices {
 
     func prepareToQuit() async -> Bool {
         guard !model.demo else { return true }
+        let began = Date()
+        let sessionCount = model.snapshot.sessions.filter { $0.state != .ended }.count
+        Diagnostics.record("app.quit", ["outcome": "started", "sessions": String(sessionCount)])
         guard !model.isWorking, privacyInstallTask == nil, !model.privacy.isProcessing else {
+            Diagnostics.record("app.quit", ["outcome": "refused", "reason": "busy"])
             model.notice = model.t("Wait for the current operation to finish before quitting.")
             showWindow(); return false
         }
@@ -1390,8 +1398,9 @@ final class AppServices {
         await coordinator?.setPaused(true)
         if wasRunning { model.snapshot.mode = .stopping }
         await updateQuotaAvailability()
-        func refuse(_ notice: String) async -> Bool {
-            Diagnostics.record("app.quit", ["outcome": "refused", "loginsOpen": String(loginProcesses.count)])
+        func refuse(_ notice: String, reason: String) async -> Bool {
+            Diagnostics.record("app.quit", ["outcome": "refused", "reason": reason, "loginsOpen": String(loginProcesses.count),
+                                            "ms": String(Int(Date().timeIntervalSince(began) * 1000))])
             model.notice = model.t(notice)
             if wasRunning { await coordinator?.setPaused(false); model.snapshot.mode = .running; await updateQuotaAvailability() }
             showWindow(); return false
@@ -1399,30 +1408,40 @@ final class AppServices {
         // A sign-in is the person's own; Claude sessions are the pool's, and quitting ends them.
         guard loginProcesses.isEmpty, checkingAccounts.isEmpty else {
             if let id = loginProcesses.keys.first { presentLogin(id) }
-            return await refuse("Finish or cancel signing in before quitting.")
+            return await refuse("Finish or cancel signing in before quitting.", reason: loginProcesses.isEmpty ? "account_check" : "sign_in")
         }
-        if let quotaService, !(await quotaService.stop()) {
-            if wasRunning { try? await quotaService.start() }
-            return await refuse("Claude is still closing. Keep this window open and try again.")
+        // Observers and sessions end together: nothing here waits its turn behind a slow child.
+        let quota = quotaService, pool = coordinator
+        if let pool, let workspace, let saved = await pool.rememberedAccounts() {
+            try? workspace.write(saved, to: workspace.root.appendingPathComponent(Self.conversationAccountsFile))
         }
-        if let coordinator, !(await coordinator.shutdown()) {
-            return await refuse("Claude is still closing. Keep this window open and try again.")
+        async let observersClosing = quota?.stop() ?? true
+        async let sessionsClosing = pool?.shutdown() ?? true
+        let (observersClosed, sessionsEnded) = await (observersClosing, sessionsClosing)
+        guard observersClosed, sessionsEnded else {
+            if wasRunning { try? await quota?.start() }
+            return await refuse("Claude is still closing. Keep this window open and try again.",
+                                reason: sessionsEnded ? "observer_open" : "session_open")
         }
+        let sessionsMs = Int(Date().timeIntervalSince(began) * 1000)
         await warmUpScheduler?.stop()
         if let session = warmUpSession {
             await session.cancel()
             var ended = await session.close()
             if !ended { ended = await session.requestExit() }
-            guard ended else { return await refuse("Claude is still closing. Keep this window open and try again.") }
+            guard ended else { return await refuse("Claude is still closing. Keep this window open and try again.", reason: "warm_up_open") }
             warmUpSession = nil
         }
         privacyPreviewTask?.cancel(); previewGeneration += 1; model.privacyPreview = .init()
         await privacyDetector?.unload()
         recoveryTask?.cancel(); accountCheckTask?.cancel()
-        await server?.stop(); listeningPort = nil; pathMonitor?.cancel()
+        // Every run has ended by now, so what is left is a reply saying so; a client that does not
+        // read it does not hold the app open.
+        await server?.stop(waitingAtMost: 3); listeningPort = nil; pathMonitor?.cancel()
         if usageSaveTask != nil { await saveUsage() }
         if librarySaveTask != nil { await saveLibrary() }
-        Diagnostics.record("app.quit", ["outcome": "ended"])
+        Diagnostics.record("app.quit", ["outcome": "ended", "sessions": String(sessionCount), "sessions_ms": String(sessionsMs),
+                                        "ms": String(Int(Date().timeIntervalSince(began) * 1000))])
         return true
     }
 

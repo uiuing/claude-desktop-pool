@@ -401,6 +401,8 @@
   "Claude Pool is already running. Quit the other copy first.": "Claude Pool is already running. Quit the other copy first.",
   "No backup account": "No backup account",
   "Quitting": "Quitting",
+  "Quitting Claude Pool": "Quitting Claude Pool",
+  "Ending Claude sessions. This takes a few seconds.": "Ending Claude sessions. This takes a few seconds.",
   "{0}% left": "{0}% left",
   "Quota not read": "Quota not read",
   "Available": "Available",

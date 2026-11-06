@@ -401,6 +401,8 @@
   "Claude Pool is already running. Quit the other copy first.": "Claude Pool はすでに実行中です。もう一方を先に終了してください。",
   "No backup account": "バックアップアカウントなし",
   "Quitting": "終了中",
+  "Quitting Claude Pool": "Claude Pool を終了しています",
+  "Ending Claude sessions. This takes a few seconds.": "Claude セッションを終了しています。数秒かかります。",
   "{0}% left": "残り {0}%",
   "Quota not read": "クォータ未取得",
   "Available": "利用可能",

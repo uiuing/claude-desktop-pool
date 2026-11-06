@@ -31,6 +31,25 @@ final class RelayTests: XCTestCase {
         """#.utf8)
     }
 
+    func testQuittingDoesNotWaitForAClientThatSaysNothing() async throws {
+        let server = try GatewayServer(port: 0, token: relayToken, backend: ScriptBackend(events: [], failure: nil))
+        let port = try await server.start()
+        // A connection held open with no request stays for the 15-second header deadline.
+        let client = socket(AF_INET, SOCK_STREAM, 0)
+        defer { close(client) }
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET); address.sin_port = port.bigEndian
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let connected = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(client, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        }
+        XCTAssertEqual(connected, 0)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let began = Date()
+        await server.stop(waitingAtMost: 0.2)
+        XCTAssertLessThan(Date().timeIntervalSince(began), 5)
+    }
+
     private func serve(_ backend: ScriptBackend, _ requests: [(stream: Bool, toolResult: Bool)]) async throws -> [(Data, HTTPURLResponse)] {
         let server = try GatewayServer(port: 0, token: relayToken, backend: backend)
         let port = try await server.start()

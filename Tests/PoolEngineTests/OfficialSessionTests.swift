@@ -434,6 +434,19 @@ final class OfficialSessionTests: XCTestCase {
         XCTAssertEqual(harness.exitCount, 0, "No slash command may be appended to an uncertain draft")
     }
 
+    func testAKeyThatFindsTheChildGoneStillEndsTheExit() async throws {
+        let harness = try SessionHarness(); defer { harness.clean() }
+        harness.exitAfterInterrupts = 2; harness.exitEventLags = true
+        let session = harness.session()
+        let reply = Task { try await collectEvents(try await session.events(for: self.request("Running"))) }
+        try await waitFor { harness.sentCount == 1 }
+        await session.cancel()
+        do { _ = try await reply.value } catch {}
+        // The client ended on the second Ctrl-C; the third finds it gone. That is its exit, not a refusal to quit.
+        let closed = await session.requestExit()
+        XCTAssertTrue(closed)
+    }
+
     func testImageFormatMismatchFailsBeforeLaunchingClaude() async throws {
         let harness = try SessionHarness(); defer { harness.clean() }
         let session = harness.session()

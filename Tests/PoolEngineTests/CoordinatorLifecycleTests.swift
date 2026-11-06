@@ -266,6 +266,40 @@ final class CoordinatorLifecycleTests: XCTestCase {
         let cleanup = await pool.shutdown(); XCTAssertTrue(cleanup)
     }
 
+    func testAToolResultArrivingAfterQuitBeganStartsNoRun() async throws {
+        let clock = LifecycleClock(), factory = LifecycleFactory(modes: [.tool, .reply])
+        let pool = coordinator(factory, capacity: 2, clock: clock)
+        let tool = ask("Tool")
+        _ = try await drain(pool, tool, id: "tool")
+        var late = tool
+        late.messages += [.init(role: "assistant", content: .array([.object(["type": .string("tool_use"), "id": .string("pending"),
+                                                                             "name": .string("read"), "input": .object([:])])])),
+                          .init(role: "user", content: .array([.object(["type": .string("tool_result"), "tool_use_id": .string("pending"),
+                                                                        "content": .string("Synthetic result.")])]))]
+        let closed = await pool.shutdown(); XCTAssertTrue(closed)
+        // A run started now would outlive the others and hold quitting for its whole turn.
+        do { _ = try await pool.events(for: late, conversationID: "tool"); XCTFail("A run started after quit began") }
+        catch { XCTAssertEqual(error as? BridgeFailure, .paused) }
+        let started = await factory.count
+        XCTAssertEqual(started, 1)
+        // A refused quit serves again: the same result goes on.
+        await pool.setPaused(false)
+        let answer = try await drain(pool, late, id: "tool")
+        XCTAssertTrue(answer.contains(.finished(.endTurn)))
+        _ = await pool.shutdown()
+    }
+
+    func testQuitEndsSessionsTogether() async throws {
+        let barrier = ShutdownBarrier(expected: 2)
+        let pool = PoolCoordinator(accounts: [.init(email: "po•••olive@example.com", state: .ready)], maximumWorkers: 2,
+                                   factory: { _, _ in BarrierWorker(barrier: barrier) })
+        _ = try await drain(pool, ask("First idle conversation"), id: "together-first")
+        _ = try await drain(pool, ask("Second idle conversation"), id: "together-second")
+        // Each close returns only once the other has begun, which one at a time never reaches.
+        let closed = await pool.shutdown()
+        XCTAssertTrue(closed)
+    }
+
     private func coordinator(_ factory: LifecycleFactory, capacity: Int, clock: LifecycleClock = LifecycleClock()) -> PoolCoordinator {
         PoolCoordinator(accounts: [.init(email: "po•••olive@example.com", state: .ready)], maximumWorkers: capacity,
                         idleTimeout: 600, idleKeep: 600, roomWait: 0, now: { clock.now }, factory: { _, _ in await factory.make() })
@@ -382,6 +416,30 @@ private actor ShutdownWorker: SessionWorker {
     func sendInput(_ data: Data) {}
     func cancel() {}
     func close() async -> Bool { await sequence.close(id) }
+}
+private actor ShutdownBarrier {
+    private var arrived = 0
+    private let expected: Int
+    init(expected: Int) { self.expected = expected }
+    func arrive() async -> Bool {
+        arrived += 1
+        let deadline = Date().addingTimeInterval(2)
+        while arrived < expected, Date() < deadline { try? await Task.sleep(nanoseconds: 10_000_000) }
+        return arrived >= expected
+    }
+}
+private actor BarrierWorker: SessionWorker {
+    nonisolated let id = UUID()
+    let barrier: ShutdownBarrier
+    init(barrier: ShutdownBarrier) { self.barrier = barrier }
+    func observations() -> AsyncStream<WorkerObservation> { AsyncStream { $0.finish() } }
+    func events(for request: BridgeRequest) -> AsyncThrowingStream<BridgeEvent, Error> {
+        AsyncThrowingStream { $0.yield(.text("Reply")); $0.yield(.finished(.endTurn)); $0.finish() }
+    }
+    func sendInput(_ data: Data) {}
+    func cancel() {}
+    func close() async -> Bool { await barrier.arrive() }
+    func requestExit() async -> Bool { false }
 }
 private final class ShutdownUpdates: @unchecked Sendable {
     private let lock = NSLock()

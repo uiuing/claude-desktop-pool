@@ -41,6 +41,9 @@ final class SessionHarness: @unchecked Sendable {
     var exitNormally = true
     var exitOnResume = false
     var exitAfterInterrupts: Int?
+    /// As a real child: its exit is known to the writer before the event reaches the session, so
+    /// a later key fails with `processExited` while the session still thinks it is running.
+    var exitEventLags = false
     var firstRun = false
 
     /// Where a run's tap goes: the fixture's root has a space in its path, which BUN_OPTIONS
@@ -115,7 +118,11 @@ final class SessionHarness: @unchecked Sendable {
         return SessionTransport(events: stream, write: { try self.write($0) }, interrupt: {
             let count = self.lock.withLock { self.interrupts += 1; self.draftImages = 0; self.draftMarks = []; self.pasted = ""; return self.interrupts }
             self.renderPrompt("")
-            if let limit = self.exitAfterInterrupts, count >= limit { self.exited() }
+            if let limit = self.exitAfterInterrupts, count >= limit {
+                if !self.exitEventLags { self.exited() }
+                else if count > limit { throw RuntimeError.processExited }
+                else { self.lock.withLock { self.didExit = true } }
+            }
         }, exit: {}, waitForExit: {
             guard self.lock.withLock({ self.didExit }) else { throw BridgeFailure.busy }
             return 0

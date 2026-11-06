@@ -101,6 +101,7 @@ private struct PoolMainWindowContent: View {
 final class PoolApplicationDelegate: NSObject, NSApplicationDelegate {
     var services: AppServices?
     private var quitting = false
+    private var quitIndicator: QuitIndicator?
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
     }
@@ -116,9 +117,12 @@ final class PoolApplicationDelegate: NSObject, NSApplicationDelegate {
         guard !quitting else { return .terminateCancel }
         guard let services else { return .terminateNow }
         quitting = true
+        // Quitting takes seconds and the menu has just closed: say so at once, wherever the person is.
+        if !services.model.demo { quitIndicator = QuitIndicator(model: services.model) }
         Task {
             let allowed = await services.prepareToQuit()
             quitting = false
+            if !allowed { quitIndicator?.close(); quitIndicator = nil }
             if allowed { services.model.updates.finishInstall() } else { services.model.updates.restartRefused() }
             sender.reply(toApplicationShouldTerminate: allowed)
         }
