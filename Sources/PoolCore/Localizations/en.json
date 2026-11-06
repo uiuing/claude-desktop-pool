@@ -274,6 +274,7 @@
   "Every {0} sec": "Every {0} sec",
   "Last confirmed {0}% · awaiting new cycle": "Last confirmed {0}% · awaiting new cycle",
   "Starts on next use": "Starts on next use",
+  "Starting automatically": "Starting automatically",
   "Subscription required": "Subscription required",
   "Model unavailable for this account": "Model unavailable for this account",
   "This account needs a Claude subscription to join the pool.": "This account needs a Claude subscription to join the pool.",

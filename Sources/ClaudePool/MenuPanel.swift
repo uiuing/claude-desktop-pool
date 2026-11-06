@@ -69,7 +69,7 @@ struct MenuPanel: View {
             Text("Claude Pool").font(.system(size: 14, weight: .semibold))
             Spacer()
             if !model.snapshot.accounts.isEmpty {
-                MenuIconButton(symbol: "arrow.clockwise", help: model.t("Read now"), identifier: "menu.refresh", spinning: model.isReadingQuota) {
+                MenuIconButton(symbol: "arrow.clockwise", help: model.t("Read now"), identifier: "menu.refresh", spinning: model.isRefreshingQuota) {
                     model.perform(.refreshQuota(nil))
                 }.disabled(model.isWorking || !model.snapshot.executableReady)
             }

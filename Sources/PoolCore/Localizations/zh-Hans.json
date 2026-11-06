@@ -274,6 +274,7 @@
   "Every {0} sec": "每 {0} 秒",
   "Last confirmed {0}% · awaiting new cycle": "上次确认 {0}% · 等待新周期确认",
   "Starts on next use": "下次使用时开始",
+  "Starting automatically": "即将自动启动",
   "Subscription required": "需要订阅",
   "Model unavailable for this account": "此账号无法使用该模型",
   "This account needs a Claude subscription to join the pool.": "此账号需要 Claude 订阅才能加入账号池。",

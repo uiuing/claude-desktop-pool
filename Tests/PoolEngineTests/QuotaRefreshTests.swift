@@ -21,6 +21,17 @@ final class QuotaRefreshTests: XCTestCase {
     Esc to cancel
     """
     private var now: Date { ISO8601DateFormatter().date(from: "2026-11-04T08:00:00Z")! }
+    /// The same panel for the fixture client, whose readings are taken at the wall clock: its resets
+    /// stay a few hours and a few days ahead, so a fixed date never reads as a reset that has passed.
+    private var livePanel: String {
+        var utc = Calendar(identifier: .gregorian); utc.timeZone = TimeZone(identifier: "UTC")!
+        let session = Date().addingTimeInterval(2 * 3600), week = Date().addingTimeInterval(3 * 86400)
+        let hour = utc.component(.hour, from: session)
+        let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        let day = "\(months[utc.component(.month, from: week) - 1]) \(utc.component(.day, from: week))"
+        return panel.replacingOccurrences(of: "Resets 11am (UTC)", with: "Resets \(hour % 12 == 0 ? 12 : hour % 12)\(hour < 12 ? "am" : "pm") (UTC)")
+            .replacingOccurrences(of: "Resets Nov 7 at 2pm (UTC)", with: "Resets \(day) at 2pm (UTC)")
+    }
 
     func testLoadedNativePanelPreservesDynamicWindowsAndResets() throws {
         let windows = try NativeUsageParser.parse(panel, plan: "Max 5x", observedAt: now)
@@ -104,6 +115,30 @@ final class QuotaRefreshTests: XCTestCase {
             }
         }
     }
+    /// A client that lost its sign-in (11-06) shows API billing and a panel of costs without limits.
+    func testASignedOutPanelAsksToSignInInsteadOfLoadingUntilTimeout() {
+        let text = "Opus 5.5 · API Usage Billing\nSettings Status Config Usage Stats\nSession\nTotal cost: $0.0000\nTotal duration (API): 0s\nEsc to cancel"
+        XCTAssertThrowsError(try NativeUsageParser.parse(text, plan: "Pro", observedAt: now)) { XCTAssertEqual($0 as? QuotaRefreshFailure, .authentication) }
+    }
+    /// The real 2.1.318 screen of a signed-out account (11-06): the banner naming the billing has
+    /// scrolled away, and the tab shows only costs. It timed out at the panel stage on every read.
+    func testASignedOutCostTabWithoutTheBillingBannerAsksToSignIn() {
+        let text = """
+               ~/…/Claude Pool/accounts/example/work
+        ────────────────────────────────────────────
+           Settings  Status   Config   Usage   Stats
+
+           Session
+           Total cost:            $0.0000
+           Total duration (API):  0s
+           Total duration (wall): 39s
+           Total code changes:    0 lines added, 0 lines removed
+           Usage:                 0 input, 0 output, 0 cache read, 0 cache write
+
+           Esc to cancel
+        """
+        XCTAssertThrowsError(try NativeUsageParser.parse(text, plan: "Pro", observedAt: now)) { XCTAssertEqual($0 as? QuotaRefreshFailure, .authentication) }
+    }
     func testResetParsingRejectsUnknownOrAmbiguousTime() {
         for text in ["11am", "11am (Missing/Zone)", "in 3 hours (UTC)", "7pm (UTC)"] {
             XCTAssertNil(NativeUsageParser.resetTime(text, observedAt: now, windowID: "five_hour"))
@@ -114,6 +149,9 @@ final class QuotaRefreshTests: XCTestCase {
     }
     func testNamedZoneAndYearBoundaryAreReadWithoutMachineTimezone() {
         XCTAssertEqual(NativeUsageParser.resetTime("5pm (Asia/Taipei)", observedAt: now, windowID: "five_hour"), now.addingTimeInterval(3600))
+        // Right after a reset the panel can still show the cycle that ended: its passed reset is
+        // kept, so that reading is told apart from a current one instead of losing its reset.
+        XCTAssertEqual(NativeUsageParser.resetTime("3pm (Asia/Taipei)", observedAt: now, windowID: "five_hour"), now.addingTimeInterval(-3600))
         let december = ISO8601DateFormatter().date(from: "2026-12-31T23:00:00Z")!
         let january = ISO8601DateFormatter().date(from: "2027-01-01T02:00:00Z")!
         XCTAssertEqual(NativeUsageParser.resetTime("Jan 1, 2am (UTC)", observedAt: december, windowID: "seven_day"), january)
@@ -122,7 +160,7 @@ final class QuotaRefreshTests: XCTestCase {
 
     func testManualRefreshUsesDedicatedOfficialCommandAndClosesNormally() async throws {
         let workspace = try fixtureWorkspace()
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel)
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel)
         let done = expectation(description: "Usage returned and the observer exited")
         let log = QuotaUpdateLog()
         let service = makeService(workspace: workspace, fixture: fixture) { update in
@@ -148,7 +186,7 @@ final class QuotaRefreshTests: XCTestCase {
     func testSessionEndHookDoesNotAuthorizeCleanupOrAccountMutationBeforeProcessExit() async throws {
         let workspace = try fixtureWorkspace(), attention = expectation(description: "Owned process has not exited")
         let exited = expectation(description: "Owned process exit observed")
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel, deferExit: true)
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel, deferExit: true)
         let service = makeService(workspace: workspace, fixture: fixture) { update in
             if case .status(_, let status) = update, status.phase == .needsAttention { attention.fulfill() }
             if case .ended = update { exited.fulfill() }
@@ -173,7 +211,7 @@ final class QuotaRefreshTests: XCTestCase {
     }
     func testCleanupFailureKeepsRunAndReportsStorageUntilSafeRetry() async throws {
         let workspace = try fixtureWorkspace(), failed = expectation(description: "Cleanup requires attention")
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel, blockCleanup: true)
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel, blockCleanup: true)
         let failures = QuotaEventCounter()
         let service = makeService(workspace: workspace, fixture: fixture) { update in
             if case .status(_, let status) = update, status.failure == .storage,
@@ -196,7 +234,7 @@ final class QuotaRefreshTests: XCTestCase {
     }
     func testOfflineManualRefreshQueuesUntilConnectivityReturns() async throws {
         let workspace = try fixtureWorkspace(), done = expectation(description: "Queued usage read completed")
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel)
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel)
         let service = makeService(workspace: workspace, fixture: fixture) { update in
             if case .status(_, let status) = update, status.phase == .idle, status.lastSuccessAt != nil { done.fulfill() }
         }
@@ -296,7 +334,7 @@ final class QuotaRefreshTests: XCTestCase {
         let workspace = try fixtureWorkspace(), attention = expectation(description: "Native trust prompt surfaced")
         let done = expectation(description: "Original observer continued after input")
         attention.assertForOverFulfill = false
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel, needsTrust: true)
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel, needsTrust: true)
         let service = makeService(workspace: workspace, fixture: fixture) { update in
             if case .status(_, let status) = update, status.phase == .needsAttention { attention.fulfill() }
             if case .status(_, let status) = update, status.phase == .idle, status.lastSuccessAt != nil { done.fulfill() }
@@ -318,7 +356,7 @@ final class QuotaRefreshTests: XCTestCase {
     }
     func testFreshAccountFolderFirstRunScreensAreAnsweredWithoutUserInput() async throws {
         let workspace = try fixtureWorkspace(), done = expectation(description: "Usage read after first-run screens")
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel, firstRun: ["theme", "notes", "trust-no", "trust-yes"])
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel, firstRun: ["theme", "notes", "trust-no", "trust-yes"])
         let log = QuotaUpdateLog()
         let service = makeService(workspace: workspace, fixture: fixture) { update in
             await log.append(update)
@@ -337,7 +375,7 @@ final class QuotaRefreshTests: XCTestCase {
     func testSignInScreenIsReportedAsAuthenticationAndNotAnswered() async throws {
         let workspace = try fixtureWorkspace(), failed = expectation(description: "Sign-in required")
         failed.assertForOverFulfill = false
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel, firstRun: ["login"])
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel, firstRun: ["login"])
         let service = makeService(workspace: workspace, fixture: fixture) { update in
             if case .status(_, let status) = update, status.failure == .authentication { failed.fulfill() }
         }
@@ -350,7 +388,7 @@ final class QuotaRefreshTests: XCTestCase {
     func testExplicitExitEndsASessionHeldBeforeItsPromptWithNormalInterrupts() async throws {
         let workspace = try fixtureWorkspace(), attention = expectation(description: "Held before its prompt")
         attention.assertForOverFulfill = false
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel, firstRun: ["An unfamiliar first-run screen"])
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel, firstRun: ["An unfamiliar first-run screen"])
         let service = makeService(workspace: workspace, fixture: fixture, observerTimeout: 2) { update in
             if case .status(_, let status) = update, status.phase == .needsAttention { attention.fulfill() }
         }
@@ -368,11 +406,25 @@ final class QuotaRefreshTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: workspace.root.appendingPathComponent("runs/\(observer.uuidString.lowercased())").path))
         let stopped = await service.stop(); XCTAssertTrue(stopped)
     }
+    func testQuitCountsAKeyThatFindsTheChildGoneAsItsExit() async throws {
+        let workspace = try fixtureWorkspace(), attention = expectation(description: "Held session")
+        attention.assertForOverFulfill = false
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel, needsTrust: true)
+        fixture.exitEventLags = true
+        let service = makeService(workspace: workspace, fixture: fixture) { update in
+            if case .status(_, let status) = update, status.phase == .needsAttention { attention.fulfill() }
+        }
+        let account = fixtureAccount()
+        try await service.start(); await service.setAccounts([account]); await service.requestRefresh(accountID: account.id, reason: .initial)
+        await fulfillment(of: [attention], timeout: 30)
+        let stopped = await service.stop()
+        XCTAssertTrue(stopped)
+    }
     func testQuitEndsAHeldSessionAndNeverEscalatesWhenInterruptIsIgnored() async throws {
         for ignores in [false, true] {
             let workspace = try fixtureWorkspace(), attention = expectation(description: "Held session")
             attention.assertForOverFulfill = false
-            let fixture = UsageProcessFixture(workspace: workspace, panel: panel, needsTrust: true)
+            let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel, needsTrust: true)
             fixture.ignoresInterrupt = ignores
             let service = makeService(workspace: workspace, fixture: fixture) { update in
                 if case .status(_, let status) = update, status.phase == .needsAttention { attention.fulfill() }
@@ -388,7 +440,7 @@ final class QuotaRefreshTests: XCTestCase {
     }
     func testQuitEndsACheckWhoseClientIgnoresExit() async throws {
         let workspace = try fixtureWorkspace()
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel)
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel)
         fixture.ignoresExit = true
         let service = makeService(workspace: workspace, fixture: fixture) { _ in }
         let account = fixtureAccount()
@@ -406,7 +458,7 @@ final class QuotaRefreshTests: XCTestCase {
     func testAttentionFromAnEndedRunDoesNotBlockTheNextLaunch() async throws {
         let workspace = try fixtureWorkspace(), attention = expectation(description: "Held session")
         attention.assertForOverFulfill = false
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel, needsTrust: true)
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel, needsTrust: true)
         let service = makeService(workspace: workspace, fixture: fixture) { update in
             if case .status(_, let status) = update, status.phase == .needsAttention { attention.fulfill() }
         }
@@ -426,7 +478,7 @@ final class QuotaRefreshTests: XCTestCase {
     }
     func testFastSingleConversationCanRefreshAtTenSeconds() async throws {
         let workspace = try fixtureWorkspace(), first = expectation(description: "First automatic read"), second = expectation(description: "Ten-second follow-up")
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel), clock = QuotaTestClock(), counter = QuotaEventCounter()
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel), clock = QuotaTestClock(), counter = QuotaEventCounter()
         let service = makeService(workspace: workspace, fixture: fixture, now: { clock.value }) { update in
             if case .status(_, let status) = update, status.phase == .idle, status.lastAttemptAt != nil, status.observerID == nil {
                 let count = await counter.increment(); if count == 1 { first.fulfill() }; if count == 2 { second.fulfill() }
@@ -455,7 +507,7 @@ final class QuotaRefreshTests: XCTestCase {
     }
     func testRetainedIdleAccountFallsBackToBackgroundReadsAndManualStillWorks() async throws {
         let workspace = try fixtureWorkspace(), done = expectation(description: "Explicit manual refresh")
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel), clock = QuotaTestClock()
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel), clock = QuotaTestClock()
         let service = makeService(workspace: workspace, fixture: fixture, now: { clock.value }) { update in
             if case .status(_, let status) = update, status.phase == .idle, status.lastAttemptAt != nil { done.fulfill() }
         }
@@ -477,7 +529,7 @@ final class QuotaRefreshTests: XCTestCase {
     }
     func testNativeFreshnessDefersDedicatedReadDespiteOlderAttemptWhileGenerating() async throws {
         let workspace = try fixtureWorkspace(), first = expectation(description: "Manual read"), second = expectation(description: "Read after freshness expires")
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel), clock = QuotaTestClock(), counter = QuotaEventCounter()
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel), clock = QuotaTestClock(), counter = QuotaEventCounter()
         let service = makeService(workspace: workspace, fixture: fixture, now: { clock.value }) { update in
             if case .status(_, let status) = update, status.phase == .idle, status.lastAttemptAt != nil, status.observerID == nil {
                 let count = await counter.increment(); if count == 1 { first.fulfill() }; if count == 2 { second.fulfill() }
@@ -504,7 +556,7 @@ final class QuotaRefreshTests: XCTestCase {
     }
     func testIdentityChangeClearsDemandAndRejectsQueuedOldScopeProgress() async throws {
         let workspace = try fixtureWorkspace(), done = expectation(description: "New account genuine work")
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel), clock = QuotaTestClock()
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel), clock = QuotaTestClock()
         let service = makeService(workspace: workspace, fixture: fixture, now: { clock.value }) { update in
             if case .status(_, let status) = update, status.phase == .idle, status.lastAttemptAt != nil { done.fulfill() }
         }
@@ -531,7 +583,7 @@ final class QuotaRefreshTests: XCTestCase {
     }
     func testCadenceUpdatesPauseForSleepAndDormancyThenResumeFromRealWork() async throws {
         let workspace = try fixtureWorkspace()
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel)
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel)
         let clock = QuotaTestClock(), log = QuotaUpdateLog(), session = UUID()
         let service = makeService(workspace: workspace, fixture: fixture, now: { clock.value }) { await log.append($0) }
         var account = fixtureAccount()
@@ -559,7 +611,7 @@ final class QuotaRefreshTests: XCTestCase {
     }
     func testFailedQuiesceResumePreservesActualConcurrentWorkWithoutAnotherGeneratingEvent() async throws {
         let workspace = try fixtureWorkspace(), clock = QuotaTestClock()
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel)
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel)
         let service = makeService(workspace: workspace, fixture: fixture, now: { clock.value }) { _ in }
         var account = fixtureAccount()
         account.windows = [.init(id: "five_hour", usedPercent: 5, observedAt: clock.value, resetsAt: clock.value.addingTimeInterval(3600))]
@@ -588,7 +640,7 @@ final class QuotaRefreshTests: XCTestCase {
     func testEndedOrReplacedWorkDuringQuiesceCannotResurrectOnResume() async throws {
         for outcome in ["ended", "changed", "removed"] {
             let workspace = try fixtureWorkspace(), clock = QuotaTestClock()
-            let fixture = UsageProcessFixture(workspace: workspace, panel: panel)
+            let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel)
             let service = makeService(workspace: workspace, fixture: fixture, now: { clock.value }) { _ in }
             var account = fixtureAccount()
             account.windows = [.init(id: "five_hour", usedPercent: 5, observedAt: clock.value, resetsAt: clock.value.addingTimeInterval(3600))]
@@ -623,7 +675,7 @@ final class QuotaRefreshTests: XCTestCase {
     func testFreshNativeObservationCoalescesAnAutomaticReadWaitingForExecutable() async throws {
         let workspace = try fixtureWorkspace(), waiting = expectation(description: "Observer launch is being prepared")
         let unwanted = expectation(description: "Fresh native quota makes the dedicated read redundant"); unwanted.isInverted = true
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel), clock = QuotaTestClock(), gate = QuotaExecutableGate()
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel), clock = QuotaTestClock(), gate = QuotaExecutableGate()
         let service = QuotaRefreshService(workspace: workspace, executable: {
             waiting.fulfill(); return await gate.wait()
         }, helperExecutable: workspace.root.appendingPathComponent("fixture-helper"), update: { _ in }, launch: { plan in
@@ -646,7 +698,7 @@ final class QuotaRefreshTests: XCTestCase {
     }
     func testElapsedResetRefreshesBeforeOrdinaryPeriodicDeadline() async throws {
         let workspace = try fixtureWorkspace(), first = expectation(description: "Initial read"), second = expectation(description: "Reset read")
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel), clock = QuotaTestClock(), counter = QuotaEventCounter()
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel), clock = QuotaTestClock(), counter = QuotaEventCounter()
         let service = makeService(workspace: workspace, fixture: fixture, now: { clock.value }) { update in
             if case .status(_, let status) = update, status.phase == .idle, status.lastSuccessAt != nil {
                 let count = await counter.increment()
@@ -680,7 +732,7 @@ final class QuotaRefreshTests: XCTestCase {
     }
     func testAccountWhoseWeekIsUsedUpIsNotReadUntilTheWeekResets() async throws {
         let workspace = try fixtureWorkspace(), back = expectation(description: "Read once the week is back")
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel), clock = QuotaTestClock()
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel), clock = QuotaTestClock()
         let service = makeService(workspace: workspace, fixture: fixture, now: { clock.value }) { update in
             if case .status(_, let status) = update, status.phase == .idle, status.lastAttemptAt != nil, status.lastSuccessAt != nil { back.fulfill() }
         }
@@ -701,7 +753,7 @@ final class QuotaRefreshTests: XCTestCase {
     }
     func testAPoolOfAHundredUnusedAccountsIsReadOnlyAtAReset() async throws {
         let workspace = try fixtureWorkspace(), reset = expectation(description: "The account whose limit reset is read")
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel), clock = QuotaTestClock()
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel), clock = QuotaTestClock()
         let start = clock.value
         let accounts = (0..<100).map { index in
             PoolAccount(plan: "Pro", state: .ready, windows: [
@@ -733,7 +785,7 @@ final class QuotaRefreshTests: XCTestCase {
     }
     func testWorkThatStopsIsReadOnceAndThenLeftAlone() async throws {
         let workspace = try fixtureWorkspace(), settled = expectation(description: "One read once work stops")
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel), clock = QuotaTestClock(), session = UUID()
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel), clock = QuotaTestClock(), session = UUID()
         let service = makeService(workspace: workspace, fixture: fixture, now: { clock.value }) { update in
             if case .status(_, let status) = update, status.phase == .idle, status.lastAttemptAt != nil { settled.fulfill() }
         }
@@ -758,7 +810,7 @@ final class QuotaRefreshTests: XCTestCase {
     }
     func testAnAccountStartingWorkWithAnOldReadingIsReadFirst() async throws {
         let workspace = try fixtureWorkspace(), confirmed = expectation(description: "The chosen account is read")
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel), clock = QuotaTestClock()
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel), clock = QuotaTestClock()
         var fresh = PoolAccount(plan: "Pro", state: .ready), old = PoolAccount(plan: "Pro", state: .ready)
         fresh.windows = [.init(id: "seven_day", usedPercent: 9, observedAt: clock.value, resetsAt: clock.value.addingTimeInterval(6 * 86400))]
         old.windows = [.init(id: "seven_day", usedPercent: 9, observedAt: clock.value.addingTimeInterval(-3600), resetsAt: clock.value.addingTimeInterval(6 * 86400))]
@@ -782,7 +834,7 @@ final class QuotaRefreshTests: XCTestCase {
     }
     func testAccountsAreStaggeredAndSleepPausesNewObservers() async throws {
         let workspace = try fixtureWorkspace(), first = expectation(description: "First account read"), second = expectation(description: "Second account read")
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel), clock = QuotaTestClock(), counter = QuotaEventCounter()
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel), clock = QuotaTestClock(), counter = QuotaEventCounter()
         let service = makeService(workspace: workspace, fixture: fixture, now: { clock.value }) { update in
             if case .status(_, let status) = update, status.phase == .idle, status.lastSuccessAt != nil {
                 let count = await counter.increment()
@@ -806,7 +858,7 @@ final class QuotaRefreshTests: XCTestCase {
     func testSuspendInvalidatesAnObserverWaitingForManagedExecutable() async throws {
         let workspace = try fixtureWorkspace(), waiting = expectation(description: "Executable lookup pending")
         let unexpectedLaunch = expectation(description: "Old generation must not launch"); unexpectedLaunch.isInverted = true
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel), gate = QuotaExecutableGate()
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel), gate = QuotaExecutableGate()
         let service = QuotaRefreshService(workspace: workspace, executable: {
             waiting.fulfill(); return await gate.wait()
         }, helperExecutable: workspace.root.appendingPathComponent("fixture-helper"), update: { _ in }, launch: { plan in
@@ -824,7 +876,7 @@ final class QuotaRefreshTests: XCTestCase {
     }
     func testPlanChangeWhileReadingDeliveryWaitsDoesNotPublishOldSuccessInNewScope() async throws {
         let workspace = try fixtureWorkspace(), delivered = expectation(description: "Old plan reading queued")
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel), log = QuotaUpdateLog()
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel), log = QuotaUpdateLog()
         let gate = AsyncStream<Void>.makeStream()
         let service = makeService(workspace: workspace, fixture: fixture) { update in
             await log.append(update)
@@ -863,7 +915,7 @@ final class QuotaRefreshTests: XCTestCase {
     }
     func testUnsavableRefreshStateDoesNotStartARead() async throws {
         let workspace = try fixtureWorkspace(), failed = expectation(description: "Persistence failure surfaced")
-        let fixture = UsageProcessFixture(workspace: workspace, panel: panel)
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel)
         let service = makeService(workspace: workspace, fixture: fixture) { update in
             if case .status(_, let status) = update, status.failure == .storage { failed.fulfill() }
         }
@@ -925,6 +977,9 @@ private final class UsageProcessFixture: @unchecked Sendable {
     private let deferExit: Bool, blockCleanup: Bool
     /// A child that does not end on Ctrl-C. Pool must then report it, never escalate.
     var ignoresInterrupt = false
+    /// As a real child: its exit reaches the observer later, and a key sent meanwhile fails.
+    var exitEventLags = false
+    private var gone = false
     /// A child left on a screen where the typed /exit does nothing.
     var ignoresExit = false
     private var interrupts: [Date] = []
@@ -959,7 +1014,7 @@ private final class UsageProcessFixture: @unchecked Sendable {
             stream.continuation.yield(.output(Data("> ".utf8))); try hook("SessionStart", plan: plan)
         }
         if blockCleanup { try workspace.write(Data("fixture".utf8), to: plan.runDirectory.appendingPathComponent("unexpected.txt")) }
-        return SessionTransport(events: stream.stream, write: { try self.write($0) }, interrupt: { self.interrupt() }, exit: { try self.exit() }, waitForExit: {
+        return SessionTransport(events: stream.stream, write: { try self.write($0) }, interrupt: { try self.interrupt() }, exit: { try self.exit() }, waitForExit: {
             guard self.lock.withLock({ self.output == nil }) else { throw RuntimeError.processUnresponsive }
             return 0
         })
@@ -985,12 +1040,15 @@ private final class UsageProcessFixture: @unchecked Sendable {
         else if data.first == 27 { state.1?.yield(.output(Data("\u{1b}[2J\u{1b}[H> ".utf8))) }
     }
     /// Like the official client, a second Ctrl-C shortly after the first ends the process.
-    private func interrupt() {
+    private func interrupt() throws {
+        if lock.withLock({ gone }) { completeExit(); throw RuntimeError.processExited }
         let doubled = lock.withLock { () -> Bool in
             let previous = interrupts.last; interrupts.append(Date())
             return !ignoresInterrupt && previous.map { Date().timeIntervalSince($0) < 1 } == true
         }
-        if doubled { completeExit() }
+        if doubled {
+            if exitEventLags { lock.withLock { gone = true } } else { completeExit() }
+        }
     }
     private static func draw(_ screen: String) -> String {
         let text: String

@@ -1,5 +1,6 @@
 import XCTest
 import PoolCore
+import ViewInspector
 @testable import ClaudePool
 
 @MainActor
@@ -18,6 +19,36 @@ final class PresentationTests: XCTestCase {
         account.windows[0].observedAt = model.now
         account.windows[0].usedPercent = 100
         XCTAssertEqual(model.quotaText(account, window: "five_hour"), "0%")
+    }
+
+    func testOnlyFailingReadsMarkAnOldReadingAsStale() throws {
+        let model = PoolAppModel.demoModel()
+        let account = try XCTUnwrap(model.snapshot.accounts.first { $0.standing(at: model.now) == .usable })
+        let old = model.now.addingTimeInterval(-3 * 3600)
+        // An idle account is not read by time: an old reading with no failure is normal.
+        model.quotaRefresh[account.id] = .init(phase: .idle, updatedAt: old)
+        XCTAssertFalse(model.isStale(account))
+        // A failed read waiting to retry reaches the app as `failed`, with its message.
+        model.quotaRefresh[account.id] = .init(phase: .failed, updatedAt: old, message: "The usage refresh timed out. The previous reading is kept.")
+        XCTAssertTrue(model.isStale(account))
+        model.quotaRefresh[account.id]?.updatedAt = model.now.addingTimeInterval(-600)
+        XCTAssertFalse(model.isStale(account), "A recent reading stays current while a retry waits")
+    }
+
+    func testStartIsOfferedOnlyWhenThePoolDoesNotStartTheLimitItself() throws {
+        let model = PoolAppModel.demoModel()
+        model.snapshot.executableReady = true
+        let index = try XCTUnwrap(model.snapshot.accounts.firstIndex { $0.standing(at: model.now) == .usable })
+        model.snapshot.accounts[index].windows.removeAll { $0.id == "five_hour" }
+        model.snapshot.accounts[index].windows.append(.init(id: "five_hour", usedPercent: 0, observedAt: model.now))
+        let account = model.snapshot.accounts[index]
+        model.preferences.warmUp = .init(onReset: .week)
+        XCTAssertTrue(model.canWarmUp(account))
+        // The pool starts 5-hour limits itself: its waits and retries are not the person's job.
+        model.preferences.warmUp = .init(onReset: .all)
+        XCTAssertFalse(model.canWarmUp(account))
+        model.warmUp[account.id] = .init(failure: "The warm-up did not go through.", failedAt: model.now)
+        XCTAssertTrue(model.canWarmUp(account), "A failed try of its own hands the start back")
     }
 
     func testPoolReadinessHonorsAccountLimits() {
@@ -86,6 +117,25 @@ final class PresentationTests: XCTestCase {
         model.perform(.sendTerminalKey("\r"))
         XCTAssertEqual(actions, [.addAccount, .sendTerminalInput("yes"), .sendTerminalKey("\r")])
         XCTAssertTrue(model.snapshot.accounts.isEmpty)
+    }
+
+    func testRefreshAllTakesTheWholeButtonAndTurnsUntilReadingsAreIn() throws {
+        let model = PoolAppModel.demoModel()
+        model.snapshot.executableReady = true
+        let id = model.snapshot.accounts[0].id
+        // Another account's read in progress does not hold the button back.
+        model.quotaRefresh[id] = .init(phase: .waiting)
+        var actions: [UIAction] = []
+        model.onAction = { actions.append($0) }
+        let button = try QuotaOverview(model: model).inspect().find(ViewType.Button.self, where: { try $0.accessibilityIdentifier() == "quota.refreshAll" })
+        XCTAssertFalse(try button.isDisabled())
+        try button.tap()
+        XCTAssertEqual(actions, [.refreshQuota(nil)])
+        XCTAssertTrue(model.quotaReadRequested)
+        model.quotaReadRequested = false
+        XCTAssertTrue(model.isRefreshingQuota)
+        model.quotaRefresh[id] = .init(phase: .idle)
+        XCTAssertFalse(model.isRefreshingQuota)
     }
 
     func testUnknownQuotaIsNotCountedAsConfirmedReady() {

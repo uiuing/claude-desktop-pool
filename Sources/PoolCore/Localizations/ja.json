@@ -274,6 +274,7 @@
   "Every {0} sec": "{0} 秒ごと",
   "Last confirmed {0}% · awaiting new cycle": "最後に確認した値 {0}% · 新しいサイクルを待機中",
   "Starts on next use": "次回使用時",
+  "Starting automatically": "まもなく自動開始",
   "Subscription required": "サブスクリプションが必要",
   "Model unavailable for this account": "このアカウントでは利用できないモデル",
   "This account needs a Claude subscription to join the pool.": "このアカウントがプールに参加するには、Claude のサブスクリプションが必要です。",

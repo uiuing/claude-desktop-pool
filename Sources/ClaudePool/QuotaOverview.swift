@@ -9,9 +9,7 @@ struct QuotaOverview: View {
             HStack(spacing: 10) {
                 Text(model.t("Quota left by plan")).font(.system(size: 13, weight: .semibold))
                 Spacer(minLength: 0)
-                Button { model.perform(.refreshQuota(nil)) } label: { Label(model.t("Refresh all"), systemImage: "arrow.clockwise") }
-                    .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(PoolPalette.accent)
-                    .disabled(model.isWorking || model.snapshot.accounts.isEmpty || model.quotaRefresh.values.contains { $0.busy })
+                RefreshAllButton(model: model)
             }
             PoolCard(padding: 0) {
                 if model.planQuotas.isEmpty {
@@ -88,5 +86,31 @@ struct QuotaOverview: View {
             Text(model.t("Percentages combine only accounts with the same plan and limit."))
                 .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }.padding(16).frame(width: 290)
+    }
+}
+
+/// The whole label takes the click, and its arrow turns from the tap until the readings are in.
+private struct RefreshAllButton: View {
+    @Bindable var model: PoolAppModel
+    @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        let spinning = model.isRefreshingQuota
+        Button { model.perform(.refreshQuota(nil)) } label: {
+            HStack(spacing: 4) {
+                TimelineView(.animation(minimumInterval: nil, paused: !spinning || reduceMotion)) { context in
+                    let turn = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.1) / 1.1
+                    Image(systemName: "arrow.clockwise")
+                        .rotationEffect(.degrees(spinning && !reduceMotion ? turn * 360 : 0))
+                        .opacity(spinning && reduceMotion ? 0.5 : 1)
+                }
+                Text(model.t("Refresh all"))
+            }.padding(.horizontal, 6).padding(.vertical, 3)
+                .background(hovering ? PoolPalette.accent.opacity(0.09) : .clear, in: RoundedRectangle(cornerRadius: 5))
+                .contentShape(Rectangle())
+        }.buttonStyle(PoolPressStyle()).font(.system(size: 11)).foregroundStyle(PoolPalette.accent)
+            .onHover { hovering = $0 }.poolAnimation(PoolMotion.quick, value: hovering)
+            .disabled(model.isWorking || model.snapshot.accounts.isEmpty || !model.snapshot.executableReady)
+            .accessibilityLabel(model.t("Refresh all")).accessibilityIdentifier("quota.refreshAll")
     }
 }

@@ -40,6 +40,8 @@ struct QuotaRefreshPresentation: Equatable {
     var updatedAt: Date?
     var message: String?
     var busy: Bool { phase == .waiting || phase == .refreshing }
+    /// The last read failed, including while it waits to retry. Only a failure carries a message.
+    var failing: Bool { message != nil }
 }
 
 /// The first setup step still to do. The client installs and redaction prepares by themselves;
@@ -191,6 +193,8 @@ final class PoolAppModel {
     @ObservationIgnored private var usageRevision = 0
     @ObservationIgnored private var usageSummaryCache: (key: UsageSummaryKey, summary: UsageSummary)?
     var pendingSignInID: UUID?
+    /// Set by a tap on a refresh action until the service has queued its reads.
+    var quotaReadRequested = false
     var notice: String?
     var isWorking = false
     /// Claude Pool's own release check; previews show the packaged version without reading GitHub.
@@ -407,6 +411,8 @@ final class PoolAppModel {
     }
     /// Whether a quota reading is running now.
     var isReadingQuota: Bool { quotaRefresh.values.contains { $0.phase == .refreshing } }
+    /// A read the person asked for shows at once, through its wait in the queue, until the readings are in.
+    var isRefreshingQuota: Bool { quotaReadRequested || quotaRefresh.values.contains { $0.phase == .waiting || $0.phase == .refreshing } }
     var canStartPool: Bool { setupComplete && snapshot.accounts.contains { $0.state == .ready || $0.state == .limited } }
     var orderedRoutingAccounts: [PoolAccount] {
         let ids = preferences.routingPolicy.accountOrder + snapshot.accounts.map(\.id)
@@ -505,10 +511,11 @@ final class PoolAppModel {
         if global.contains(where: { ($0.usedPercent ?? 0) > 0 && $0.resetsAt == nil && !$0.isRenewed(at: now) }) { return t("Reset time not reported") }
         return t("Not used yet")
     }
-    /// A usable account whose last reading is hours old: reads have been failing, so the figures
-    /// are shown as of that time.
+    /// A usable account whose reads are failing and whose last reading is hours old, so the figures
+    /// are shown as of that time. An idle account is not read by time, so age alone means nothing.
     func isStale(_ account: PoolAccount) -> Bool {
-        guard account.standing(at: now) == .usable, let last = lastQuotaUpdate(account) else { return false }
+        guard account.standing(at: now) == .usable, quotaRefresh[account.id]?.failing == true,
+              let last = lastQuotaUpdate(account) else { return false }
         return now.timeIntervalSince(last) > 2 * 3600
     }
     /// "Updated just now", "Updated 3 minutes ago".
@@ -523,9 +530,12 @@ final class PoolAppModel {
     }
     /// Whether one short request would start this account's 5-hour limit now: it can be used and
     /// that limit is not running. Not offered again for ten minutes after one went through, while
-    /// its reading catches up.
+    /// its reading catches up. While the pool starts 5-hour limits at their resets itself, it is
+    /// offered only once the pool's own try failed: otherwise it would show during every wait
+    /// the pool leaves before and between its own tries.
     func canWarmUp(_ account: PoolAccount) -> Bool {
         let state = warmUp[account.id]
+        if preferences.warmUp.onReset == .all, state?.failure == nil { return false }
         return snapshot.executableReady && state?.sending != true && account.standing(at: now) == .usable &&
             (state?.warmedAt.map { now.timeIntervalSince($0) >= 600 } ?? true) &&
             account.windows.contains { $0.id == "five_hour" && WarmUpPlanner.idle($0, at: now) }
@@ -557,7 +567,13 @@ final class PoolAppModel {
     func resetText(_ account: PoolAccount, window: String) -> String {
         guard let reading = account.windows.first(where: { $0.id == window }) else { return t("Not reported yet") }
         if reading.isNotApplicable(at: now) { return t("Not applicable") }
-        if reading.waitsForFirstUse(at: now) { return t("Starts on next use") }
+        if reading.waitsForFirstUse(at: now) {
+            // The pool starts it itself a minute or two after its reset.
+            if preferences.warmUp.onReset == .all, account.standing(at: now) == .usable, warmUp[account.id]?.failure == nil {
+                return t("Starting automatically")
+            }
+            return t("Starts on next use")
+        }
         if reading.isRenewed(at: now) { return t("Renewed · full again") }
         guard let reset = reading.resetsAt else {
             return remaining(account, window: window) == nil ? t("Not reported yet") : t("Last read {0}", clockTime(reading.observedAt))
@@ -692,6 +708,7 @@ final class PoolAppModel {
         return formatter.string(from: date)
     }
     func perform(_ action: UIAction) {
+        if case .refreshQuota = action { quotaReadRequested = true }
         if let onAction { onAction(action) }
         else if demo { performDemo(action) }
     }
@@ -736,7 +753,7 @@ final class PoolAppModel {
             if pendingSignInID == id { pendingSignInID = nil }
             if terminal?.id == id { terminal = nil }
         case .routePolicy(let policy): preferences.routingPolicy = policy
-        case .refreshQuota: notice = t("Preview only. No quota request was sent.")
+        case .refreshQuota: quotaReadRequested = false; notice = t("Preview only. No quota request was sent.")
         case .quotaRefreshPreferences(let preferences): self.preferences.quotaRefresh = preferences
         case .warmUpPreferences(let preferences): self.preferences.warmUp = preferences
         case .warmUpNow: notice = t("Preview only. No request was sent.")

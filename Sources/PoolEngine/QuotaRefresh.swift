@@ -55,6 +55,14 @@ public enum NativeUsageParser {
         }
         if lower.contains("failed to load usage data") || lower.contains("usage is temporarily unavailable") { throw QuotaRefreshFailure.unavailable }
         if lower.contains("loading usage") { throw QuotaRefreshFailure.loading }
+        // A client that lost its sign-in falls back to API billing: its panel has costs and no
+        // limits, and would otherwise read as still loading until the read times out.
+        // A signed-out client (2.1.318) draws the same cost-only tab without naming the billing:
+        // "Session · Total cost: $0.0000 · Total duration (API) …".
+        if lower.contains("api usage billing") || lower.contains("total cost:"), isPanel(flat),
+           !lower.contains("current session"), !lower.contains("current week") {
+            throw QuotaRefreshFailure.authentication
+        }
         guard isPanel(flat) else { throw QuotaRefreshFailure.loading }
         let headings = matches(#"Current\s+(session|week(?:\s*\([^)]+\))?)"#, in: flat)
         // The panel draws its frame before its figures. A frame without them is still loading.
@@ -103,6 +111,8 @@ public enum NativeUsageParser {
 
     /// Named-zone calendar readings are accepted only when their date is unambiguous. Relative
     /// durations, unknown zones, missing zones, and a time-only weekly reset remain unknown.
+    /// A reset up to one span in the past is kept: right after a reset Claude can still show the
+    /// cycle that ended, and only its passed reset tells that reading apart from a current one.
     public static func resetTime(_ text: String, observedAt now: Date, windowID: String) -> Date? {
         guard let all = matches(#"^\s*(.+?)\s*\(([^)]+)\)\s*$"#, in: text).first,
               let dateRange = Range(all.range(at: 1), in: text), let zoneRange = Range(all.range(at: 2), in: text),
@@ -124,7 +134,7 @@ public enum NativeUsageParser {
             else { dates = [year - 1, year, year + 1].map { ($0, month, day) } }
         } else {
             guard windowID == "five_hour", let today = calendar.date(from: current) else { return nil }
-            dates = [0, 1].compactMap { offset in
+            dates = [-1, 0, 1].compactMap { offset in
                 guard let day = calendar.date(byAdding: .day, value: offset, to: today) else { return nil }
                 let c = calendar.dateComponents([.year, .month, .day], from: day)
                 return (c.year!, c.month!, c.day!)
@@ -141,7 +151,7 @@ public enum NativeUsageParser {
             for policy in [Calendar.RepeatedTimePolicy.first, .last] {
                 guard let date = calendar.nextDate(after: midnight.addingTimeInterval(-1), matching: target, matchingPolicy: .strict, repeatedTimePolicy: policy),
                       calendar.isDate(date, inSameDayAs: midnight) else { continue }
-                if explicitYear || (date >= now.addingTimeInterval(-60) && date <= now.addingTimeInterval(span + 60)) { candidates.append(date) }
+                if explicitYear || (date >= now.addingTimeInterval(-span) && date <= now.addingTimeInterval(span + 60)) { candidates.append(date) }
             }
         }
         let unique = Set(candidates)
@@ -201,6 +211,8 @@ public actor QuotaRefreshService {
     private var generations: [UUID: UInt64] = [:]
     private var preferences = QuotaRefreshPreferences()
     private var displayedCadence: [UUID: QuotaCadenceSnapshot] = [:]
+    /// Each account's read phase and failure as last written to the log.
+    private var loggedStatus: [UUID: String] = [:]
     private var cadence: [UUID: QuotaCadence] = [:]
     private var burn: [UUID: QuotaBurn] = [:]
     /// When each account last generated or reported progress. Only accounts the pool uses are
@@ -214,9 +226,12 @@ public actor QuotaRefreshService {
     private var warmSince = Date.distantPast
     private static let warmFor: TimeInterval = 90
     private var enabled = false, awake = true, online = true, started = false, stopping = false
-    private var active: QuotaObserver?
+    /// Each account's observer: reading, or held for the user. Accounts are read side by side,
+    /// up to `concurrentReads` at once; a held session holds back only its own account.
+    private var active: [UUID: QuotaObserver] = [:]
+    static let concurrentReads = 3
     private var task: Task<Void, Never>?
-    private var refreshTask: Task<Void, Never>?
+    private var refreshTasks: [UUID: Task<Void, Never>] = [:]
     private var nextLaunchAt = Date.distantPast
     public init(workspace: OwnedWorkspace, executable: @escaping @Sendable () async throws -> URL,
                 helperExecutable: URL, update: @escaping Update, launch: @escaping Launch = { try SessionTransport.launch($0) },
@@ -366,7 +381,7 @@ public actor QuotaRefreshService {
     public func setAvailability(enabled: Bool, awake: Bool, online: Bool) async {
         self.enabled = enabled; self.awake = awake; self.online = online
         if !enabled { requested = requested.filter { $0.value == .manual || $0.value == .initial } }
-        for account in accounts where account.id != active?.account.id {
+        for account in accounts where active[account.id] == nil {
             if !awake || !online || (!enabled && requested[account.id] == nil) {
                 records[account.id]?.status.phase = .paused; await publish(account.id)
             } else if records[account.id]?.status.phase == .paused {
@@ -383,7 +398,7 @@ public actor QuotaRefreshService {
     }
     private func queueConfirmation(_ id: UUID) {
         guard !suspended.contains(id), let account = accounts.first(where: { $0.id == id }), account.isInRotation(at: now()),
-              active?.account.id != id, let record = records[id],
+              active[id] == nil, let record = records[id],
               now().timeIntervalSince(record.status.lastSuccessAt ?? .distantPast) >= Self.freshFor else { return }
         if let pending = requested[id], priority(pending) <= priority(.selected) { return }
         requested[id] = .selected
@@ -393,7 +408,7 @@ public actor QuotaRefreshService {
         guard !suspended.contains(accountID), accounts.contains(where: { $0.id == accountID && [.ready, .limited, .needsAttention].contains($0.state) }) else { return }
         // A held session is this account's refresh already. Queuing another read behind it would
         // wait for itself and show a refresh that never starts.
-        if let active, active.account.id == accountID, refreshTask == nil {
+        if active[accountID] != nil, refreshTasks[accountID] == nil {
             await publish(accountID); return
         }
         if reason == .initial, [.authentication, .needsAttention, .cancelled].contains(records[accountID]?.status.failure) {
@@ -402,7 +417,7 @@ public actor QuotaRefreshService {
         requested[accountID] = reason
         records[accountID]?.status.phase = .queued
         if records[accountID]?.status.failure == nil, reason != .periodic {
-            let next = max(now(), (records[accountID]?.status.lastAttemptAt ?? .distantPast).addingTimeInterval(30))
+            let next = max(now(), (records[accountID]?.status.lastAttemptAt ?? .distantPast).addingTimeInterval(10))
             records[accountID]?.status.nextAttemptAt = next
         }
         await publish(accountID); await tick()
@@ -414,16 +429,16 @@ public actor QuotaRefreshService {
         await publishCadence()
         records[accountID]?.status.phase = .paused; await publish(accountID)
         if warm?.account.id == accountID { await retireWarm(endHeld: true) }
-        guard let active, active.account.id == accountID else { return true }
-        refreshTask?.cancel()
-        let closed = await close(active, endHeld: true)
-        await refreshTask?.value
-        if closed { self.active = nil }
+        guard let observer = active[accountID] else { return true }
+        refreshTasks[accountID]?.cancel()
+        let closed = await close(observer, endHeld: true)
+        await refreshTasks[accountID]?.value
+        if closed, active[accountID]?.id == observer.id { active[accountID] = nil }
         return closed
     }
     public func resume(accountID: UUID) async {
         suspended.remove(accountID)
-        if active?.account.id != accountID { records[accountID]?.status.phase = .idle; await publish(accountID) }
+        if active[accountID] == nil { records[accountID]?.status.phase = .idle; await publish(accountID) }
         await tick()
     }
     public func suspendAccount(_ id: UUID) async -> Bool { await suspend(accountID: id) }
@@ -436,42 +451,54 @@ public actor QuotaRefreshService {
         record.status.lastSuccessAt = newest
         if requested[accountID] == .periodic { requested.removeValue(forKey: accountID) }
         if record.status.failure == nil {
-            if active?.account.id != accountID { record.status.phase = .idle }
+            if active[accountID] == nil { record.status.phase = .idle }
         }
         records[accountID] = record; await persist(); await publish(accountID, scope: scope)
     }
     public func sendInput(observerID: UUID, data: Data) async throws {
-        guard let active, active.id == observerID else { throw QuotaRefreshFailure.needsAttention }
-        try await active.sendInput(data)
-        if records[active.account.id]?.status.phase == .needsAttention {
-            await refreshTask?.value
-            if started, !stopping, refreshTask == nil, currentIdentity(active.account), !suspended.contains(active.account.id) {
-                let generation = generations[active.account.id, default: 0]
-                refreshTask = Task { [weak self] in
-                    await self?.perform(active.account, generation: generation, reason: .manual, reusing: active)
-                    await self?.finishedTask()
+        guard let observer = active.values.first(where: { $0.id == observerID }) else { throw QuotaRefreshFailure.needsAttention }
+        let id = observer.account.id
+        try await observer.sendInput(data)
+        if records[id]?.status.phase == .needsAttention {
+            await refreshTasks[id]?.value
+            if started, !stopping, refreshTasks[id] == nil, active[id]?.id == observer.id, currentIdentity(observer.account), !suspended.contains(id) {
+                let generation = generations[id, default: 0]
+                refreshTasks[id] = Task { [weak self] in
+                    await self?.perform(observer.account, generation: generation, reason: .manual, reusing: observer)
+                    await self?.finishedTask(id)
                 }
             }
         }
     }
     public func closeObserver(observerID: UUID) async -> Bool {
         if warm?.id == observerID { return await retireWarm(endHeld: true) }
-        guard let active, active.id == observerID else { return true }
-        refreshTask?.cancel()
-        let closed = await close(active, endHeld: true)
-        await refreshTask?.value
-        if closed { self.active = nil; await tick() }
+        guard let observer = active.values.first(where: { $0.id == observerID }) else { return true }
+        let id = observer.account.id
+        refreshTasks[id]?.cancel()
+        let closed = await close(observer, endHeld: true)
+        await refreshTasks[id]?.value
+        if closed { if active[id]?.id == observer.id { active[id] = nil }; await tick() }
         return closed
     }
     @discardableResult public func stop() async -> Bool {
-        stopping = true; started = false; task?.cancel(); task = nil; refreshTask?.cancel()
+        stopping = true; started = false; task?.cancel(); task = nil; refreshTasks.values.forEach { $0.cancel() }
         await publishCadence()
-        let closed: Bool
-        let warmClosed = await retireWarm(endHeld: true)
-        if let active { closed = await close(active, endHeld: true) && warmClosed } else { closed = warmClosed }
-        await refreshTask?.value
-        if closed { self.active = nil }
+        // Observers end together, so one slow child does not hold up the rest.
+        let observers = active
+        let closed = await withTaskGroup(of: Bool.self) { group in
+            group.addTask { await self.retireWarm(endHeld: true) }
+            for (id, observer) in observers { group.addTask { await self.closeForStop(id, observer) } }
+            var allClosed = true
+            for await ended in group where !ended { allClosed = false }
+            return allClosed
+        }
+        for running in refreshTasks.values { await running.value }
         return closed
+    }
+    private func closeForStop(_ id: UUID, _ observer: QuotaObserver) async -> Bool {
+        guard await close(observer, endHeld: true) else { return false }
+        if active[id]?.id == observer.id { active[id] = nil }
+        return true
     }
     private func close(_ observer: QuotaObserver, endHeld: Bool = false) async -> Bool {
         let closed = await observer.close(endHeld: endHeld)
@@ -485,11 +512,23 @@ public actor QuotaRefreshService {
     private var stateFile: URL { workspace.root.appendingPathComponent("quota-refresh.json") }
     private func tick() async {
         await publishCadence()
-        if let observer = active, await observer.hasEnded, active?.id == observer.id {
-            active = nil; records[observer.account.id]?.status.observerID = nil
+        for (id, observer) in active where refreshTasks[id] == nil {
+            if await observer.hasEnded, active[id]?.id == observer.id {
+                active[id] = nil; records[id]?.status.observerID = nil
+                // Its session was held only because it did not close in time; it has ended since,
+                // so nothing waits for the person. Sign-in and usage-credit attention stay.
+                if records[id]?.status.failure == .needsAttention {
+                    records[id]?.status.failure = nil; records[id]?.status.phase = .idle; records[id]?.status.nextAttemptAt = nil
+                    Diagnostics.record("quota.close", ["account": Diagnostics.id(id), "outcome": "ended_later"])
+                    await persist(); await publish(id)
+                }
+            }
         }
         if let observer = warm, await observer.hasEnded, warm?.id == observer.id { warm = nil }
-        guard started, !stopping, active == nil, refreshTask == nil else { return }
+        for account in accounts where records[account.id]?.status.phase == .cooldown && !account.isInRotation(at: now()) {
+            records[account.id]?.status.phase = .idle; await publish(account.id)
+        }
+        guard started, !stopping, busyAccounts.count < Self.concurrentReads else { return }
         if warm != nil, !awake || !online || !enabled || now().timeIntervalSince(warmSince) > Self.warmFor { await retireWarm() }
         guard awake, online, now() >= nextLaunchAt else { return }
         let now = now()
@@ -509,11 +548,12 @@ public actor QuotaRefreshService {
             }
         }
         let candidates = accounts.filter { account in
-            guard !suspended.contains(account.id), let reason = requested[account.id], [.ready, .limited, .needsAttention].contains(account.state),
+            guard !suspended.contains(account.id), !busyAccounts.contains(account.id), let reason = requested[account.id], [.ready, .limited, .needsAttention].contains(account.state),
                   reason == .manual || reason == .initial || enabled else { return false }
             let status = records[account.id]?.status
-            let due = status?.failure != nil ? (status?.nextAttemptAt ?? .distantPast) : .distantPast
-            let spacing: TimeInterval = reason == .manual ? 30 : 10
+            // The person's own request does not wait out a failed read's backoff; it would sit queued, spinning, for up to half an hour.
+            let due = status?.failure != nil && reason != .manual ? (status?.nextAttemptAt ?? .distantPast) : .distantPast
+            let spacing: TimeInterval = 10
             return now >= due && now >= (status?.lastAttemptAt ?? .distantPast).addingTimeInterval(spacing)
         }.sorted { a, b in
             let pa = priority(requested[a.id]!), pb = priority(requested[b.id]!)
@@ -522,11 +562,15 @@ public actor QuotaRefreshService {
         }
         guard let account = candidates.first else { return }
         if let warm, warm.account.id != account.id { guard await retireWarm() else { return } }
-        guard active == nil, refreshTask == nil else { return }
+        guard busyAccounts.count < Self.concurrentReads, !busyAccounts.contains(account.id) else { return }
         let reason = requested.removeValue(forKey: account.id)!
         let generation = generations[account.id, default: 0]
-        refreshTask = Task { [weak self] in await self?.perform(account, generation: generation, reason: reason); await self?.finishedTask() }
+        refreshTasks[account.id] = Task { [weak self] in await self?.perform(account, generation: generation, reason: reason); await self?.finishedTask(account.id) }
+        // Reads start a second apart, so several clients do not all launch in the same instant.
+        nextLaunchAt = max(nextLaunchAt, now.addingTimeInterval(1))
     }
+    /// Accounts with a read running or a session held: each takes one of the concurrent slots.
+    private var busyAccounts: Set<UUID> { Set(active.keys).union(refreshTasks.keys) }
     private func dueReason(_ account: PoolAccount, record: Record, now: Date) -> QuotaRefreshReason? {
         // An account whose week is used up comes back only at that reset, and an unusable one only
         // once it is fixed: neither is read by itself until then, so passing 5-hour resets, timed
@@ -555,11 +599,13 @@ public actor QuotaRefreshService {
         case .manual: return 0; case .initial, .selected: return 1; case .reset: return 2; case .recovery: return 3; case .periodic, .settle: return 4
         }
     }
-    private func finishedTask() async { refreshTask = nil; await tick() }
+    private func finishedTask(_ id: UUID) async { refreshTasks[id] = nil; await tick() }
     private func perform(_ account: PoolAccount, generation: UInt64, reason: QuotaRefreshReason, reusing: QuotaObserver? = nil) async {
         guard !suspended.contains(account.id), currentIdentity(account), generations[account.id, default: 0] == generation else { return }
         let scope = AccountScope(account)
         let now = now()
+        let began = Date()
+        let tag = Diagnostics.id(account.id)
         let previousAttempt = records[account.id]?.status.lastAttemptAt
         let previousSuccess = records[account.id]?.status.lastSuccessAt ?? .distantPast
         let previousResetChecks = records[account.id]?.resetChecks
@@ -597,6 +643,7 @@ public actor QuotaRefreshService {
                 default: redundant = false
                 }
                 if !available || redundant {
+                    Diagnostics.record("quota.read", ["account": tag, "reason": reason.rawValue, "outcome": available ? "redundant" : "paused"])
                     if !available, reason == .manual || reason == .initial { requested[account.id] = reason }
                     records[account.id]?.status.lastAttemptAt = previousAttempt
                     records[account.id]?.resetChecks = previousResetChecks
@@ -611,11 +658,19 @@ public actor QuotaRefreshService {
                                              helper: helperExecutable, launch: launch, update: update, timeout: observerTimeout)
                 }
             }
-            active = observer
+            active[account.id] = observer
             records[account.id]?.status.observerID = observer.id; await publish(account.id, scope: scope)
             try Task.checkCancellation()
             guard !suspended.contains(account.id), currentIdentity(account), generations[account.id, default: 0] == generation else { throw QuotaRefreshFailure.cancelled }
             let windows = try await observer.read()
+            let timings = await observer.timings()
+            let fiveHour = windows.first { $0.id == "five_hour" }
+            Diagnostics.record("quota.read", ["account": tag, "reason": reason.rawValue, "outcome": "ok",
+                "reused": await observer.reads > 1 ? "yes" : "no",
+                "ms": String(Int(Date().timeIntervalSince(began) * 1000)),
+                "ready_ms": timings.readyMS.map(String.init) ?? "-", "panel_ms": timings.panelMS.map(String.init) ?? "-",
+                "windows": String(windows.count),
+                "five_hour": fiveHour.map { $0.state != .reported ? $0.state.rawValue : $0.resetsAt == nil ? "no_reset" : $0.resetsAt! <= $0.observedAt ? "past_reset" : "reset" } ?? "-"])
             guard !suspended.contains(account.id), currentIdentity(account), generations[account.id, default: 0] == generation else { throw QuotaRefreshFailure.cancelled }
             await update(.reading(scope: scope, windows: windows))
             guard !suspended.contains(account.id), currentIdentity(account), generations[account.id, default: 0] == generation else { throw QuotaRefreshFailure.cancelled }
@@ -629,22 +684,30 @@ public actor QuotaRefreshService {
             let cleanupFailed = await observer.cleanupFailed
             guard currentIdentity(account), generations[account.id, default: 0] == generation else {
                 if rested { _ = await close(observer, endHeld: true) }
-                if closed, active?.id == observer.id { active = nil }
+                if closed, active[account.id]?.id == observer.id { active[account.id] = nil }
                 return
             }
             if rested { warm = observer; warmSince = self.now() }
-            if closed { active = nil; records[account.id]?.status.phase = .idle; records[account.id]?.status.observerID = nil }
-            else { records[account.id]?.status.phase = .needsAttention; records[account.id]?.status.failure = cleanupFailed ? .storage : .needsAttention }
+            if closed { active[account.id] = nil; records[account.id]?.status.phase = .idle; records[account.id]?.status.observerID = nil }
+            else {
+                Diagnostics.record("quota.close", ["account": tag, "outcome": "held", "why": cleanupFailed ? "cleanup_failed" : (await observer.heldBecause ?? "-"),
+                                                   "ended": await observer.hasEnded ? "yes" : "no"])
+                records[account.id]?.status.phase = .needsAttention; records[account.id]?.status.failure = cleanupFailed ? .storage : .needsAttention
+            }
             if extraUsage {
                 records[account.id]?.status.failure = .extraUsage; records[account.id]?.status.phase = .needsAttention
             }
         } catch {
             if generations[account.id, default: 0] != generation || !currentIdentity(account) {
-                if let observer = active, await close(observer) { active = nil }
+                if let observer = active[account.id], await close(observer) { active[account.id] = nil }
                 nextLaunchAt = self.now().addingTimeInterval(2)
                 return
             }
             let failure = (error as? QuotaRefreshFailure) ?? (error is CancellationError ? .cancelled : .unavailable)
+            let timings = await active[account.id]?.timings()
+            Diagnostics.record("quota.read", ["account": tag, "reason": reason.rawValue, "outcome": failure.rawValue,
+                "stage": timings?.stage ?? "launch", "ms": String(Int(Date().timeIntervalSince(began) * 1000)),
+                "ready_ms": timings?.readyMS.map(String.init) ?? "-"])
             if failure == .cancelled {
                 // A read stopped by exit, quit or an account change says nothing about the account.
                 records[account.id]?.status.failure = previousFailure
@@ -658,14 +721,14 @@ public actor QuotaRefreshService {
                 records[account.id]?.status.nextAttemptAt = self.now().addingTimeInterval(min(1800, 60 * pow(2, Double(count - 1))))
                 records[account.id]?.status.phase = failure == .authentication || failure == .needsAttention ? .needsAttention : .cooldown
             }
-            if let observer = active {
+            if let observer = active[account.id] {
                 let closed = await close(observer)
                 let cleanupFailed = await observer.cleanupFailed
                 guard currentIdentity(account), generations[account.id, default: 0] == generation else {
-                    if closed, active?.id == observer.id { active = nil }
+                    if closed, active[account.id]?.id == observer.id { active[account.id] = nil }
                     return
                 }
-                if closed { active = nil; records[account.id]?.status.observerID = nil }
+                if closed { active[account.id] = nil; records[account.id]?.status.observerID = nil }
                 else {
                     // A held sign-in screen still means the account must be signed in again.
                     records[account.id]?.status.phase = .needsAttention
@@ -693,10 +756,10 @@ public actor QuotaRefreshService {
         }
         records[account.id]?.resetChecks = checks
     }
-    /// Only an account read again within a minute keeps its session, and only while nothing else waits.
+    /// Only an account read again within `warmFor` keeps its session, and only while nothing else waits.
     private func keepsWarm(_ account: PoolAccount) -> Bool {
         guard started, !stopping, enabled, awake, online, !suspended.contains(account.id),
-              let interval = cadence(accountID: account.id).interval, interval <= 60 else { return false }
+              let interval = cadence(accountID: account.id).interval, interval <= Self.warmFor else { return false }
         return !requested.keys.contains { $0 != account.id }
     }
     @discardableResult private func retireWarm(endHeld: Bool = false) async -> Bool {
@@ -704,7 +767,7 @@ public actor QuotaRefreshService {
         warm = nil
         if await close(observer, endHeld: endHeld) { return true }
         // It did not leave its prompt normally: keep it for the user, as any held session.
-        active = observer
+        active[observer.account.id] = observer
         records[observer.account.id]?.status.phase = .needsAttention
         records[observer.account.id]?.status.observerID = observer.id
         await publish(observer.account.id)
@@ -714,6 +777,14 @@ public actor QuotaRefreshService {
         guard let account = accounts.first(where: { $0.id == id }), let status = records[id]?.status else { return }
         let scope = expected ?? AccountScope(account)
         guard scope.matches(account) else { return }
+        // Every change of an account's read state, where it is published.
+        let shown = status.phase.rawValue + "/" + (status.failure?.rawValue ?? "-")
+        if loggedStatus[id] != shown {
+            Diagnostics.record("quota.state", ["account": Diagnostics.id(id), "from": loggedStatus[id] ?? "new", "to": shown,
+                "failures": String(records[id]?.failures ?? 0),
+                "retry_in_s": status.nextAttemptAt.map { String(Int($0.timeIntervalSince(now()))) } ?? "-"])
+            loggedStatus[id] = shown
+        }
         await update(.status(scope: scope, status: status))
     }
     private func currentIdentity(_ account: PoolAccount) -> Bool {
@@ -745,8 +816,15 @@ private actor QuotaObserver {
     private var ready = false, typed = false, submitted = false, ended = false, closing = false, sessionEnding = false
     private(set) var extraUsage = false
     private(set) var cleanupFailed = false
+    /// When this read's client was started, reached its prompt and had /usage submitted, for the log.
+    private var launchedAt: Date?, readyAt: Date?, submittedAt: Date?
+    /// Reads this session has taken: more than one means it was kept at its prompt and reused.
+    private(set) var reads = 0
+    /// Why the last automatic close kept this session, for the log.
+    private(set) var heldBecause: String?
     private var failure: QuotaRefreshFailure?
     var hasEnded: Bool { ended && !cleanupFailed }
+    static let panelTimeout: TimeInterval = 20
     init(account: PoolAccount, workspace: OwnedWorkspace, executable: URL, helper: URL,
          launch: @escaping QuotaRefreshService.Launch, update: @escaping QuotaRefreshService.Update, timeout: TimeInterval) {
         self.account = account; self.workspace = workspace; self.executable = executable; self.helper = helper
@@ -754,6 +832,7 @@ private actor QuotaObserver {
     }
     func read() async throws -> [QuotaWindow] {
         try Task.checkCancellation()
+        reads += 1
         if transport == nil { try start() }
         if failure == .needsAttention { failure = nil }
         let deadline = Date().addingTimeInterval(timeout)
@@ -776,8 +855,11 @@ private actor QuotaObserver {
             }
             // An earlier /usage can still be on screen; Return waits for this one to be drawn.
             if typed, !submitted, lastOutput > typedAt, screen.visibleText.contains("/usage"), Date().timeIntervalSince(lastOutput) >= 0.15 {
-                try transport?.write(Data([13])); submitted = true
+                try transport?.write(Data([13])); submitted = true; submittedAt = Date()
             }
+            // A panel that has not drawn its figures this long after /usage will not: the read
+            // gives way at once rather than holding a slot for the whole timeout.
+            if submitted, let submittedAt, Date().timeIntervalSince(submittedAt) > Self.panelTimeout { throw QuotaRefreshFailure.timedOut }
             if submitted, Date().timeIntervalSince(lastOutput) >= 0.35 {
                 do {
                     let windows = try NativeUsageParser.parse(screen.visibleText, plan: account.plan, observedAt: Date())
@@ -806,6 +888,15 @@ private actor QuotaObserver {
             return true
         } catch { return false }
     }
+    /// Where a read got to, and how long the client took to reach its prompt and then to draw the
+    /// panel, in milliseconds. A reused session reports no start.
+    func timings() -> (stage: String, readyMS: Int?, panelMS: Int?) {
+        let stage = ended ? "ended" : !ready ? "starting" : !submitted ? "typing" : "panel"
+        let ms = { (from: Date?, to: Date?) -> Int? in
+            guard let from, let to else { return nil }; return Int(to.timeIntervalSince(from) * 1000)
+        }
+        return (stage, ms(launchedAt, readyAt), ms(submittedAt, submitted ? Date() : nil))
+    }
     func sendInput(_ data: Data) throws {
         guard !ended, data.count <= 64 * 1024, let transport else { throw QuotaRefreshFailure.needsAttention }
         try transport.write(data)
@@ -821,7 +912,7 @@ private actor QuotaObserver {
             if sessionEnding {
                 _ = try await transport.waitForExit()
             } else if !ready || failure == .needsAttention {
-                guard endHeld else { return false }
+                guard endHeld else { heldBecause = !ready ? "not_at_prompt" : "held_for_user"; return false }
                 // Before its prompt (a first-run or sign-in screen) or on a prompt held for the user,
                 // /exit cannot be typed. The client's own double Ctrl-C ends it normally.
                 guard try await interruptUntilEnded(transport) else { return false }
@@ -844,7 +935,9 @@ private actor QuotaObserver {
                 // Quitting never waits on a panel or prompt that kept /exit from working: the
                 // client's own double Ctrl-C ends it normally.
                 if !exited {
-                    guard endHeld, try await interruptUntilEnded(transport) else { return false }
+                    guard endHeld, try await interruptUntilEnded(transport) else {
+                        heldBecause = cleared ? "exit_not_confirmed" : "panel_stayed"; return false
+                    }
                 }
             }
             let reportExit = !ended
@@ -852,14 +945,19 @@ private actor QuotaObserver {
             let cleaned = cleanupRun()
             if reportExit { await update(.ended(scope: AccountScope(account), observerID: id)) }
             return cleaned
-        } catch { return false }
+        } catch { heldBecause = "write_failed"; return false }
     }
     /// Normal terminal interrupts only, each pair spaced as a person presses them. Never a forced end.
     private func interruptUntilEnded(_ transport: SessionTransport) async throws -> Bool {
         for _ in 0..<2 where !ended {
-            try transport.interrupt()
-            try await Task.sleep(nanoseconds: 200_000_000)
-            if !ended { try transport.interrupt() }
+            do {
+                try transport.interrupt()
+                try await Task.sleep(nanoseconds: 200_000_000)
+                if !ended { try transport.interrupt() }
+            } catch RuntimeError.processExited {
+                // The first key ended it; its exit is still on the way here.
+                return (try? await transport.waitForExit()) != nil || ended
+            }
             let deadline = Date().addingTimeInterval(3)
             while !ended, Date() < deadline { try await Task.sleep(nanoseconds: 50_000_000) }
         }
@@ -894,7 +992,7 @@ private actor QuotaObserver {
                          "--settings", settings.path, "--permission-mode", "default"]
         let child = try launch(SessionLaunch(executable: executable, arguments: arguments, environment: environment,
                                             directory: work, runDirectory: directory, sessionID: id))
-        transport = child
+        transport = child; launchedAt = Date()
         processTask = Task { [weak self] in
             for await event in child.events { await self?.receive(event) }
         }
@@ -920,7 +1018,7 @@ private actor QuotaObserver {
             let event = try JSONDecoder().decode(JSONValue.self, from: workspace.read(file, limit: 256 * 1024))
             guard event["session_id"]?.stringValue.flatMap(UUID.init(uuidString:)) == id else { throw QuotaRefreshFailure.unsupportedFormat }
             switch event["event"]?.stringValue {
-            case "SessionStart": ready = true; if failure == .needsAttention { failure = nil }
+            case "SessionStart": ready = true; readyAt = readyAt ?? Date(); if failure == .needsAttention { failure = nil }
             case "SessionEnd": sessionEnding = true; ready = false; failure = .unavailable
             case "PermissionRequest": failure = .needsAttention
             case "Notification":

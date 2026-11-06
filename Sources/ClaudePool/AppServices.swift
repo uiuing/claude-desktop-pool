@@ -85,6 +85,8 @@ final class AppServices {
     private var recoveryTask: Task<Void, Never>?
     private var accountCheckTask: Task<Void, Never>?
     private var lastQuietCheck = Date.distantPast
+    /// When each account was last checked because a read failed, so a failing read checks it at most hourly.
+    private var failedReadChecks: [UUID: Date] = [:]
     /// When the account next in line was last read ahead of a switch.
     private var nextConfirmations: [Date] = []
     private var diagnosticsLog: DiagnosticsLog?
@@ -197,6 +199,8 @@ final class AppServices {
             model.isWorking = true
         }
         defer { if serial { model.isWorking = false } }
+        // The queued reads, or nothing to read, take over from the tap's own spin.
+        defer { if case .refreshQuota = action { model.quotaReadRequested = false } }
         // Once connected, the pool serves: whatever completed setup also starts it.
         defer { if serial { Task { await self.startPoolIfReady() } } }
         do {
@@ -1162,9 +1166,11 @@ final class AppServices {
             let phase: QuotaRefreshPhase
             switch status.phase {
             case .idle, .paused: phase = .idle
-            case .queued, .cooldown: phase = .waiting
+            case .queued: phase = .waiting
             case .refreshing: phase = .refreshing
-            case .needsAttention, .failed: phase = .failed
+            // A failed read waiting for its retry is a failure, not a read in progress: an account
+            // out of rotation is not retried until its reset, and would otherwise spin until then.
+            case .cooldown, .needsAttention, .failed: phase = .failed
             }
             model.quotaRefresh[status.accountID] = .init(phase: phase, updatedAt: status.lastSuccessAt,
                 message: status.failure.flatMap(\.errorDescription).map { model.t($0) })
@@ -1173,6 +1179,9 @@ final class AppServices {
                     scope.applyObservation(to: &next.accounts) { $0.state = .needsAttention }
                 } } catch { report(error) }
             }
+            // A lost sign-in shows as a read that asks for it or never finishes. The account is checked
+            // right away, at most hourly, so it asks to sign in rather than keep its last figures.
+            if status.failure == .authentication || status.failure == .timedOut { checkAfterFailedRead(status.accountID) }
             guard library.accounts.contains(where: scope.matches) else { return }
             if status.phase == .needsAttention, let id = status.observerID {
                 quotaObservers[id] = status.accountID
@@ -1271,12 +1280,25 @@ final class AppServices {
             }
         }
     }
+    /// Content-free tags of recent conversations and the account each is on.
+    static let conversationAccountsFile = "conversation-accounts.json"
+    private func checkAfterFailedRead(_ id: UUID) {
+        let now = Date()
+        guard dependencies.checkAccountsAutomatically, now.timeIntervalSince(failedReadChecks[id] ?? .distantPast) >= 3600,
+              loginProcesses[id] == nil, accountChecks[id] == nil else { return }
+        failedReadChecks[id] = now
+        Task { [weak self] in _ = try? await self?.checkAccount(id, refreshQuota: false, automatic: true) }
+    }
+
     private func checkAccountsQuietly() async {
         let now = Date()
         guard dependencies.checkAccountsAutomatically, model.snapshot.executableReady, online, awake,
               now.timeIntervalSince(lastQuietCheck) >= 3600 else { return }
         lastQuietCheck = now
-        let watched = Set(model.currentSessionAccounts.map(\.id) + [model.nextAccount?.id].compactMap { $0 })
+        // Accounts whose reads fail are checked too, in or out of rotation: a lost sign-in shows as
+        // reads that never finish, and an account waiting for its weekly reset is not read before it.
+        let failing = model.quotaRefresh.filter { $0.value.failing }.map(\.key)
+        let watched = Set(model.currentSessionAccounts.map(\.id) + [model.nextAccount?.id].compactMap { $0 } + failing)
         for account in library.accounts where watched.contains(account.id) && [.ready, .limited].contains(account.state) {
             guard !Task.isCancelled, loginProcesses[account.id] == nil, accountChecks[account.id] == nil else { continue }
             _ = try? await checkAccount(account.id, refreshQuota: false, automatic: true)

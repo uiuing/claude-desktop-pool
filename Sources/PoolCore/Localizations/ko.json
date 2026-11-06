@@ -274,6 +274,7 @@
   "Every {0} sec": "{0}초마다",
   "Last confirmed {0}% · awaiting new cycle": "마지막 확인 {0}% · 새 주기 대기 중",
   "Starts on next use": "다음 사용 시 시작",
+  "Starting automatically": "곧 자동 시작",
   "Subscription required": "구독 필요",
   "Model unavailable for this account": "이 계정에서 사용할 수 없는 모델",
   "This account needs a Claude subscription to join the pool.": "이 계정이 풀에 참여하려면 Claude 구독이 필요합니다.",
