@@ -4,6 +4,32 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-06
+
+### Added
+
+- Before the first account signs in, Pool warns that Anthropic may suspend or ban an account used this way and goes on only once you accept.
+- Conversations stay on their accounts after Pool restarts, and when Desktop starts a new client session for the same conversation.
+- A small indicator shows while Pool quits and its Claude sessions end.
+- A limit the pool will start by itself reads "Starting automatically" instead of waiting for first use.
+
+### Changed
+
+- New conversations go to the account that suits them best, weighing the 5-hour limit, the week, coming resets and the conversations already on it. Accounts are listed in that order.
+- Quota is read for up to three accounts at once, and a read you ask for no longer waits out a failed read's retry delay.
+- Refresh all takes the click across its whole label, and its arrow turns until the readings are in.
+- Quitting ends all sessions together.
+- The app log explains problems the first time they happen: state changes, routing decisions, stalled replies and each run's recent steps, still without any content. It now rotates at 10 MiB.
+
+### Fixed
+
+- A conversation whose run cannot take its next turn goes on in a new run on the same account instead of failing.
+- An account that lost its sign-in asks you to sign in instead of loading until the read times out or showing old figures.
+- A failed read waiting for its retry shows as failed instead of spinning, and old figures are marked stale only when reads are failing.
+- A reading taken right after a reset that still shows the ended cycle is recognized as old.
+- A tool result that arrives during quit no longer starts a new run, and a client that stops reading no longer holds quit open.
+- The menu panel shows use and the next account on their own lines, so neither is cut.
+
 ## [0.1.0] - 2026-11-06
 
 First public release.
@@ -23,5 +49,6 @@ First public release.
 - Update checks against GitHub Releases with verified one-click install.
 - Option to hide email addresses throughout the app.
 
-[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/uiuing/claude-desktop-pool/releases/tag/v0.1.0
