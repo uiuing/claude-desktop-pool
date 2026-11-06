@@ -193,8 +193,10 @@ final class PoolAppModel {
     @ObservationIgnored private var usageRevision = 0
     @ObservationIgnored private var usageSummaryCache: (key: UsageSummaryKey, summary: UsageSummary)?
     var pendingSignInID: UUID?
+    var showsSignInRisk = false
     /// Set by a tap on a refresh action until the service has queued its reads.
     var quotaReadRequested = false
+    @ObservationIgnored private var signInRiskAccepted = false
     var notice: String?
     var isWorking = false
     /// Claude Pool's own release check; previews show the packaged version without reading GitHub.
@@ -708,10 +710,18 @@ final class PoolAppModel {
         return formatter.string(from: date)
     }
     func perform(_ action: UIAction) {
+        if action == .addAccount, needsSignInRiskAcceptance { showsSignInRisk = true; return }
         if case .refreshQuota = action { quotaReadRequested = true }
         if let onAction { onAction(action) }
         else if demo { performDemo(action) }
     }
+    /// Only the first account is warned about, and a sign-in that is already under way never is.
+    private var needsSignInRiskAcceptance: Bool { snapshot.accounts.isEmpty && pendingSignInID == nil && !signInRiskAccepted }
+    func acceptSignInRisk() {
+        signInRiskAccepted = true; showsSignInRisk = false
+        perform(.addAccount)
+    }
+    func cancelSignInRisk() { showsSignInRisk = false }
 
     private func performDemo(_ action: UIAction) {
         switch action {

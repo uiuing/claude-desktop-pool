@@ -211,6 +211,8 @@ final class ScreenshotTests: XCTestCase {
                 model.terminal?.retry = .addAccount
                 try await capture(TerminalSheet(model: model, terminalID: signIn), size: .init(width: 680, height: 520), dark: dark,
                                   to: output.appendingPathComponent("terminal-signin-failed-\(language)-\(dark ? "dark" : "light").png"))
+                try await capture(SignInRiskSheet(model: model), size: .init(width: 420, height: 190), dark: dark,
+                                  to: output.appendingPathComponent("signin-risk-\(language)-\(dark ? "dark" : "light").png"))
             }
         }
     }

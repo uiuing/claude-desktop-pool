@@ -62,6 +62,7 @@ struct MainWindow: View {
                 .background(PoolSheetWindowReader().frame(width: 0, height: 0))
                 .interactiveDismissDisabled()
         }
+        .sheet(isPresented: $model.showsSignInRisk) { SignInRiskSheet(model: model).interactiveDismissDisabled() }
     }
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {

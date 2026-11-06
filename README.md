@@ -119,7 +119,7 @@ Third-party components and their licenses are listed in [THIRD_PARTY_NOTICES.md]
 
 ## Disclaimer
 
-Claude Pool is an independent open-source project, not affiliated with, endorsed by or sponsored by Anthropic. Claude, Claude Code and Claude Desktop are trademarks of Anthropic. Use Pool only with subscriptions you own, and follow Anthropic's terms and usage policies. You are responsible for how you use it.
+Claude Pool is an independent open-source project, not affiliated with, endorsed by or sponsored by Anthropic. Claude, Claude Code and Claude Desktop are trademarks of Anthropic. Use Pool only with subscriptions you own, and follow Anthropic's terms and usage policies. Anthropic may suspend or ban an account it sees used outside its own apps, and Pool asks you to accept that before the first sign-in. Use an account you can afford to lose. You are responsible for how you use it.
 
 ## License
 

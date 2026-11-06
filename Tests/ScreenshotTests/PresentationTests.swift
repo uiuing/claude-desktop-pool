@@ -113,10 +113,31 @@ final class PresentationTests: XCTestCase {
         var actions: [UIAction] = []
         model.onAction = { actions.append($0) }
         model.perform(.addAccount)
+        model.acceptSignInRisk()
         model.perform(.sendTerminalInput("yes"))
         model.perform(.sendTerminalKey("\r"))
         XCTAssertEqual(actions, [.addAccount, .sendTerminalInput("yes"), .sendTerminalKey("\r")])
         XCTAssertTrue(model.snapshot.accounts.isEmpty)
+    }
+
+    func testFirstSignInWaitsForTheRiskToBeAccepted() throws {
+        let model = PoolAppModel.demoModel(setup: true)
+        var actions: [UIAction] = []
+        model.onAction = { actions.append($0) }
+        model.perform(.addAccount)
+        XCTAssertTrue(model.showsSignInRisk)
+        XCTAssertEqual(actions, [])
+        try SignInRiskSheet(model: model).inspect().find(button: "Cancel").tap()
+        XCTAssertFalse(model.showsSignInRisk)
+        XCTAssertEqual(actions, [])
+        model.perform(.addAccount)
+        try SignInRiskSheet(model: model).inspect().find(button: "Sign in anyway").tap()
+        XCTAssertFalse(model.showsSignInRisk)
+        XCTAssertEqual(actions, [.addAccount])
+        // A retry after a failed sign-in is not asked again.
+        model.perform(.addAccount)
+        XCTAssertFalse(model.showsSignInRisk)
+        XCTAssertEqual(actions, [.addAccount, .addAccount])
     }
 
     func testRefreshAllTakesTheWholeButtonAndTurnsUntilReadingsAreIn() throws {
@@ -136,6 +157,20 @@ final class PresentationTests: XCTestCase {
         XCTAssertTrue(model.isRefreshingQuota)
         model.quotaRefresh[id] = .init(phase: .idle)
         XCTAssertFalse(model.isRefreshingQuota)
+    }
+
+    func testRiskIsNotRepeatedBesideAccountsOrDuringASignIn() {
+        let model = PoolAppModel.demoModel()
+        XCTAssertFalse(model.snapshot.accounts.isEmpty)
+        var actions: [UIAction] = []
+        model.onAction = { actions.append($0) }
+        model.perform(.addAccount)
+        XCTAssertFalse(model.showsSignInRisk)
+        model.snapshot.accounts = []
+        model.pendingSignInID = UUID()
+        model.perform(.addAccount)
+        XCTAssertFalse(model.showsSignInRisk)
+        XCTAssertEqual(actions, [.addAccount, .addAccount])
     }
 
     func testUnknownQuotaIsNotCountedAsConfirmedReady() {

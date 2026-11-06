@@ -119,7 +119,7 @@ Claude Pool 的灵感来自 [Magpie](https://github.com/yetone/magpie)，感谢�
 
 ## 声明
 
-Claude Pool 是独立的开源项目，与 Anthropic 没有关联，也未获其认可或赞助。Claude、Claude Code 和 Claude Desktop 是 Anthropic 的商标。请只用于你自己拥有的订阅，并遵守 Anthropic 的服务条款和使用政策，使用责任由你自行承担。
+Claude Pool 是独立的开源项目，与 Anthropic 没有关联，也未获其认可或赞助。Claude、Claude Code 和 Claude Desktop 是 Anthropic 的商标。请只用于你自己拥有的订阅，并遵守 Anthropic 的服务条款和使用政策。Anthropic 可能封禁在其官方应用之外使用的账号，首次登录前 Pool 会请你确认这一风险；请使用可以承受损失的账号。使用责任由你自行承担。
 
 ## 许可证
 
