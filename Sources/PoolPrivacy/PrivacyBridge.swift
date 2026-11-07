@@ -220,7 +220,30 @@ public actor PrivacyBridge: BridgeBackend {
         }
         // The client session is the part of the conversation key before its shape.
         let session = alias.hasPrefix("request:") ? nil : alias.split(separator: "#", maxSplits: 1).first.map(String.init)
-        let id = UUID(); contexts[id] = PrivacyConversation(session: session); return id
+        // A fork, or a new client session of a conversation, opens with that conversation's first exchange.
+        // Masked afresh, its text need not read as the conversation's did, so it is matched here by what the
+        // client wrote, and stays in that conversation for the pool: on its account and prompt cache.
+        var forkedFrom: String?
+        if session != nil, request.messages.count >= 3, let opening = Self.openingKey(request.messages, fingerprint: historyFingerprint),
+           let parent = contexts.values.filter({ $0.opening == opening && $0.conversationTag != nil }).max(by: { $0.lastUsed < $1.lastUsed }) {
+            forkedFrom = parent.conversationTag
+            Diagnostics.record("privacy.route", ["decision": "opening_matched", "conversation": Diagnostics.tag(alias),
+                                                 "joins": forkedFrom ?? "-"])
+        }
+        let id = UUID(); contexts[id] = PrivacyConversation(session: session, conversationTag: forkedFrom); return id
+    }
+    /// A key of a conversation's first exchange as its client wrote it, cache marks left out, as they
+    /// move from turn to turn. Nil before a reply, so two conversations that open alike stay apart.
+    static func openingKey(_ messages: [BridgeMessage], fingerprint: ([BridgeMessage]) throws -> String) -> String? {
+        guard messages.count >= 2, messages[0].role == "user", messages[1].role == "assistant" else { return nil }
+        func uncached(_ value: JSONValue) -> JSONValue {
+            switch value {
+            case .object(let fields): return .object(fields.filter { $0.key != "cache_control" }.mapValues(uncached))
+            case .array(let items): return .array(items.map(uncached))
+            default: return value
+            }
+        }
+        return try? fingerprint(messages.prefix(2).map { BridgeMessage(role: $0.role, content: uncached($0.content)) })
     }
     /// Waits up to 1.5 s for a context's request to end; whether the context is free now.
     private func settled(_ id: UUID) async -> Bool {
@@ -496,7 +519,10 @@ public actor PrivacyBridge: BridgeBackend {
                         context.pending.remove(id)
                         if let owner = toolOwners.removeValue(forKey: id) { contexts[owner]?.pending.remove(id) }
                     }
-                    context.historyFingerprint = try historyFingerprint(request.messages + [.init(role: "assistant", content: .array(history))])
+                    let told = request.messages + [.init(role: "assistant", content: .array(history))]
+                    context.historyFingerprint = try historyFingerprint(told)
+                    // Renewed each turn: from the second on, the reply is as the client keeps it.
+                    if let opening = Self.openingKey(Array(told.prefix(2)), fingerprint: historyFingerprint) { context.opening = opening }
                     continuation.yield(event); finished = true
                 }
                 if restorer.count > counted {

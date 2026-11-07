@@ -212,6 +212,44 @@ final class PrivacyBridgeTests: XCTestCase {
         await backend.finish(2, [.text("Done"), .finished(.endTurn)]); _ = try await third.value
     }
 
+    /// A conversation forked in Desktop (11-07) arrives under a new client session with the history it
+    /// was forked from. Masked afresh, it lost its conversation and went to another account, so the
+    /// prompt cache its parent wrote was not read. It is matched by its first exchange as written.
+    func testAForkUnderANewClientSessionStaysInTheConversationItWasForkedFrom() async throws {
+        let backend = PrivacyBackendFixture(), detector = FixtureDetector(words: ["Synthetic Person": .person])
+        let bridge = PrivacyBridge(backend: backend, detector: detector)
+        func text(_ value: String, cached: Bool = false) -> JSONValue {
+            var block: [String: JSONValue] = ["type": .string("text"), "text": .string(value)]
+            if cached { block["cache_control"] = .object(["type": .string("ephemeral")]) }
+            return .array([.object(block)])
+        }
+        func turn(_ request: BridgeRequest, _ alias: String, _ reply: String) async throws -> [BridgeEvent] {
+            let index = await backend.requests.count
+            let task = Task { try await collectPrivacy(try await bridge.events(for: request, conversationID: alias)) }
+            try await privacyEventually { await backend.requests.count == index + 1 }
+            await backend.finish(index, [.text(reply), .finished(.endTurn)])
+            return try await task.value
+        }
+        // Claude Code marks the newest message for the cache; the mark moves on with each turn.
+        var parent = BridgeRequest(model: "claude-opus", messages: [.init(role: "user", content: text("Plan for Synthetic Person", cached: true))])
+        let first = try await turn(parent, "parent-session#shape", "Step one")
+        parent.messages[0].content = text("Plan for Synthetic Person")
+        parent.messages += [.init(role: "assistant", content: privacyAssistant(first)), .init(role: "user", content: text("Go on", cached: true))]
+        _ = try await turn(parent, "parent-session#shape", "Step two")
+        // Forked from the first reply, not the latest: the fork's history is no context's whole history.
+        let fork = BridgeRequest(model: "claude-opus", messages: Array(parent.messages.prefix(2)) + [.init(role: "user", content: text("Try another way", cached: true))])
+        _ = try await turn(fork, "fork-session#shape", "Another way")
+        let other = BridgeRequest(model: "claude-opus", messages: [.init(role: "user", content: text("Something else")),
+            .init(role: "assistant", content: text("Sure")), .init(role: "user", content: text("Go on"))])
+        _ = try await turn(other, "other-session#shape", "Done")
+        let identities = await backend.identities.map { try? XCTUnwrap($0) }
+        func tag(_ id: String??) -> String? { (id ?? nil)?.split(separator: "@").last.map(String.init) }
+        XCTAssertEqual(identities[0], identities[1], "The parent's turns share one context")
+        XCTAssertNotEqual(identities[2], identities[0], "The fork has a context of its own")
+        XCTAssertEqual(tag(identities[2]), tag(identities[0]), "and is in the conversation it was forked from")
+        XCTAssertNotEqual(tag(identities[3]), tag(identities[0]), "A conversation that opened otherwise is its own")
+    }
+
     func testManualTextIsMaskedOnlyInsideMatchingActiveRestorationScope() async throws {
         let backend = PrivacyBackendFixture(), bridge = PrivacyBridge(backend: backend, detector: FixtureDetector())
         let response = Task { try await collectPrivacy(try await bridge.events(for: textRequest("Wait"), conversationID: "manual")) }

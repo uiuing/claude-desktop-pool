@@ -12,6 +12,7 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 ### Fixed
 
 - An account whose week resets within two days now ranks ahead of accounts whose weeks have days to go: what its week has used comes back at the reset, so its remaining share is spent first.
+- A conversation forked in Claude Desktop stays on the account of the conversation it came from, so it reads that conversation's prompt cache. With redaction on, a fork could go to another account.
 
 ## [0.1.3] - 2026-11-06
 

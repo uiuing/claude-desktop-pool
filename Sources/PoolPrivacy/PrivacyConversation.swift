@@ -88,11 +88,17 @@ final class PrivacyConversation {
     var backendCancellationRequested = false
     var allowed: [String: String] = [:]
     var allowedNumbers: [UInt64: Double] = [:]
-    /// The id the pool sees for this context. It carries the client session's content-free tag after
-    /// "@", so the pool can tell a conversation's side requests from other conversations.
+    /// A key of the conversation's first exchange as its client wrote it, once it has one.
+    var opening: String?
+    /// The content-free tag of the conversation this context serves: its client session's, or for a
+    /// fork or a new client session of a conversation, the one it was forked from.
+    let conversationTag: String?
+    /// The id the pool sees for this context. It carries `conversationTag` after "@", so the pool
+    /// can tell a conversation's side requests and forks from other conversations.
     let backendID: String
-    init(session: String? = nil) {
-        backendID = "privacy:" + UUID().uuidString + (session.map { "@" + Diagnostics.tag($0) } ?? "")
+    init(session: String? = nil, conversationTag: String? = nil) {
+        self.conversationTag = conversationTag ?? session.map { Diagnostics.tag($0) }
+        backendID = "privacy:" + UUID().uuidString + (self.conversationTag.map { "@" + $0 } ?? "")
     }
 
     func digest(_ text: String) -> String {
