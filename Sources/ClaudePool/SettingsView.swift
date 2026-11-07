@@ -50,6 +50,7 @@ struct PoolSettingsPage: View {
                             Button(model.t("Show in Finder")) { model.perform(.showLog) }.controlSize(.small)
                                 .accessibilityIdentifier("settings.showLog")
                         }
+                        DeveloperRecordingBanner(model: model)
                     }
                 }
                 PoolCard { WarmUpSettings(model: model) }

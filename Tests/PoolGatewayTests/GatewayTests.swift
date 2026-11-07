@@ -206,6 +206,38 @@ final class GatewayTests: XCTestCase {
         session.invalidateAndCancel(); await server.stop()
     }
 
+    func testDeveloperRecordingKeepsTheBytesButNeverTheGatewayKey() async throws {
+        let lock = NSLock()
+        nonisolated(unsafe) var lines: [Data] = []
+        DevRecord.install { entry in lock.withLock { lines.append(entry.line) } }
+        defer { DevRecord.install(nil) }
+        let server = try GatewayServer(port: 0, token: fixtureToken, backend: FixtureBackend())
+        let port = try await server.start()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.connectionProxyDictionary = [:]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/messages")!)
+        request.httpMethod = "POST"; request.httpBody = try message(stream: true)
+        request.setValue("Bearer " + fixtureToken, forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 5
+        _ = try await session.data(for: request)
+        await server.stop()
+        let all = lock.withLock { lines }
+        XCTAssertFalse(all.contains { String(decoding: $0, as: UTF8.self).contains(fixtureToken) })
+        let records = all.compactMap { try? JSONDecoder().decode(JSONValue.self, from: $0) }
+        let received = try XCTUnwrap(records.first { $0["kind"] == .string("http.request") })
+        XCTAssertEqual(received["data"]?["withheld_headers"], .array([.string("authorization")]))
+        let body = try XCTUnwrap(received["data"]?["body"]?["text"]?.stringValue)
+        XCTAssertEqual(try JSONDecoder().decode(JSONValue.self, from: Data(body.utf8)), try JSONDecoder().decode(JSONValue.self, from: try message(stream: true)))
+        let number = try XCTUnwrap(received["req"])
+        let sent = records.filter { $0["kind"] == .string("http.sent") }
+        XCTAssertTrue(sent.allSatisfy { $0["req"] == number })
+        XCTAssertTrue(sent.compactMap { $0["data"]?["bytes"]?["text"]?.stringValue }.joined().contains("event: message_stop"))
+        XCTAssertTrue(records.contains { $0["kind"] == .string("log.gateway.request") && $0["req"] == number })
+    }
+
     func testNormalHTTPCompletionPreservesParkedToolCall() async throws {
         let backend = LifecycleBackend(toolResponse: true)
         let server = try GatewayServer(port: 0, token: fixtureToken, backend: backend)

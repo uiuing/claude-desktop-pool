@@ -92,6 +92,11 @@ public actor PrivacyBridge: BridgeBackend {
             Diagnostics.record("privacy.prepared", ["texts": String(read.texts), "read": String(read.read),
                                                     "late": String(read.late), "read_ms": String(readMS),
                                                     "total_ms": String(Self.milliseconds(since: began))])
+            DevRecord.record(.privacy, "privacy.prepared", ["review": token.uuidString.lowercased(), "context": Diagnostics.id(id),
+                                                            "conversation": Diagnostics.tag(alias)]) {
+                Self.recorded(request: request, masked: masked, alias: alias, backend: context.backendID, prepared: prepared,
+                              read: read, readMS: readMS, totalMS: Self.milliseconds(since: began), counts: counts, reviewed: reviewed)
+            }
             processing -= 1; preprocessing = false; onUpdate(.processing(active: processing))
             totals.protectedRequests += 1; addCounts(counts); onUpdate(.protected(totals))
             if !reviewed.isEmpty { onUpdate(.reviewed(PrivacyReview(id: token, at: Date(), fields: reviewed, categories: counts))) }
@@ -241,6 +246,41 @@ public actor PrivacyBridge: BridgeBackend {
             if let spans { preparation.finds[entry.key] = spans }
         }
         return (wanted.count, read, late.count)
+    }
+    /// The developer recording of one prepared request: the request as received and as sent whole,
+    /// every text the model was given with what it and the rules found in it, and the review.
+    private static func recorded(request: BridgeRequest, masked: BridgeRequest, alias: String, backend: String,
+                                 prepared: PrivacyPreparation, read: (texts: Int, read: Int, late: Int), readMS: Int, totalMS: Int,
+                                 counts: [PrivacyCategory: Int], reviewed: [PrivacyReviewField]) -> [String: JSONValue] {
+        func spans(_ list: [PrivacySpan]?) -> JSONValue {
+            guard let list else { return .null }
+            return .array(list.map { .object(["start": .number(Double($0.start)), "end": .number(Double($0.end)),
+                                              "category": .string($0.category.rawValue), "score": .number($0.score)]) })
+        }
+        let texts: [JSONValue] = prepared.newestFirst.map { entry in
+            .object(["key": .string(String(entry.key.prefix(16))), "text": .string(entry.text),
+                     "model": spans(prepared.finds[entry.key]), "rules": spans(prepared.rules[entry.key])])
+        }
+        let lookedUp: [JSONValue] = prepared.lookUps.map { entry in
+            .object(["key": .string(String(entry.key.prefix(16))), "chars": .number(Double(entry.text.utf16.count)),
+                     "model": spans(prepared.finds[entry.key])])
+        }
+        let review: [JSONValue] = reviewed.map { field in
+            .object(["location": .string(field.location), "segments": .array(field.segments.map { segment in
+                switch segment {
+                case .text(let text): return .object(["text": .string(text)])
+                case .replaced(let original, let placeholder, let category):
+                    return .object(["original": .string(original), "placeholder": .string(placeholder), "category": .string(category.rawValue)])
+                }
+            })])
+        }
+        return ["alias": .string(alias), "backend_conversation": .string(backend),
+                "received": DevRecord.value(request), "sent": DevRecord.value(masked),
+                "model_texts": .array(texts), "looked_up": .array(lookedUp),
+                "read": .object(["texts": .number(Double(read.texts)), "read": .number(Double(read.read)), "late": .number(Double(read.late)),
+                                 "partial": .bool(read.read < read.texts), "read_ms": .number(Double(readMS)), "total_ms": .number(Double(totalMS))]),
+                "categories": .object(Dictionary(uniqueKeysWithValues: counts.map { ($0.key.rawValue, JSONValue.number(Double($0.value))) })),
+                "review": .array(review)]
     }
     private static func milliseconds(since start: ContinuousClock.Instant) -> Int {
         Int((ContinuousClock.now - start) / .milliseconds(1))
@@ -406,6 +446,9 @@ public actor PrivacyBridge: BridgeBackend {
                     maskedText += text
                     let restored = try restorer.append(text)
                     restoredText += restored
+                    DevRecord.record(.privacy, "privacy.reply_text", ["review": token.uuidString.lowercased()]) {
+                        ["from_model": .string(text), "to_client": .string(restored), "held": .bool(restored.isEmpty && !text.isEmpty)]
+                    }
                     if !restored.isEmpty { continuation.yield(.text(restored)) }
                 case .toolUse(var call):
                     let tail = try restorer.append("", final: true)
@@ -413,9 +456,13 @@ public actor PrivacyBridge: BridgeBackend {
                     if !tail.isEmpty { continuation.yield(.text(tail)) }
                     try saveText(context, messageIndex: request.messages.count, masked: &maskedText, restored: &restoredText, history: &history)
                     guard toolOwners[call.id] == nil else { throw BridgeFailure.compatibility }
-                    let before = totals.restoredOccurrences
+                    let before = totals.restoredOccurrences, fromModel = call.input
                     call.input = try restoreData(call.input, location: "messages/\(request.messages.count)/content/\(history.count)/input", context: context)
                     toolRestored += totals.restoredOccurrences - before
+                    DevRecord.record(.privacy, "privacy.reply_tool", ["review": token.uuidString.lowercased()]) { [call] in
+                        ["id": .string(call.id), "name": .string(call.name), "from_model": fromModel, "to_client": call.input,
+                         "restored": .number(Double(totals.restoredOccurrences - before))]
+                    }
                     toolOwners[call.id] = contextID; context.pending.insert(call.id)
                     history.append(.object(["type": .string("tool_use"), "id": .string(call.id), "name": .string(call.name), "input": call.input]))
                     continuation.yield(.toolUse(call))
@@ -424,6 +471,10 @@ public actor PrivacyBridge: BridgeBackend {
                     let tail = try restorer.append("", final: true)
                     restoredText += tail
                     if !tail.isEmpty { continuation.yield(.text(tail)) }
+                    DevRecord.record(.privacy, "privacy.reply_finished", ["review": token.uuidString.lowercased()]) {
+                        ["tail": .string(tail), "restored_text": .number(Double(restorer.count)), "restored_tools": .number(Double(toolRestored)),
+                         "unrestored_placeholders": .array(Self.placeholders(in: restoredText).map(JSONValue.string))]
+                    }
                     try saveText(context, messageIndex: request.messages.count, masked: &maskedText, restored: &restoredText, history: &history)
                     // Results answered here leave whichever context restored their calls, so calls answered
                     // in a renewed context never keep the old one from being evicted.
@@ -454,6 +505,12 @@ public actor PrivacyBridge: BridgeBackend {
             }
             continuation.finish(throwing: cancelled ? BridgeFailure.cancelled : report(error, modelBoundary: false))
         }
+    }
+    /// Tag-shaped stand-ins (`{{EMAIL_3}}`) left in what the client got: one this request did not carry, or one cut.
+    static func placeholders(in text: String) -> [String] {
+        guard let pattern = try? NSRegularExpression(pattern: #"\{\{[A-Z_]{2,24}_[0-9]{1,9}\}\}"#) else { return [] }
+        let range = NSRange(text.startIndex..., in: text)
+        return pattern.matches(in: text, range: range).prefix(200).compactMap { Range($0.range, in: text).map { String(text[$0]) } }
     }
     private func saveText(_ context: PrivacyConversation, messageIndex: Int, masked: inout String, restored: inout String, history: inout [JSONValue]) throws {
         if !masked.isEmpty || !restored.isEmpty {

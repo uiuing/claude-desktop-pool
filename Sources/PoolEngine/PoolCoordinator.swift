@@ -441,6 +441,11 @@ public actor PoolCoordinator: BridgeBackend {
         }
         Diagnostics.record("coordinator.diverged", ["at": String(index), "told": String(told.count), "now": String(now.count),
                                                     "was": kinds(told), "is": kinds(now)])
+        DevRecord.record(.events, "coordinator.diverged") {
+            ["at": .number(Double(index)),
+             "was": index < told.count ? DevRecord.value(told[index]) : .null,
+             "is": index < now.count ? DevRecord.value(now[index]) : .null]
+        }
     }
 
     /// Before results are replayed: a stopped run, or one whose account changed, is ended normally;
@@ -642,6 +647,17 @@ public actor PoolCoordinator: BridgeBackend {
                 Diagnostics.id(candidate.id) + ":" + (PoolRouting.score(candidate, model: model.cliAlias, now: date, load: load[candidate.id] ?? 0)
                     .map { String(Int($0.rounded())) } ?? "?") + "/" + String(load[candidate.id] ?? 0)
             }
+            DevRecord.record(.events, "coordinator.pick", ["account": Diagnostics.id(account.id)]) {
+                ["conversation": DevRecord.string(conversation), "lead": DevRecord.string(lead.map(Diagnostics.id)),
+                 "only": DevRecord.string(only.map(Diagnostics.id)), "excluded": .array(excluded.map { .string(Diagnostics.id($0)) }),
+                 "minimum_headroom": minimumHeadroom.map { .number(Double($0)) } ?? .null,
+                 "policy": DevRecord.value(routingPolicy), "load": .object(Dictionary(uniqueKeysWithValues: load.map { (Diagnostics.id($0.key), JSONValue.number(Double($0.value))) })),
+                 "candidates": .array(candidates.map { candidate in
+                     .object(["account": .string(Diagnostics.id(candidate.id)),
+                              "score": PoolRouting.score(candidate, model: model.cliAlias, now: date, load: load[candidate.id] ?? 0).map { .number($0) } ?? .null,
+                              "state": DevRecord.value(candidate)])
+                 })]
+            }
             Diagnostics.record("coordinator.pick", ["account": Diagnostics.id(account.id), "conversation": conversation ?? "-",
                 "kept": lead.map { $0 == account.id ? "yes" : "no:" + Diagnostics.id($0) } ?? "none", "only": only.map(Diagnostics.id) ?? "-",
                 "excluded": String(excluded.count), "candidates": scored.joined(separator: ",")])
@@ -700,6 +716,12 @@ public actor PoolCoordinator: BridgeBackend {
             // the run now answers this conversation.
             bindings[id]?.told = request.messages
             attempted.insert(binding.session.accountID)
+            // Joins the request's records (it carries `req`) to its run's terminal and transcript records.
+            DevRecord.record(.events, "coordinator.serving", ["run": Diagnostics.id(binding.worker.id), "binding": Diagnostics.id(id),
+                                                              "account": Diagnostics.id(binding.session.accountID)]) {
+                ["conversation": .string(Diagnostics.tag(alias)), "replay": .bool(replayCompletedResults),
+                 "results": .number(Double(resultIDs.count)), "sent_to_run": DevRecord.value(workerRequest)]
+            }
             resetProgress(id)
             var reportedUsage = false
             do {

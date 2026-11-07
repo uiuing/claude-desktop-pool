@@ -383,7 +383,13 @@ public actor OfficialSession: SessionWorker {
     }
 
     private func launchChild(_ plan: SessionLaunch, history: Int, bytes: Int) throws {
-        let child = try launch(plan)
+        DevRecord.record(.session, "session.launch", ["run": runTag, "account": Diagnostics.id(account.id)]) {
+            var data = plan.recorded()
+            data["model"] = .string(model.cliAlias); data["resumed"] = .bool(resumed)
+            data["history_messages"] = .number(Double(history)); data["transcript_bytes"] = .number(Double(bytes))
+            return data
+        }
+        let child = try launch(plan).recorded(run: runTag, role: "session")
         transport = child; launchedAt = Date()
         Diagnostics.record("session.started", ["run": runTag, "model": model.cliAlias, "resumed": resumed ? "yes" : "no",
                                                "history_messages": String(history), "transcript_bytes": String(bytes)])
@@ -737,12 +743,17 @@ public actor OfficialSession: SessionWorker {
         let events = ((try? FileManager.default.contentsOfDirectory(at: directory.appendingPathComponent("events"), includingPropertiesForKeys: nil)) ?? [])
             .filter { $0.pathExtension == "json" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
         for path in events.prefix(2048) {
-            if let event = try? EngineSpool.read(path) { handleSpool(event) }
+            if let event = try? EngineSpool.read(path) {
+                DevRecord.record(.session, "spool.event", ["run": runTag]) { ["file": .string(path.lastPathComponent), "event": event] }
+                handleSpool(event)
+            }
             try? FileManager.default.removeItem(at: path)
             if nativeSessionEnded || ended { return 40_000_000 }
         }
         if var tap {
-            streamQueue += tap.read()
+            let streamed = tap.read()
+            if !streamed.isEmpty { DevRecord.record(.session, "tap.events", ["run": runTag]) { ["events": .array(streamed)] } }
+            streamQueue += streamed
             self.tap = tap
             if let state = tap.state, state != tapReported {
                 tapReported = state; trace.note("tap." + state)

@@ -139,6 +139,9 @@ struct ClaudeTranscript {
         var chunk = Data(count: length)
         let count = chunk.withUnsafeMutableBytes { raw in pread(descriptor, raw.baseAddress!, length, off_t(offset)) }
         guard count > 0 else { return [] }
+        DevRecord.record(.session, "transcript.read", ["run": String(session.prefix(8))]) {
+            ["offset": .number(Double(offset)), "bytes": DevRecord.bytes(chunk.prefix(count))]
+        }
         offset += UInt64(count)
         return lines(chunk.prefix(count))
     }

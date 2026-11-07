@@ -14,6 +14,12 @@ public enum Diagnostics {
     /// `event` is a short dotted name ("gateway.request", "session.failed"); field values are
     /// reduced to one bounded token each, so a value can never span lines or forge a field.
     public static func record(_ event: String, _ fields: KeyValuePairs<String, String> = [:]) {
+        // The developer recording keeps every line too, on the same timeline as what it explains.
+        DevRecord.record(.events, "log." + event) {
+            var values: [String: JSONValue] = [:]
+            for (key, value) in fields { values[key] = .string(value) }
+            return values
+        }
         guard let sink = lock.withLock({ sink }) else { return }
         var line = "event=" + token(event)
         for (key, value) in fields { line += " " + token(key) + "=" + token(value) }

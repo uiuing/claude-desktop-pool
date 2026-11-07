@@ -11,6 +11,25 @@ enum UIAction: Equatable {
     case installPrivacyModel, previewPrivacy(String), clearPrivacyPreview, clearPrivacyReview
     case language(String), appearance(String), routePolicy(RoutingPolicy), refreshQuota(UUID?), quotaRefreshPreferences(QuotaRefreshPreferences)
     case warmUpPreferences(WarmUpPreferences), warmUpNow(UUID), showLog, maskEmail(Bool)
+    case showDeveloperRecording, stopDeveloperRecording(delete: Bool)
+}
+
+/// The developer recording's switches in the app's defaults. There is no setting for it: a developer
+/// turns it on with `defaults write io.github.uiuing.claude-desktop-pool DeveloperRecording -bool true`.
+enum DeveloperRecordingKeys {
+    static let on = "DeveloperRecording"
+    static let since = "DeveloperRecordingSince"
+    /// Megabytes per channel: `{privacy = 8192; http = 2048;}`.
+    static let limits = "DeveloperRecordingLimitsMB"
+    static let argument = "--developer-recording"
+    static let lifetime: TimeInterval = 7 * 86_400
+}
+
+/// A developer recording in progress, shown wherever redaction or the log is, so it is not forgotten.
+struct DeveloperRecordingPresentation: Equatable {
+    /// When it turns itself off; nil for a recording asked for this launch only.
+    var until: Date?
+    var limitBytes: Int
 }
 
 enum RuntimePhase: Equatable { case notInstalled, checking, installing, ready, updateAvailable, failed }
@@ -179,6 +198,8 @@ final class PoolAppModel {
     var privacyPreview = PrivacyPreviewPresentation()
     /// Recent requests that had something redacted, newest first; in memory only.
     var privacyReviews: [PrivacyReview] = []
+    /// Set while the developer recording is on.
+    var developerRecording: DeveloperRecordingPresentation?
     var generatingSessionIDs: Set<UUID> = []
     var quotaRefresh: [UUID: QuotaRefreshPresentation] = [:]
     var quotaCadence: [UUID: QuotaCadenceSnapshot] = [:]
@@ -755,7 +776,8 @@ final class PoolAppModel {
             guard let index = snapshot.sessions.firstIndex(where: { $0.id == id }) else { return }
             snapshot.sessions[index].state = .ended
             if terminal?.id == id { terminal?.isRunning = false; terminal?.inputEnabled = false }
-        case .showLog: break
+        case .showLog, .showDeveloperRecording: break
+        case .stopDeveloperRecording: developerRecording = nil
         case .language(let language): preferences.language = language
         case .appearance(let appearance): preferences.appearance = appearance
         case .maskEmail(let value): preferences.maskEmail = value

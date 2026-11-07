@@ -101,6 +101,59 @@ public struct SessionTransport: Sendable {
     }
 }
 
+extension SessionLaunch {
+    /// The launch as the developer recording keeps it: the command, its folders and its
+    /// environment, with the values of credential-named variables withheld.
+    func recorded() -> [String: JSONValue] {
+        let secret = ["TOKEN", "KEY", "SECRET", "PASSWORD", "AUTH", "COOKIE", "CREDENTIAL"]
+        var environment: [String: JSONValue] = [:]
+        for (name, value) in self.environment {
+            environment[name] = secret.contains(where: name.uppercased().contains) ? .string("<withheld>") : .string(value)
+        }
+        return ["executable": .string(executable.path), "arguments": .array(arguments.map(JSONValue.string)),
+                "environment": .object(environment), "directory": .string(directory.path),
+                "run_directory": .string(runDirectory.path), "session_id": .string(sessionID.uuidString.lowercased())]
+    }
+}
+
+extension SessionTransport {
+    /// While the developer recording is on, the same transport with every byte it carries recorded
+    /// under `run`: what the child wrote, what was typed to it, its interrupts and its exit.
+    /// Off, the transport itself.
+    public func recorded(run: String, role: String) -> SessionTransport {
+        guard DevRecord.isOn else { return self }
+        let source = events
+        let (stream, continuation) = AsyncStream<PTYEvent>.makeStream()
+        let relay = Task {
+            for await event in source {
+                switch event {
+                case .output(let data): DevRecord.record(.session, "pty.out", ["run": run, "role": role]) { ["bytes": DevRecord.bytes(data)] }
+                case .exited(let status): DevRecord.record(.session, "pty.exited", ["run": run, "role": role]) { ["status": .number(Double(status))] }
+                }
+                continuation.yield(event)
+            }
+            continuation.finish()
+        }
+        continuation.onTermination = { _ in relay.cancel() }
+        let write = self.write, interrupt = self.interrupt, exit = self.exit
+        return SessionTransport(
+            events: stream,
+            write: { data in
+                DevRecord.record(.session, "pty.in", ["run": run, "role": role]) { ["bytes": DevRecord.bytes(data)] }
+                try write(data)
+            },
+            interrupt: {
+                DevRecord.record(.session, "pty.interrupt", ["run": run, "role": role])
+                try interrupt()
+            },
+            exit: {
+                DevRecord.record(.session, "pty.exit_requested", ["run": run, "role": role])
+                try exit()
+            },
+            waitForExit: waitForExit)
+    }
+}
+
 enum RequestContent {
     static func text(_ content: JSONValue) throws -> String {
         if let string = content.stringValue { return string }

@@ -30,6 +30,39 @@ struct PrivacyInstallButton: View {
     }
 }
 
+/// Says the developer recording is on, wherever redaction or the log is shown, with its folder and off.
+struct DeveloperRecordingBanner: View {
+    @Bindable var model: PoolAppModel
+    @State private var confirmsDelete = false
+    var body: some View {
+        if let recording = model.developerRecording {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "record.circle").foregroundStyle(PoolPalette.amber)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(model.t("Developer recording is on")).font(.system(size: 11, weight: .semibold))
+                    Text(recording.until.map { model.t("Message text and redaction originals are kept on this Mac until {0}.", $0.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(model.locale))) }
+                         ?? model.t("Message text and redaction originals are kept on this Mac for this launch."))
+                        .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 6)
+                Button(model.t("Show in Finder")) { model.perform(.showDeveloperRecording) }.controlSize(.small)
+                    .accessibilityIdentifier("devrecord.show")
+                Menu(model.t("Turn off")) {
+                    Button(model.t("Turn off and keep records")) { model.perform(.stopDeveloperRecording(delete: false)) }
+                    Button(model.t("Turn off and delete records"), role: .destructive) { confirmsDelete = true }
+                }.controlSize(.small).fixedSize().accessibilityIdentifier("devrecord.off")
+            }
+            .padding(10)
+            .background(PoolPalette.amber.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(PoolPalette.amber.opacity(0.3)))
+            .confirmationDialog(model.t("Delete every developer record?"), isPresented: $confirmsDelete) {
+                Button(model.t("Delete records"), role: .destructive) { model.perform(.stopDeveloperRecording(delete: true)) }
+            }
+            .accessibilityIdentifier("devrecord.banner")
+        }
+    }
+}
+
 struct PrivacyDetailsSheet: View {
     @Bindable var model: PoolAppModel
     @Environment(\.dismiss) private var dismiss
@@ -47,6 +80,7 @@ struct PrivacyDetailsSheet: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    DeveloperRecordingBanner(model: model)
                     HStack(spacing: 10) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("AstrLink Guard").font(.system(size: 12, weight: .semibold))
@@ -152,7 +186,8 @@ struct PrivacyReviewList: View {
                         .buttonStyle(.link).font(.system(size: 11)).accessibilityIdentifier("privacy.clearReview")
                 }
             }
-            Text(model.t("Kept in memory only, never written to disk, and gone when Claude Pool quits."))
+            Text(model.t(model.developerRecording == nil ? "Kept in memory only, never written to disk, and gone when Claude Pool quits."
+                         : "The developer recording also keeps these requests whole on this Mac."))
                 .font(.system(size: 10)).foregroundStyle(.secondary)
             if model.privacyReviews.isEmpty {
                 Text(model.t("Requests that had something redacted appear here."))

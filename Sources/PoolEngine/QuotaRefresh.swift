@@ -990,8 +990,11 @@ private actor QuotaObserver {
         environment["LANG"] = "en_US.UTF-8"; environment["LC_ALL"] = "en_US.UTF-8"
         let arguments = ["--session-id", id.uuidString, "--restricted", "--tools", "", "--strict-mcp-config", "--mcp-config", mcp.path,
                          "--settings", settings.path, "--permission-mode", "default"]
-        let child = try launch(SessionLaunch(executable: executable, arguments: arguments, environment: environment,
-                                            directory: work, runDirectory: directory, sessionID: id))
+        let plan = SessionLaunch(executable: executable, arguments: arguments, environment: environment,
+                                 directory: work, runDirectory: directory, sessionID: id)
+        let run = Diagnostics.id(id)
+        DevRecord.record(.session, "quota.launch", ["run": run, "account": Diagnostics.id(account.id)]) { plan.recorded() }
+        let child = try launch(plan).recorded(run: run, role: "quota")
         transport = child; launchedAt = Date()
         processTask = Task { [weak self] in
             for await event in child.events { await self?.receive(event) }

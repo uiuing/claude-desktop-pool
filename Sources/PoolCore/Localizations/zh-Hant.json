@@ -664,5 +664,19 @@
   "{0} for conversations and subagents, {1} for short tasks": "對話和子代理 {0} 個，短任務 {1} 個",
   "{0} tok/s": "{0} tok/s",
   "The local request failed. Open Claude Pool for help.": "本機請求失敗。請開啟 Claude Pool 查看說明。",
-  "Claude Code processes: {0}": "Claude Code 程序：{0} 個"
+  "Claude Code processes: {0}": "Claude Code 程序：{0} 個",
+  "Turn on developer recording?": "開啟開發記錄？",
+  "Claude Pool will keep what it receives and sends on this Mac, including message text, the originals redaction replaced and Claude's terminal output, up to {0}. Use it only to debug Claude Pool, and delete the records when you are done.": "Claude Pool 會把收發的全部內容保存在這台 Mac 上，包括訊息原文、被遮蔽替換的原始值和 Claude 的終端機輸出，最多 {0}。僅用於除錯 Claude Pool，用完請刪除記錄。",
+  "It turns itself off on {0}.": "它會在 {0} 自動關閉。",
+  "Record": "記錄",
+  "Turn off": "關閉",
+  "Developer recording could not start: its folder could not be made private.": "開發記錄無法開始：無法將其資料夾設為私有。",
+  "Developer recording is on": "開發記錄已開啟",
+  "Message text and redaction originals are kept on this Mac until {0}.": "訊息原文和遮蔽前的原始值會保存在這台 Mac 上，直到 {0}。",
+  "Message text and redaction originals are kept on this Mac for this launch.": "本次啟動期間，訊息原文和遮蔽前的原始值會保存在這台 Mac 上。",
+  "Turn off and keep records": "關閉並保留記錄",
+  "Turn off and delete records": "關閉並刪除記錄",
+  "Delete every developer record?": "刪除全部開發記錄？",
+  "Delete records": "刪除記錄",
+  "The developer recording also keeps these requests whole on this Mac.": "開發記錄也會把這些請求完整保存在這台 Mac 上。"
 }

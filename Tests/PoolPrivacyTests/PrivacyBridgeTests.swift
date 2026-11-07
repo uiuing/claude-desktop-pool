@@ -623,6 +623,33 @@ final class PrivacyBridgeTests: XCTestCase {
         }
     }
 
+    func testDeveloperRecordingKeepsTheRequestAsReceivedAndSentAndWhatWasPutBack() async throws {
+        let lock = NSLock()
+        nonisolated(unsafe) var lines: [Data] = []
+        DevRecord.install { entry in if entry.channel == .privacy { lock.withLock { lines.append(entry.line) } } }
+        defer { DevRecord.install(nil) }
+        let backend = PrivacyBackendFixture(), bridge = PrivacyBridge(backend: backend, detector: FixtureDetector(words: ["Synthetic Person": .person]))
+        let reply = Task { try await collectPrivacy(try await bridge.events(for: textRequest("Write to Synthetic Person"), conversationID: "request:recorded")) }
+        try await privacyEventually { await backend.requests.count == 1 }
+        let sent = await backend.requests[0].messages[0].content.stringValue!
+        let placeholder = try privacyToken(sent)
+        await backend.finish(0, [.text("Hello " + placeholder), .finished(.endTurn)])
+        _ = try await reply.value
+        let records = lock.withLock { lines }.compactMap { try? JSONDecoder().decode(JSONValue.self, from: $0) }
+        let prepared = try XCTUnwrap(records.first { $0["kind"] == .string("privacy.prepared") })
+        XCTAssertEqual(prepared["data"]?["received"]?["messages"]?.arrayValue?.first?["content"], .string("Write to Synthetic Person"))
+        XCTAssertEqual(prepared["data"]?["sent"]?["messages"]?.arrayValue?.first?["content"], .string(sent))
+        let text = try XCTUnwrap(prepared["data"]?["model_texts"]?.arrayValue?.first)
+        XCTAssertEqual(text["text"], .string("Write to Synthetic Person"))
+        XCTAssertEqual(text["model"]?.arrayValue?.first?["category"], .string("PERSON"))
+        let restored = try XCTUnwrap(records.first { $0["kind"] == .string("privacy.reply_text") })
+        XCTAssertEqual(restored["data"]?["from_model"], .string("Hello " + placeholder))
+        XCTAssertEqual(restored["data"]?["to_client"], .string("Hello Synthetic Person"))
+        let finished = try XCTUnwrap(records.first { $0["kind"] == .string("privacy.reply_finished") })
+        XCTAssertEqual(finished["data"]?["unrestored_placeholders"], .array([]))
+        XCTAssertEqual(Set(records.compactMap { $0["review"]?.stringValue }).count, 1)
+    }
+
     private func textRequest(_ text: String, tools: [BridgeTool]? = nil) -> BridgeRequest {
         .init(model: "claude-sonnet", messages: [.init(role: "user", content: .string(text))], tools: tools)
     }

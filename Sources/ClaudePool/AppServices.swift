@@ -90,6 +90,8 @@ final class AppServices {
     /// When the account next in line was last read ahead of a switch.
     private var nextConfirmations: [Date] = []
     private var diagnosticsLog: DiagnosticsLog?
+    /// The developer recording, when the developer turned it on and confirmed it at launch.
+    private var developerRecorder: DeveloperRecorder?
     private var usageStore: UsageStore?
     /// Replies are counted at once and written a little later, so a busy pool writes once, not per reply.
     private var usageSaveTask: Task<Void, Never>?
@@ -122,6 +124,7 @@ final class AppServices {
                     let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
                     if (try? log.install(version: version)) != nil { diagnosticsLog = log }
                 }
+                startDeveloperRecordingIfAsked(workspace)
             }
             let store = PoolStore(workspace: workspace)
             library = try await store.load()
@@ -191,7 +194,8 @@ final class AppServices {
         let serial: Bool
         switch action {
         case .sendTerminalInput, .sendTerminalKey, .cancelSession, .requestSessionExit,
-             .previewPrivacy, .clearPrivacyPreview, .clearPrivacyReview, .closeTerminal, .warmUpNow, .showLog: serial = false
+             .previewPrivacy, .clearPrivacyPreview, .clearPrivacyReview, .closeTerminal, .warmUpNow, .showLog,
+             .showDeveloperRecording, .stopDeveloperRecording: serial = false
         default: serial = true
         }
         if serial {
@@ -308,6 +312,11 @@ final class AppServices {
             case .warmUpNow(let id):
                 await prepareWarmUp()
                 try await warmUpScheduler?.warmNow(id)
+            case .showDeveloperRecording:
+                guard let recorder = developerRecorder else { return }
+                NSWorkspace.shared.activateFileViewerSelecting([recorder.root])
+            case .stopDeveloperRecording(let delete):
+                stopDeveloperRecording(deleting: delete)
             case .showLog:
                 // As in Settings › Log: the folder opens in Finder, nothing is shown in the app.
                 guard let log = diagnosticsLog else { return }
@@ -1453,7 +1462,77 @@ final class AppServices {
         if librarySaveTask != nil { await saveLibrary() }
         Diagnostics.record("app.quit", ["outcome": "ended", "sessions": String(sessionCount), "sessions_ms": String(sessionsMs),
                                         "ms": String(Int(Date().timeIntervalSince(began) * 1000))])
+        developerRecorder?.flush()
         return true
+    }
+
+    // MARK: Developer recording
+
+    /// Turned on in the app's defaults (`DeveloperRecording`), which lasts seven days from when it
+    /// was first seen on, or with `--developer-recording` for one launch. It starts only once the
+    /// developer confirms it, before the gateway serves anything.
+    private func startDeveloperRecordingIfAsked(_ workspace: OwnedWorkspace) {
+        let defaults = UserDefaults.standard
+        let once = ProcessInfo.processInfo.arguments.contains(DeveloperRecordingKeys.argument)
+        guard once || defaults.bool(forKey: DeveloperRecordingKeys.on) else {
+            defaults.removeObject(forKey: DeveloperRecordingKeys.since); return
+        }
+        var until: Date?
+        if !once {
+            let now = dependencies.now()
+            let since = defaults.object(forKey: DeveloperRecordingKeys.since) as? Date ?? now
+            defaults.set(since, forKey: DeveloperRecordingKeys.since)
+            let end = since.addingTimeInterval(DeveloperRecordingKeys.lifetime)
+            guard now < end else {
+                Self.forgetDeveloperRecordingSwitch()
+                Diagnostics.record("devrecord.expired", ["days": String(Int(DeveloperRecordingKeys.lifetime / 86_400))])
+                return
+            }
+            until = end
+        }
+        var limits = DeveloperRecorder.defaultLimits
+        if let asked = defaults.dictionary(forKey: DeveloperRecordingKeys.limits) {
+            for channel in DevRecord.Channel.allCases {
+                if let megabytes = (asked[channel.rawValue] as? NSNumber)?.intValue, megabytes > 0 { limits[channel] = megabytes << 20 }
+            }
+        }
+        let recorder = DeveloperRecorder(root: workspace.root.appendingPathComponent("developer-records", isDirectory: true), limits: limits)
+        let total = recorder.limits.values.reduce(0, +)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = model.t("Turn on developer recording?")
+        alert.informativeText = model.t("Claude Pool will keep what it receives and sends on this Mac, including message text, the originals redaction replaced and Claude's terminal output, up to {0}. Use it only to debug Claude Pool, and delete the records when you are done.",
+                                        ByteCountFormatter.string(fromByteCount: Int64(total), countStyle: .file))
+            + (until.map { "\n\n" + model.t("It turns itself off on {0}.", $0.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(model.locale))) } ?? "")
+        alert.addButton(withTitle: model.t("Record"))
+        alert.addButton(withTitle: model.t("Turn off"))
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            if !once { Self.forgetDeveloperRecordingSwitch() }
+            Diagnostics.record("devrecord.declined", [:])
+            return
+        }
+        do { try recorder.install() } catch {
+            Diagnostics.record("devrecord.stopped", ["why": "folder_failed"])
+            model.notice = model.t("Developer recording could not start: its folder could not be made private.")
+            return
+        }
+        developerRecorder = recorder
+        model.developerRecording = DeveloperRecordingPresentation(until: until, limitBytes: total)
+    }
+
+    private func stopDeveloperRecording(deleting: Bool) {
+        Self.forgetDeveloperRecordingSwitch()
+        guard let recorder = developerRecorder else { model.developerRecording = nil; return }
+        recorder.uninstall()
+        if deleting { recorder.deleteAll() }
+        developerRecorder = nil; model.developerRecording = nil
+        Diagnostics.record("devrecord.turned_off", ["deleted": deleting ? "yes" : "no"])
+    }
+
+    private static func forgetDeveloperRecordingSwitch() {
+        UserDefaults.standard.removeObject(forKey: DeveloperRecordingKeys.on)
+        UserDefaults.standard.removeObject(forKey: DeveloperRecordingKeys.since)
     }
 
     private func message(for error: Error) -> String {

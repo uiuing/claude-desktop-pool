@@ -324,6 +324,13 @@ final class ScreenshotTests: XCTestCase {
                     categories: [.init(id: "PERSON", title: "PERSON", count: 1), .init(id: "EMAIL", title: "EMAIL", count: 1)])
                 try await capture(PrivacyDetailsSheet(model: model, initialText: "Contact Taylor at mi•••ella@example.com."), size: .init(width: 500, height: 500), dark: dark,
                                   to: output.appendingPathComponent("privacy-\(suffix).png"))
+                let recording = PoolAppModel.demoModel(language: language)
+                recording.developerRecording = .init(until: recording.now.addingTimeInterval(6 * 86_400), limitBytes: 6400 << 20)
+                try await capture(PrivacyDetailsSheet(model: recording), size: .init(width: 640, height: 620), dark: dark,
+                                  to: output.appendingPathComponent("privacy-recording-\(suffix).png"))
+                recording.page = .settings
+                try await capture(MainWindow(model: recording), size: .init(width: 680, height: 560), dark: dark,
+                                  to: output.appendingPathComponent("settings-recording-\(suffix).png"))
                 let setup = PoolAppModel.demoModel(language: language, setup: true)
                 setup.snapshot.executableReady = true
                 setup.runtime = .init(phase: .ready, installedVersion: "2.1.301")

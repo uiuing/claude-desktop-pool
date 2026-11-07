@@ -43,6 +43,9 @@ enum EngineSpool {
     }
 
     static func write(_ value: JSONValue, to file: URL) throws {
+        DevRecord.record(.session, "spool.write") {
+            ["path": .string(file.pathComponents.suffix(4).joined(separator: "/")), "value": value]
+        }
         let data = try value.encoded()
         guard data.count <= maximumBytes else { throw BridgeFailure.invalidRequest("The local session message is too large.") }
         let temporary = file.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).tmp")

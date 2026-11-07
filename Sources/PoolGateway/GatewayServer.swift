@@ -140,8 +140,11 @@ private final class GatewayConnection: @unchecked Sendable {
         self.number = number
     }
     func run() async {
+        await DevRecord.$request.withValue(String(number)) { await serveConnection() }
+    }
+    private func serveConnection() async {
         connection.start(queue: queue)
-        let writer = GatewayWriter(connection)
+        let writer = GatewayWriter(connection, number: number)
         let headerDeadline = Task {
             do { try await Task.sleep(nanoseconds: 15_000_000_000); connection.cancel() } catch {}
         }
@@ -156,6 +159,13 @@ private final class GatewayConnection: @unchecked Sendable {
             }
             headerDeadline.cancel()
             let raw = received!
+            DevRecord.record(.http, "http.request") {
+                // The key that admits the client is Pool's own credential and is never recorded.
+                let kept = raw.headers.filter { !Self.secretHeaders.contains($0.key) }.mapValues(JSONValue.string)
+                return ["method": .string(raw.method), "path": .string(raw.path), "headers": .object(kept),
+                        "withheld_headers": .array(raw.headers.keys.filter(Self.secretHeaders.contains).sorted().map(JSONValue.string)),
+                        "body": DevRecord.bytes(raw.body)]
+            }
             switch try router.route(raw) {
             case .response(let response): try await writer.respond(response)
             case .messages(let request, let conversationID, let requested):
@@ -178,6 +188,8 @@ private final class GatewayConnection: @unchecked Sendable {
             }
         }
     }
+
+    static let secretHeaders: Set<String> = ["authorization", "x-api-key", "proxy-authorization", "cookie"]
 
     /// Answers Desktop's check without a Claude session: the pool says whether it could take a
     /// request for the model now, and an empty single-token reply stands for "it could".
@@ -372,7 +384,8 @@ private actor GatewayWriter {
     /// The status the client was answered with, and when its headers went.
     private(set) var status: Int?
     private(set) var headersAt: ContinuousClock.Instant?
-    init(_ connection: NWConnection) { self.connection = connection }
+    private let number: Int
+    init(_ connection: NWConnection, number: Int) { self.connection = connection; self.number = number }
     func beginStream() async throws {
         guard !headersSent else { throw BridgeFailure.transport }
         headersSent = true; streaming = true; status = 200; headersAt = .now
@@ -387,6 +400,7 @@ private actor GatewayWriter {
         try await send(header(status: response.status, fields: fields) + response.body)
     }
     func send(_ data: Data) async throws {
+        DevRecord.record(.http, "http.sent", ["req": String(number)]) { ["bytes": DevRecord.bytes(data)] }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             connection.send(content: data, completion: .contentProcessed { error in
                 if let error { continuation.resume(throwing: error) } else { continuation.resume() }

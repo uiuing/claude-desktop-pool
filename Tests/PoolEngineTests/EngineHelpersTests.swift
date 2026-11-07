@@ -252,3 +252,32 @@ private func waitUntil(_ predicate: () -> Bool) async throws {
         try await Task.sleep(nanoseconds: 10_000_000)
     }
 }
+
+final class SessionRecordingTests: XCTestCase {
+    func testRecordedTransportKeepsBytesBothWaysAndWithholdsCredentialValues() async throws {
+        let lock = NSLock()
+        nonisolated(unsafe) var lines: [Data] = []
+        let (events, continuation) = AsyncStream<PTYEvent>.makeStream()
+        nonisolated(unsafe) var written: [Data] = []
+        let plain = SessionTransport(events: events, write: { data in lock.withLock { written.append(data) } }, interrupt: {}, exit: {})
+        DevRecord.install { entry in lock.withLock { lines.append(entry.line) } }
+        defer { DevRecord.install(nil) }
+        let transport = plain.recorded(run: "0a1b2c3d", role: "session")
+        try transport.write(Data("hello\r".utf8))
+        continuation.yield(.output(Data("\u{1B}[2J> ".utf8))); continuation.yield(.exited(0)); continuation.finish()
+        var seen: [PTYEvent] = []
+        for await event in transport.events { seen.append(event) }
+        XCTAssertEqual(seen, [.output(Data("\u{1B}[2J> ".utf8)), .exited(0)])
+        XCTAssertEqual(lock.withLock { written }, [Data("hello\r".utf8)])
+        let launch = SessionLaunch(executable: URL(fileURLWithPath: "/usr/bin/true"), arguments: ["--session-id", "x"],
+                                   environment: ["CLAUDE_CONFIG_DIR": "/tmp/account.invalid", "ANTHROPIC_AUTH_TOKEN": "synthetic-secret"],
+                                   directory: URL(fileURLWithPath: "/tmp"), runDirectory: URL(fileURLWithPath: "/tmp"), sessionID: UUID())
+        let environment = launch.recorded()["environment"]
+        XCTAssertEqual(environment?["ANTHROPIC_AUTH_TOKEN"], .string("<withheld>"))
+        XCTAssertEqual(environment?["CLAUDE_CONFIG_DIR"], .string("/tmp/account.invalid"))
+        let records = lock.withLock { lines }.compactMap { try? JSONDecoder().decode(JSONValue.self, from: $0) }
+        XCTAssertEqual(records.compactMap { $0["kind"]?.stringValue }, ["pty.in", "pty.out", "pty.exited"])
+        XCTAssertTrue(records.allSatisfy { $0["run"] == .string("0a1b2c3d") })
+        XCTAssertEqual(records[0]["data"]?["bytes"]?["text"], .string("hello\r"))
+    }
+}

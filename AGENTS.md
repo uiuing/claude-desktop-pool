@@ -5,7 +5,7 @@ Claude Pool is a native macOS account pool and local bridge for Claude Desktop. 
 ## Boundaries
 
 - Model access goes through the official Claude Code client in a stable app-owned account directory, in interactive mode with the MCP helper, hooks, status line and the Bun preload tap that copies the reply stream. No paid inference API, token replay or credential extraction. Managed policy and the client's permission prompts stay the user's.
-- Never read or log credentials. Keep secrets and conversation bodies out of logs, diagnostics and repository artifacts; the app log records decisions, counts and timings. Persistent account metadata is credential-free; temporary conversation files are private to the app.
+- Never read or log credentials. Keep secrets and conversation bodies out of logs, diagnostics and repository artifacts; the app log records decisions, counts and timings. Persistent account metadata is credential-free; temporary conversation files are private to the app. The one exception is the developer recording (`DevRecord`, see architecture): off unless the developer turns it on and confirms it, local and private, never holding Pool's own credentials; new boundaries record through it.
 - Text redaction runs the local AstrLink Guard model: a bounded wait for the model, rules for whatever it has not read yet, and nothing sent to a remote redaction service. Model updates keep the license, label and checksum checks.
 - Own only app-created processes and files; never force-kill. Desktop is connected by the user's Connect, which records Desktop's settings before writing Pool's profile; Disconnect restores them. Desktop is restarted only after asking.
 - Local networking binds loopback, requires authentication and rejects browser origins.

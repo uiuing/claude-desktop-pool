@@ -65,7 +65,8 @@ public enum PrivacyUpdate: Sendable {
 
 /// One protected request as it was received and as it was sent, for the person to look over.
 /// It lives in memory only: it is never written to disk, logs or diagnostics, and it is gone
-/// when Claude Pool quits.
+/// when Claude Pool quits. Only the developer recording (`DevRecord`), when the developer turns it
+/// on, keeps it on disk.
 public struct PrivacyReview: Equatable, Sendable, Identifiable {
     public let id: UUID
     public let at: Date
