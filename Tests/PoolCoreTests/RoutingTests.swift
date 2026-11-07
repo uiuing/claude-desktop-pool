@@ -394,6 +394,26 @@ final class RoutingTests: XCTestCase {
                                                     "{{EMAIL_wk11vsss}}", "{{EMAIL_cfwurx73}}", "{{EMAIL_bzbaq7ca}}"])
     }
 
+    /// A real pool (11-07): 100/50 with its week resetting in 20 hours ranked below 86/96, 100/61 and
+    /// 100/54 whose weeks had days to go. Half a week that comes back tomorrow is spent first.
+    func testAWeekResettingTomorrowIsSpentBeforeWeeksWithDaysToGo() {
+        func pool(_ email: String, _ session: Double, _ week: Double, weekResetIn: TimeInterval) -> PoolAccount {
+            .init(email: email, plan: "Max", state: .ready, windows: [
+                .init(id: "five_hour", usedPercent: 100 - session, observedAt: now, resetsAt: now.addingTimeInterval(4.8 * 3600)),
+                .init(id: "seven_day", usedPercent: 100 - week, observedAt: now, resetsAt: now.addingTimeInterval(weekResetIn)),
+            ], createdAt: now)
+        }
+        let fresh = pool("a•••@gmail.com", 86, 96, weekResetIn: 7 * 86400 - 3600)
+        let tomorrow = pool("b•••@gmail.com", 100, 50, weekResetIn: 20 * 3600)
+        let midWeek = pool("c•••@gmail.com", 100, 61, weekResetIn: 5.7 * 86400)
+        let earlier = pool("busy@example.com", 100, 54, weekResetIn: 4.4 * 86400)
+        let accounts = [fresh, midWeek, earlier, tomorrow]
+        XCTAssertEqual(AccountOrdering.ranked(accounts, now: now).first?.id, tomorrow.id, "Even with no conversation on the fresh week")
+        XCTAssertEqual(AccountOrdering.ranked(accounts, now: now, load: [fresh.id: 1]).first?.id, tomorrow.id)
+        // The week's used share counts as back only near its reset; a week with days to go is read as it is.
+        XCTAssertEqual(AccountOrdering.ranked([earlier, midWeek], now: now).first?.id, midWeek.id)
+    }
+
     /// A real pool (11-06): a conversation's new run started while the run it replaced wound down, so
     /// its account counted two conversations for five minutes and sank below accounts with far less week.
     func testAConversationCountsOnceWhileItsRunsOverlap() {

@@ -528,13 +528,15 @@ public enum PoolRouting {
     }
     /// How well an account suits a new conversation, from 0 to about 100. Nothing decides alone:
     /// what is left of the 5-hour limit and of the week weigh about the same; a 5-hour limit that is
-    /// about to renew counts for a little more than it reads, a week about to reset makes its unused
-    /// share worth spending first, and each conversation already on the account weighs against it.
+    /// about to renew counts for a little more than it reads; a week within two days of its reset
+    /// counts what it has used less and less, as that comes back, and its unused share is worth spending first; and each conversation already on the account weighs against it.
     /// A week nearly used up caps the 5-hour limit: below `weekCaps` percent left, the 5-hour share
     /// counts only in proportion, since the account stops when its week does, however full the 5 hours.
     /// Nil when a limit's figure is unknown.
     /// Weekly percent left below which the week limits what the 5-hour share is worth.
     public static let weekCaps = 25.0
+    /// How long before its reset a week starts to count as coming back, and its unused share as lapsing.
+    public static let weekSoon: TimeInterval = 2 * 86400
     public static func score(_ account: PoolAccount, model: String, now: Date = Date(), load: Int = 0) -> Double? {
         guard assessment(account, model: model, now: now).state == .available else { return nil }
         let windows = account.windows.filter { $0.applies(to: model) && !$0.isNotApplicable(at: now) }
@@ -552,9 +554,13 @@ public enum PoolRouting {
             sessionValue = value + (100 - value) * 0.5 * max(0, 1 - until / (5 * 3600))
         }
         if let (value, _) = week { sessionValue *= min(1, max(0, value) / weekCaps) }
-        let weekValue = week?.0 ?? sessionValue
+        var weekValue = week?.0 ?? sessionValue
+        if let (value, until) = week, let until {
+            // What the week has used comes back at its reset: over its last two days it weighs less and less.
+            weekValue = value + (100 - value) * max(0, 1 - until / weekSoon)
+        }
         var expiring = 0.0
-        if let (value, until) = week, let until { expiring = value * max(0, 1 - until / (2 * 86400)) }
+        if let (value, until) = week, let until { expiring = value * max(0, 1 - until / weekSoon) }
         let total = 0.45 * sessionValue + 0.40 * weekValue + 0.15 * expiring - 8 * Double(max(0, load))
         return total
     }
