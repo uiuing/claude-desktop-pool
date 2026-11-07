@@ -30,35 +30,68 @@ struct PrivacyInstallButton: View {
     }
 }
 
-/// Says the developer recording is on, wherever redaction or the log is shown, with its folder and off.
-struct DeveloperRecordingBanner: View {
+/// Settings › General: the full log's switch, with what it holds, its folder and Clear.
+struct FullLogSetting: View {
     @Bindable var model: PoolAppModel
-    @State private var confirmsDelete = false
+    @State private var confirmsClear = false
     var body: some View {
-        if let recording = model.developerRecording {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    PoolSettingLabel(title: model.t("Full log"), systemImage: "record.circle").font(.system(size: 12, weight: .medium))
+                    Text(model.t("Everything Pool receives and sends, message text included, for your own analysis. Kept on this Mac only; asks twice before it turns on."))
+                        .font(.system(size: 10)).foregroundStyle(.secondary).padding(.leading, 24).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                Toggle(model.t("Full log"), isOn: Binding(get: { model.fullLog.on }, set: { model.perform(.fullLog($0)) }))
+                    .toggleStyle(.switch).labelsHidden().controlSize(.small)
+                    .accessibilityIdentifier("settings.fullLog")
+            }
+            if model.fullLog.on || model.fullLog.storedBytes > 0 {
+                HStack(spacing: 8) {
+                    if model.fullLog.on { Image(systemName: "circle.fill").font(.system(size: 6)).foregroundStyle(PoolPalette.amber) }
+                    Text(model.t(model.fullLog.on ? "Recording · {0} on this Mac" : "{0} on this Mac",
+                                 ByteCountFormatter.string(fromByteCount: Int64(model.fullLog.storedBytes), countStyle: .file)))
+                        .font(.system(size: 10)).foregroundStyle(.secondary).monospacedDigit()
+                    Spacer()
+                    Button(model.t("Show in Finder")) { model.perform(.showFullLog) }.controlSize(.small)
+                        .accessibilityIdentifier("settings.fullLog.show")
+                    Button(model.t("Clear")) { confirmsClear = true }.controlSize(.small)
+                        .disabled(model.fullLog.storedBytes == 0).accessibilityIdentifier("settings.fullLog.clear")
+                }.padding(.leading, 24)
+            }
+        }
+        .onAppear { model.perform(.measureFullLog) }
+        .confirmationDialog(model.t("Clear the full log?"), isPresented: $confirmsClear) {
+            Button(model.t("Clear"), role: .destructive) { model.perform(.clearFullLog) }
+        } message: {
+            Text(model.t("Everything recorded so far is deleted from this Mac."))
+        }
+    }
+}
+
+/// While the full log records, the redaction sheet says so, with its folder and off.
+struct FullLogBanner: View {
+    @Bindable var model: PoolAppModel
+    var body: some View {
+        if model.fullLog.on {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: "record.circle").foregroundStyle(PoolPalette.amber)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(model.t("Developer recording is on")).font(.system(size: 11, weight: .semibold))
-                    Text(recording.until.map { model.t("Message text and redaction originals are kept on this Mac until {0}.", $0.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(model.locale))) }
-                         ?? model.t("Message text and redaction originals are kept on this Mac for this launch."))
+                    Text(model.t("The full log is on")).font(.system(size: 11, weight: .semibold))
+                    Text(model.t("Message text and redaction originals are kept on this Mac. Clear it in Settings › General."))
                         .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 6)
-                Button(model.t("Show in Finder")) { model.perform(.showDeveloperRecording) }.controlSize(.small)
-                    .accessibilityIdentifier("devrecord.show")
-                Menu(model.t("Turn off")) {
-                    Button(model.t("Turn off and keep records")) { model.perform(.stopDeveloperRecording(delete: false)) }
-                    Button(model.t("Turn off and delete records"), role: .destructive) { confirmsDelete = true }
-                }.controlSize(.small).fixedSize().accessibilityIdentifier("devrecord.off")
+                Button(model.t("Show in Finder")) { model.perform(.showFullLog) }.controlSize(.small)
+                    .accessibilityIdentifier("fullLog.show")
+                Button(model.t("Turn off")) { model.perform(.fullLog(false)) }.controlSize(.small)
+                    .accessibilityIdentifier("fullLog.off")
             }
             .padding(10)
             .background(PoolPalette.amber.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
             .overlay(RoundedRectangle(cornerRadius: 7).stroke(PoolPalette.amber.opacity(0.3)))
-            .confirmationDialog(model.t("Delete every developer record?"), isPresented: $confirmsDelete) {
-                Button(model.t("Delete records"), role: .destructive) { model.perform(.stopDeveloperRecording(delete: true)) }
-            }
-            .accessibilityIdentifier("devrecord.banner")
+            .accessibilityIdentifier("fullLog.banner")
         }
     }
 }
@@ -80,7 +113,8 @@ struct PrivacyDetailsSheet: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    DeveloperRecordingBanner(model: model)
+                    FullLogBanner(model: model)
+                    if !model.preferences.redaction { RedactionOffBanner(model: model) }
                     HStack(spacing: 10) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("AstrLink Guard").font(.system(size: 12, weight: .semibold))
@@ -88,11 +122,14 @@ struct PrivacyDetailsSheet: View {
                                 .font(.system(size: 10)).foregroundStyle(.secondary)
                         }
                         Spacer()
-                        if model.privacy.phase == .ready { PoolBadge(title: model.privacyStatusTitle) }
+                        if !model.preferences.redaction { EmptyView() }
+                        else if model.privacy.phase == .ready { PoolBadge(title: model.privacyStatusTitle) }
                         else { PrivacyInstallButton(model: model) }
                     }
-                    Text(model.t("All supported kinds of sensitive data are redacted."))
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                    if model.preferences.redaction {
+                        Text(model.t("All supported kinds of sensitive data are redacted."))
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
                     HStack(alignment: .firstTextBaseline, spacing: 20) {
                         statistic(model.privacy.protectedCount, title: "Redacted items")
                         statistic(model.privacy.requestCount, title: "Inspected requests")
@@ -186,8 +223,8 @@ struct PrivacyReviewList: View {
                         .buttonStyle(.link).font(.system(size: 11)).accessibilityIdentifier("privacy.clearReview")
                 }
             }
-            Text(model.t(model.developerRecording == nil ? "Kept in memory only, never written to disk, and gone when Claude Pool quits."
-                         : "The developer recording also keeps these requests whole on this Mac."))
+            Text(model.t(!model.fullLog.on ? "Kept in memory only, never written to disk, and gone when Claude Pool quits."
+                         : "The full log also keeps these requests whole on this Mac."))
                 .font(.system(size: 10)).foregroundStyle(.secondary)
             if model.privacyReviews.isEmpty {
                 Text(model.t("Requests that had something redacted appear here."))
@@ -377,5 +414,27 @@ private struct PrivacyReviewText: NSViewRepresentable {
             }
         }
         return result
+    }
+}
+
+/// While redaction is off, the sheet says so first and offers to turn it on again.
+struct RedactionOffBanner: View {
+    @Bindable var model: PoolAppModel
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "shield.slash").foregroundStyle(PoolPalette.amber)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(model.t("Redaction is off")).font(.system(size: 11, weight: .semibold))
+                Text(model.t("Requests go to Claude exactly as written."))
+                    .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 6)
+            Button(model.t("Turn on")) { model.perform(.redaction(true)) }.controlSize(.small)
+                .accessibilityIdentifier("privacy.redactionOn")
+        }
+        .padding(10)
+        .background(PoolPalette.amber.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(PoolPalette.amber.opacity(0.3)))
+        .accessibilityIdentifier("privacy.redactionOff")
     }
 }

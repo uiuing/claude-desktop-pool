@@ -10,26 +10,23 @@ enum UIAction: Equatable {
     case requestSessionExit(UUID), closeTerminal(UUID)
     case installPrivacyModel, previewPrivacy(String), clearPrivacyPreview, clearPrivacyReview
     case language(String), appearance(String), routePolicy(RoutingPolicy), refreshQuota(UUID?), quotaRefreshPreferences(QuotaRefreshPreferences)
-    case warmUpPreferences(WarmUpPreferences), warmUpNow(UUID), showLog, maskEmail(Bool)
-    case showDeveloperRecording, stopDeveloperRecording(delete: Bool)
+    case warmUpPreferences(WarmUpPreferences), warmUpNow(UUID), showLog, maskEmail(Bool), redaction(Bool)
+    case fullLog(Bool), showFullLog, clearFullLog, measureFullLog
 }
 
-/// The developer recording's switches in the app's defaults. There is no setting for it: a developer
-/// turns it on with `defaults write io.github.uiuing.claude-desktop-pool DeveloperRecording -bool true`.
-enum DeveloperRecordingKeys {
+/// The full log's keys in the app's defaults. It is turned on in Settings › General, after two
+/// confirmations, and stays on until turned off there.
+enum FullLogKeys {
     static let on = "DeveloperRecording"
-    static let since = "DeveloperRecordingSince"
     /// Megabytes per channel: `{privacy = 8192; http = 2048;}`.
     static let limits = "DeveloperRecordingLimitsMB"
-    static let argument = "--developer-recording"
-    static let lifetime: TimeInterval = 7 * 86_400
 }
 
-/// A developer recording in progress, shown wherever redaction or the log is, so it is not forgotten.
-struct DeveloperRecordingPresentation: Equatable {
-    /// When it turns itself off; nil for a recording asked for this launch only.
-    var until: Date?
-    var limitBytes: Int
+/// The full log: whether it records now and what it holds on this Mac.
+struct FullLogPresentation: Equatable {
+    var on = false
+    var storedBytes = 0
+    var limitBytes = 0
 }
 
 enum RuntimePhase: Equatable { case notInstalled, checking, installing, ready, updateAvailable, failed }
@@ -198,8 +195,8 @@ final class PoolAppModel {
     var privacyPreview = PrivacyPreviewPresentation()
     /// Recent requests that had something redacted, newest first; in memory only.
     var privacyReviews: [PrivacyReview] = []
-    /// Set while the developer recording is on.
-    var developerRecording: DeveloperRecordingPresentation?
+    /// The full log, shown in Settings and, while it records, beside redaction.
+    var fullLog = FullLogPresentation()
     var generatingSessionIDs: Set<UUID> = []
     var quotaRefresh: [UUID: QuotaRefreshPresentation] = [:]
     var quotaCadence: [UUID: QuotaCadenceSnapshot] = [:]
@@ -422,10 +419,12 @@ final class PoolAppModel {
         case .outdated: t("Update the connection so Desktop loads tools only as they are needed.")
         }
     }
-    var setupComplete: Bool { snapshot.executableReady && privacy.phase == .ready && hasSignedInAccount && snapshot.desktop.isLinked }
+    /// Redaction that is on must be ready before the pool serves; turned off, it is not waited for.
+    var redactionReady: Bool { !preferences.redaction || privacy.phase == .ready }
+    var setupComplete: Bool { snapshot.executableReady && redactionReady && hasSignedInAccount && snapshot.desktop.isLinked }
     var setupStep: SetupStep? {
         if !snapshot.executableReady { return .installClient }
-        if privacy.phase != .ready { return .prepareRedaction }
+        if !redactionReady { return .prepareRedaction }
         if !hasSignedInAccount { return .addAccount }
         if snapshot.desktop == .notInstalled { return .getDesktop }
         if !snapshot.desktop.isLinked { return .connectDesktop }
@@ -776,11 +775,13 @@ final class PoolAppModel {
             guard let index = snapshot.sessions.firstIndex(where: { $0.id == id }) else { return }
             snapshot.sessions[index].state = .ended
             if terminal?.id == id { terminal?.isRunning = false; terminal?.inputEnabled = false }
-        case .showLog, .showDeveloperRecording: break
-        case .stopDeveloperRecording: developerRecording = nil
+        case .showLog, .showFullLog, .measureFullLog: break
+        case .fullLog(let on): fullLog.on = on
+        case .clearFullLog: fullLog.storedBytes = 0
         case .language(let language): preferences.language = language
         case .appearance(let appearance): preferences.appearance = appearance
         case .maskEmail(let value): preferences.maskEmail = value
+        case .redaction(let value): preferences.redaction = value
         case .closeTerminal(let id):
             if pendingSignInID == id { pendingSignInID = nil }
             if terminal?.id == id { terminal = nil }

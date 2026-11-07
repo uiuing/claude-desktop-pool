@@ -650,6 +650,39 @@ final class PrivacyBridgeTests: XCTestCase {
         XCTAssertEqual(Set(records.compactMap { $0["review"]?.stringValue }).count, 1)
     }
 
+    /// Off, a request reaches the pool as Desktop sent it, under Desktop's id, and its cancel does too;
+    /// on again, the next request of the same conversation is redacted.
+    func testTurnedOffPassesRequestsUnchangedAndOnAgainRedactsTheNext() async throws {
+        let backend = PrivacyBackendFixture(), bridge = PrivacyBridge(backend: backend, detector: FixtureDetector(words: ["Synthetic Person": .person]))
+        await bridge.setEnabled(false)
+        let first = textRequest("Synthetic Person uses password=fixture-password")
+        let plain = Task { try await collectPrivacy(try await bridge.events(for: first, conversationID: "conversation:desktop")) }
+        try await privacyEventually { await backend.requests.count == 1 }
+        let sent = await backend.requests[0], identities = await backend.identities
+        XCTAssertEqual(sent, first)
+        XCTAssertEqual(identities[0], "conversation:desktop")
+        await bridge.cancel(conversationID: "conversation:desktop")
+        let cancelled = await backend.cancelled
+        XCTAssertEqual(cancelled, ["conversation:desktop"])
+        _ = try? await plain.value
+        let before = await bridge.statistics()
+        XCTAssertEqual(before.protectedRequests, 0)
+
+        await bridge.setEnabled(true)
+        var second = first
+        second.messages += [.init(role: "assistant", content: .string("Noted")), .init(role: "user", content: .string("Again, Synthetic Person"))]
+        let masked = Task { try await collectPrivacy(try await bridge.events(for: second, conversationID: "conversation:desktop")) }
+        try await privacyEventually { await backend.requests.count == 2 }
+        let redacted = await backend.requests[1], secondID = await backend.identities[1]
+        XCTAssertFalse(redacted.messages[0].content.stringValue!.contains("Synthetic Person"))
+        XCTAssertFalse(redacted.messages[2].content.stringValue!.contains("Synthetic Person"))
+        XCTAssertNotEqual(secondID, "conversation:desktop")
+        await backend.finish(1, [.text("Done"), .finished(.endTurn)])
+        _ = try await masked.value
+        let after = await bridge.statistics()
+        XCTAssertEqual(after.protectedRequests, 1)
+    }
+
     private func textRequest(_ text: String, tools: [BridgeTool]? = nil) -> BridgeRequest {
         .init(model: "claude-sonnet", messages: [.init(role: "user", content: .string(text))], tools: tools)
     }

@@ -2,8 +2,7 @@ import Foundation
 
 /// The developer recording: everything Pool received and sent at its boundaries, with what it
 /// decided and why, for the developer to follow one run end to end on their own Mac. It is off
-/// unless the developer turns it on (`DeveloperRecording` in the app's defaults, or
-/// `--developer-recording` for one launch); with no sink installed every call returns at once and
+/// unless the person turns it on in Settings › General (the full log); with no sink installed every call returns at once and
 /// its payload closure never runs. Records hold conversation words, so they go only to the app's
 /// private recording folder, never into `pool.log`, diagnostics or anything sent anywhere. Pool's
 /// own credentials (the gateway key, request headers that carry it) are never recorded.

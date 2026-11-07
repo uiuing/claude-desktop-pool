@@ -19,7 +19,7 @@ struct SetupCard: View {
                         Text(model.t("Version {0}", version)).font(.system(size: 10)).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 35).padding(.top, 6)
                     }
-                    if model.snapshot.executableReady && model.privacy.phase != .ready {
+                    if model.snapshot.executableReady && !model.redactionReady {
                         PrivacyPreparationRow(model: model).padding(.leading, 35).padding(.top, 12)
                     }
                     Divider().padding(.leading, 35).padding(.vertical, 12)
@@ -80,7 +80,7 @@ struct AccountsPage: View {
                             Text(model.t("Claude Code") + " · " + model.t("Version {0}", version))
                                 .font(.system(size: 11)).foregroundStyle(.secondary)
                         }
-                        if model.snapshot.executableReady && model.privacy.phase != .ready {
+                        if model.snapshot.executableReady && !model.redactionReady {
                             PrivacyPreparationRow(model: model).frame(maxWidth: 320)
                         }
                     }.frame(maxWidth: .infinity).padding(.vertical, 16)

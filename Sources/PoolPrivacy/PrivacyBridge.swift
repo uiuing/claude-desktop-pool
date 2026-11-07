@@ -12,6 +12,7 @@ public actor PrivacyBridge: BridgeBackend {
     private var toolOwners: [String: UUID] = [:]
     private var totals = PrivacyStatistics()
     private var processing = 0
+    private var enabled = true
     private let reader: PrivacyReader
 
     public init(backend: any BridgeBackend, detector: any PrivacyEntityDetector,
@@ -31,6 +32,13 @@ public actor PrivacyBridge: BridgeBackend {
         Task { await reader.stop() }
     }
     public func statistics() -> PrivacyStatistics { totals }
+    /// Off, requests go to the pool as Desktop sent them. Conversations redacted before keep their own
+    /// runs; the first request after a switch, either way, is served in a new run with its whole history.
+    public func setEnabled(_ value: Bool) {
+        guard value != enabled else { return }
+        enabled = value
+        Diagnostics.record("privacy.switched", ["on": value ? "1" : "0"])
+    }
     public func canAcceptManualInput(conversationID: String) -> Bool {
         contexts.values.contains { $0.backendID == conversationID && $0.busy && $0.backendReady && !$0.cancelled && $0.activeRequest != nil }
     }
@@ -53,6 +61,10 @@ public actor PrivacyBridge: BridgeBackend {
     }
 
     public func events(for request: BridgeRequest, conversationID: String?) async throws -> AsyncThrowingStream<BridgeEvent, Error> {
+        guard enabled else {
+            Diagnostics.record("privacy.bypassed", ["messages": String(request.messages.count)])
+            return try await backend.events(for: request, conversationID: conversationID)
+        }
         let alias = conversationID ?? "request:" + UUID().uuidString
         let ids = try resultIDs(request)
         let id: UUID
@@ -147,7 +159,9 @@ public actor PrivacyBridge: BridgeBackend {
     }
 
     public func cancel(conversationID: String) async {
-        guard let id = aliases[conversationID], let token = contexts[id]?.activeRequest else { return }
+        // A conversation served while redaction was off is the pool's own.
+        guard let id = aliases[conversationID] else { return await backend.cancel(conversationID: conversationID) }
+        guard let token = contexts[id]?.activeRequest else { return }
         await cancelRequest(id, token: token)
     }
     public func cancelSession(conversationID: String) async -> Bool {

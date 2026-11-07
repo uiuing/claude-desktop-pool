@@ -90,8 +90,9 @@ final class AppServices {
     /// When the account next in line was last read ahead of a switch.
     private var nextConfirmations: [Date] = []
     private var diagnosticsLog: DiagnosticsLog?
-    /// The developer recording, when the developer turned it on and confirmed it at launch.
+    /// The full log's recorder while it records.
     private var developerRecorder: DeveloperRecorder?
+    private var fullLogRoot: URL?
     private var usageStore: UsageStore?
     /// Replies are counted at once and written a little later, so a busy pool writes once, not per reply.
     private var usageSaveTask: Task<Void, Never>?
@@ -124,7 +125,7 @@ final class AppServices {
                     let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
                     if (try? log.install(version: version)) != nil { diagnosticsLog = log }
                 }
-                startDeveloperRecordingIfAsked(workspace)
+                resumeFullLog(workspace)
             }
             let store = PoolStore(workspace: workspace)
             library = try await store.load()
@@ -162,7 +163,8 @@ final class AppServices {
             refreshDesktop()
             privacyDetector = dependencies.privacyModelFactory(workspace)
             if let privacyDetector { presentPrivacyStatus(await privacyDetector.status(), version: await privacyDetector.installedVersion()) }
-            if model.snapshot.executableReady, dependencies.preparePrivacyAutomatically, model.privacy.phase == .notInstalled {
+            if model.snapshot.executableReady, dependencies.preparePrivacyAutomatically, library.preferences.redaction,
+               model.privacy.phase == .notInstalled {
                 do { try await installPrivacyModel() } catch { report(error) }
             }
             do { try await prepareQuotaService() } catch { report(error) }
@@ -195,7 +197,7 @@ final class AppServices {
         switch action {
         case .sendTerminalInput, .sendTerminalKey, .cancelSession, .requestSessionExit,
              .previewPrivacy, .clearPrivacyPreview, .clearPrivacyReview, .closeTerminal, .warmUpNow, .showLog,
-             .showDeveloperRecording, .stopDeveloperRecording: serial = false
+             .showFullLog, .clearFullLog, .measureFullLog, .fullLog: serial = false
         default: serial = true
         }
         if serial {
@@ -312,11 +314,17 @@ final class AppServices {
             case .warmUpNow(let id):
                 await prepareWarmUp()
                 try await warmUpScheduler?.warmNow(id)
-            case .showDeveloperRecording:
-                guard let recorder = developerRecorder else { return }
-                NSWorkspace.shared.activateFileViewerSelecting([recorder.root])
-            case .stopDeveloperRecording(let delete):
-                stopDeveloperRecording(deleting: delete)
+            case .fullLog(let on):
+                if on { startFullLog(asking: true) } else { stopFullLog() }
+            case .showFullLog:
+                let root = fullLogRecorder().root
+                try? DeveloperRecorder.makePrivateDirectory(root)
+                NSWorkspace.shared.activateFileViewerSelecting([root])
+            case .clearFullLog:
+                fullLogRecorder().deleteAll()
+                Diagnostics.record("devrecord.cleared", [:])
+                measureFullLog()
+            case .measureFullLog: measureFullLog()
             case .showLog:
                 // As in Settings › Log: the folder opens in Finder, nothing is shown in the app.
                 guard let log = diagnosticsLog else { return }
@@ -330,6 +338,8 @@ final class AppServices {
                 try await mutate { $0.preferences.appearance = appearance }
             case .maskEmail(let value):
                 try await mutate { $0.preferences.maskEmail = value }
+            case .redaction(let value):
+                try await switchRedaction(value)
             }
         } catch { report(error) }
     }
@@ -404,7 +414,7 @@ final class AppServices {
             model.runtime.phase = .failed; model.runtime.progress = nil
             throw error
         }
-        if model.privacy.phase != .ready { try await installPrivacyModel() }
+        if library.preferences.redaction, model.privacy.phase != .ready { try await installPrivacyModel() }
     }
 
     private func presentPrivacyStatus(_ status: AstrLinkStatus, version: String) {
@@ -902,7 +912,9 @@ final class AppServices {
     }
 
     private func startPool() async throws {
-        guard let privacyDetector, await privacyDetector.status() == .ready else { throw BridgeFailure.privacyUnavailable }
+        let redaction = library.preferences.redaction
+        guard let privacyDetector else { throw BridgeFailure.privacyUnavailable }
+        if redaction, await privacyDetector.status() != .ready { throw BridgeFailure.privacyUnavailable }
         if let coordinator, server != nil {
             await coordinator.setPaused(false); model.snapshot.mode = .running
             try await quotaService?.start()
@@ -925,6 +937,7 @@ final class AppServices {
         let server = try GatewayServer(port: dependencies.gatewayPort ?? library.preferences.port, token: try token(), backend: protection,
             models: PoolModel.listing(library.reportedModels ?? []),
             onCheck: { [weak self] check in Task { @MainActor in self?.model.desktopCheck = .init(at: check.at, failure: check.failure) } })
+        await protection.setEnabled(redaction)
         listeningPort = try await server.start()
         privacyBridge = protection
         self.coordinator = coordinator; self.server = server; model.snapshot.mode = .running
@@ -1069,6 +1082,27 @@ final class AppServices {
         }
         guard model.terminal?.id == terminal.id else { return }
         model.terminal?.textInputEnabled = allowed
+    }
+
+    /// Turning redaction off asks first; turning it on prepares the local model if it is not ready yet.
+    /// Requests already being prepared or answered finish as they began.
+    private func switchRedaction(_ on: Bool) async throws {
+        guard on != library.preferences.redaction else { return }
+        if !on {
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = model.t("Turn off sensitive data redaction?")
+            alert.informativeText = model.t("New requests go to Claude exactly as written, including any keys, passwords or personal details in them. You can turn redaction on again here at any time.")
+            alert.addButton(withTitle: model.t("Turn off"))
+            alert.addButton(withTitle: model.t("Cancel"))
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        try await mutate { $0.preferences.redaction = on }
+        Diagnostics.record("privacy.preference", ["on": on ? "1" : "0"])
+        // On again, requests are redacted at once: by rules alone until the local model is ready.
+        await privacyBridge?.setEnabled(on)
+        if on, model.privacy.phase != .ready, model.snapshot.executableReady { try await installPrivacyModel() }
     }
 
     private func cancelProtectedRequest(sessionID: UUID) async -> Bool {
@@ -1466,73 +1500,85 @@ final class AppServices {
         return true
     }
 
-    // MARK: Developer recording
+    // MARK: Full log
 
-    /// Turned on in the app's defaults (`DeveloperRecording`), which lasts seven days from when it
-    /// was first seen on, or with `--developer-recording` for one launch. It starts only once the
-    /// developer confirms it, before the gateway serves anything.
-    private func startDeveloperRecordingIfAsked(_ workspace: OwnedWorkspace) {
-        let defaults = UserDefaults.standard
-        let once = ProcessInfo.processInfo.arguments.contains(DeveloperRecordingKeys.argument)
-        guard once || defaults.bool(forKey: DeveloperRecordingKeys.on) else {
-            defaults.removeObject(forKey: DeveloperRecordingKeys.since); return
-        }
-        var until: Date?
-        if !once {
-            let now = dependencies.now()
-            let since = defaults.object(forKey: DeveloperRecordingKeys.since) as? Date ?? now
-            defaults.set(since, forKey: DeveloperRecordingKeys.since)
-            let end = since.addingTimeInterval(DeveloperRecordingKeys.lifetime)
-            guard now < end else {
-                Self.forgetDeveloperRecordingSwitch()
-                Diagnostics.record("devrecord.expired", ["days": String(Int(DeveloperRecordingKeys.lifetime / 86_400))])
-                return
-            }
-            until = end
-        }
+    /// The full log was turned on in Settings, confirmed twice then: it goes on at every launch until
+    /// it is turned off there, before the gateway serves anything.
+    private func resumeFullLog(_ workspace: OwnedWorkspace) {
+        fullLogRoot = workspace.root.appendingPathComponent("developer-records", isDirectory: true)
+        if UserDefaults.standard.bool(forKey: FullLogKeys.on) { startFullLog(asking: false) }
+        measureFullLog()
+    }
+
+    /// The recorder in use, else one for the same folder, to measure or clear it.
+    private func fullLogRecorder() -> DeveloperRecorder {
+        if let developerRecorder { return developerRecorder }
         var limits = DeveloperRecorder.defaultLimits
-        if let asked = defaults.dictionary(forKey: DeveloperRecordingKeys.limits) {
+        if let asked = UserDefaults.standard.dictionary(forKey: FullLogKeys.limits) {
             for channel in DevRecord.Channel.allCases {
                 if let megabytes = (asked[channel.rawValue] as? NSNumber)?.intValue, megabytes > 0 { limits[channel] = megabytes << 20 }
             }
         }
-        let recorder = DeveloperRecorder(root: workspace.root.appendingPathComponent("developer-records", isDirectory: true), limits: limits)
+        let root = fullLogRoot ?? workspace?.root.appendingPathComponent("developer-records", isDirectory: true)
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("claude-pool-full-log", isDirectory: true)
+        return DeveloperRecorder(root: root, limits: limits)
+    }
+
+    /// Turning it on asks twice: what it keeps, then that message text will be on disk.
+    private func startFullLog(asking: Bool) {
+        guard developerRecorder == nil, fullLogRoot != nil else { return }
+        let recorder = fullLogRecorder()
         let total = recorder.limits.values.reduce(0, +)
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = model.t("Turn on developer recording?")
-        alert.informativeText = model.t("Claude Pool will keep what it receives and sends on this Mac, including message text, the originals redaction replaced and Claude's terminal output, up to {0}. Use it only to debug Claude Pool, and delete the records when you are done.",
-                                        ByteCountFormatter.string(fromByteCount: Int64(total), countStyle: .file))
-            + (until.map { "\n\n" + model.t("It turns itself off on {0}.", $0.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(model.locale))) } ?? "")
-        alert.addButton(withTitle: model.t("Record"))
-        alert.addButton(withTitle: model.t("Turn off"))
-        NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else {
-            if !once { Self.forgetDeveloperRecordingSwitch() }
-            Diagnostics.record("devrecord.declined", [:])
-            return
+        if asking {
+            NSApp.activate(ignoringOtherApps: true)
+            let first = NSAlert()
+            first.alertStyle = .warning
+            first.messageText = model.t("Turn on the full log?")
+            first.informativeText = model.t("The full log keeps everything Claude Pool receives and sends, including message text, the originals redaction replaced and Claude's terminal output, so you can analyze problems yourself. It stays on this Mac and is never sent anywhere. It can use up to {0}, and you can clear it in Settings at any time.",
+                                            ByteCountFormatter.string(fromByteCount: Int64(total), countStyle: .file))
+            first.addButton(withTitle: model.t("Continue"))
+            first.addButton(withTitle: model.t("Cancel"))
+            guard first.runModal() == .alertFirstButtonReturn else { return declineFullLog() }
+            let second = NSAlert()
+            second.alertStyle = .critical
+            second.messageText = model.t("Keep message text on this Mac?")
+            second.informativeText = model.t("Anyone who can read your files can read the full log, redaction originals included. Turn it on only while you analyze a problem, and clear it when you are done.")
+            second.addButton(withTitle: model.t("Turn on"))
+            second.addButton(withTitle: model.t("Cancel"))
+            guard second.runModal() == .alertFirstButtonReturn else { return declineFullLog() }
         }
         do { try recorder.install() } catch {
             Diagnostics.record("devrecord.stopped", ["why": "folder_failed"])
-            model.notice = model.t("Developer recording could not start: its folder could not be made private.")
+            UserDefaults.standard.removeObject(forKey: FullLogKeys.on)
+            model.fullLog.on = false
+            model.notice = model.t("The full log could not start: its folder could not be made private.")
             return
         }
+        UserDefaults.standard.set(true, forKey: FullLogKeys.on)
         developerRecorder = recorder
-        model.developerRecording = DeveloperRecordingPresentation(until: until, limitBytes: total)
+        model.fullLog.on = true; model.fullLog.limitBytes = total
     }
 
-    private func stopDeveloperRecording(deleting: Bool) {
-        Self.forgetDeveloperRecordingSwitch()
-        guard let recorder = developerRecorder else { model.developerRecording = nil; return }
-        recorder.uninstall()
-        if deleting { recorder.deleteAll() }
-        developerRecorder = nil; model.developerRecording = nil
-        Diagnostics.record("devrecord.turned_off", ["deleted": deleting ? "yes" : "no"])
+    private func declineFullLog() {
+        Diagnostics.record("devrecord.declined", [:])
+        model.fullLog.on = false
     }
 
-    private static func forgetDeveloperRecordingSwitch() {
-        UserDefaults.standard.removeObject(forKey: DeveloperRecordingKeys.on)
-        UserDefaults.standard.removeObject(forKey: DeveloperRecordingKeys.since)
+    /// Off keeps what was recorded; Clear removes it.
+    private func stopFullLog() {
+        UserDefaults.standard.removeObject(forKey: FullLogKeys.on)
+        if let recorder = developerRecorder {
+            recorder.uninstall()
+            developerRecorder = nil
+            Diagnostics.record("devrecord.turned_off", [:])
+        }
+        model.fullLog.on = false
+        measureFullLog()
+    }
+
+    private func measureFullLog() {
+        guard fullLogRoot != nil else { return }
+        model.fullLog.storedBytes = fullLogRecorder().totalBytes()
     }
 
     private func message(for error: Error) -> String {

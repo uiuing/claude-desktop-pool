@@ -50,7 +50,7 @@ struct PoolSettingsPage: View {
                             Button(model.t("Show in Finder")) { model.perform(.showLog) }.controlSize(.small)
                                 .accessibilityIdentifier("settings.showLog")
                         }
-                        DeveloperRecordingBanner(model: model)
+                        FullLogSetting(model: model)
                     }
                 }
                 PoolCard { WarmUpSettings(model: model) }
@@ -88,7 +88,7 @@ struct PoolSettingsPage: View {
                         if model.runtime.busy { RuntimeInstallStatus(model: model).padding(.leading, 24) }
                     }
                 }
-                PoolCard {
+                PoolCard { VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 10) {
                         VStack(alignment: .leading, spacing: 5) {
                             PoolSettingLabel(title: model.t("Sensitive data redaction"), systemImage: "shield.lefthalf.filled").font(.system(size: 12, weight: .semibold))
@@ -103,8 +103,16 @@ struct PoolSettingsPage: View {
                         Text(model.privacyStatusTitle).font(.system(size: 10)).foregroundStyle(.secondary)
                         Button(model.t("Details…")) { showsPrivacy = true }.controlSize(.small)
                             .accessibilityIdentifier("settings.privacy")
+                        Toggle(model.t("Sensitive data redaction"), isOn: Binding(get: { model.preferences.redaction }, set: { model.perform(.redaction($0)) }))
+                            .toggleStyle(.switch).controlSize(.small).labelsHidden()
+                            .accessibilityIdentifier("settings.redaction")
                     }
-                }
+                    if !model.preferences.redaction {
+                        Text(model.t("Requests go to Claude exactly as written."))
+                            .font(.system(size: 10)).foregroundStyle(PoolPalette.amber).padding(.leading, 24)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                } }
                 PoolCard { DesktopConnectionRow(model: model) }
             case .about:
                 PoolCard { AboutSettings(model: model, updates: model.updates) }

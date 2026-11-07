@@ -11,4 +11,12 @@ final class PreferencesTests: XCTestCase {
         let saved = String(decoding: try JSONEncoder().encode(preferences), as: UTF8.self)
         XCTAssertFalse(saved.contains("runsMost"))
     }
+
+    /// Redaction is on for libraries saved before it could be turned off, and a choice to turn it off is kept.
+    func testRedactionIsOnUntilTurnedOffAndTheChoiceIsKept() throws {
+        let earlier = Data(#"{"port":18473,"language":"system"}"#.utf8)
+        XCTAssertTrue(try JSONDecoder().decode(PoolPreferences.self, from: earlier).redaction)
+        let off = PoolPreferences(redaction: false)
+        XCTAssertFalse(try JSONDecoder().decode(PoolPreferences.self, from: JSONEncoder().encode(off)).redaction)
+    }
 }

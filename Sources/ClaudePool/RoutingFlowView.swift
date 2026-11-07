@@ -77,9 +77,9 @@ struct RoutingFlowView: View {
                 node(symbol: "desktopcomputer", title: "Claude Desktop", detail: model.conversationCountText(model.conversations.count),
                      color: .secondary, width: 98)
                     .position(x: 44, y: center + 6)
-                node(symbol: model.privacy.phase == .ready ? "shield.checkered" : "shield.lefthalf.filled",
+                node(symbol: !model.preferences.redaction ? "shield.slash" : model.privacy.phase == .ready ? "shield.checkered" : "shield.lefthalf.filled",
                      title: model.t("Sensitive data redaction"), detail: model.privacyStatusTitle,
-                     color: model.privacy.phase == .ready ? PoolPalette.good : PoolPalette.amber, width: 106)
+                     color: !model.preferences.redaction ? .secondary : model.privacy.phase == .ready ? PoolPalette.good : PoolPalette.amber, width: 106)
                     .position(x: middle, y: center + 6)
                 ForEach(Array(zip(lanes, laneYs)), id: \.0.id) { lane, y in
                     laneView(lane).frame(width: laneWidth, height: Self.laneHeight)

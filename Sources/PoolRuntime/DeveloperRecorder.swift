@@ -145,7 +145,7 @@ public final class DeveloperRecorder: @unchecked Sendable {
         line.append(10); return line
     }
 
-    static func makePrivateDirectory(_ url: URL) throws {
+    public static func makePrivateDirectory(_ url: URL) throws {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         var info = stat()
         guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == getuid() else { throw RuntimeError.storageFailure }

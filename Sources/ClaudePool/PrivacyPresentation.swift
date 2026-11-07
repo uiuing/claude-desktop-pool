@@ -56,6 +56,7 @@ extension PoolAppModel {
         return "AstrLink Guard \(version) · " + t("Updates automatically")
     }
     var privacyStatusTitle: String {
+        guard preferences.redaction else { return t("Off") }
         switch privacy.phase {
         case .notInstalled: return t("Setup needed")
         case .installing: return t("Preparing…")

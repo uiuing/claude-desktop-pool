@@ -168,13 +168,16 @@ public struct PoolPreferences: Codable, Equatable, Sendable {
     public var warmUp: WarmUpPreferences
     /// Shows account emails with the name before "@" masked, for screen sharing.
     public var maskEmail: Bool
+    /// Whether requests are redacted before they reach Claude. On unless the person turns it off.
+    public var redaction: Bool
     public init(port: UInt16 = 18473, language: String = "system", routingPolicy: RoutingPolicy = .init(),
                 quotaRefresh: QuotaRefreshPreferences = .init(), appearance: String = "system", menuBarPlan: String? = nil,
-                warmUp: WarmUpPreferences = .init(), maskEmail: Bool = false) {
+                warmUp: WarmUpPreferences = .init(), maskEmail: Bool = false, redaction: Bool = true) {
         self.port = port; self.language = language; self.routingPolicy = routingPolicy; self.quotaRefresh = quotaRefresh
         self.appearance = appearance; self.menuBarPlan = menuBarPlan; self.warmUp = warmUp; self.maskEmail = maskEmail
+        self.redaction = redaction
     }
-    enum CodingKeys: String, CodingKey { case port, language, routingPolicy, quotaRefresh, appearance, menuBarPlan, warmUp, maskEmail }
+    enum CodingKeys: String, CodingKey { case port, language, routingPolicy, quotaRefresh, appearance, menuBarPlan, warmUp, maskEmail, redaction }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         self.init(port: try values.decode(UInt16.self, forKey: .port), language: try values.decode(String.self, forKey: .language),
@@ -183,7 +186,8 @@ public struct PoolPreferences: Codable, Equatable, Sendable {
                   appearance: try values.decodeIfPresent(String.self, forKey: .appearance) ?? "system",
                   menuBarPlan: try values.decodeIfPresent(String.self, forKey: .menuBarPlan),
                   warmUp: (try? values.decodeIfPresent(WarmUpPreferences.self, forKey: .warmUp)) ?? .init(),
-                  maskEmail: try values.decodeIfPresent(Bool.self, forKey: .maskEmail) ?? false)
+                  maskEmail: try values.decodeIfPresent(Bool.self, forKey: .maskEmail) ?? false,
+                  redaction: try values.decodeIfPresent(Bool.self, forKey: .redaction) ?? true)
         guard ["system", "light", "dark"].contains(appearance) else {
             throw DecodingError.dataCorruptedError(forKey: .appearance, in: values, debugDescription: "Invalid appearance")
         }

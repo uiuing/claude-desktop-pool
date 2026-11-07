@@ -4,6 +4,11 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+### Added
+
+- Sensitive data redaction can be turned off in Settings after a confirmation; new requests then go to Claude as written.
+- The full log in Settings › General keeps everything Pool receives and sends on this Mac for your own analysis. It asks twice before it turns on, shows its size and can be cleared there.
+
 ### Fixed
 
 - An account whose week resets within two days now ranks ahead of accounts whose weeks have days to go: what its week has used comes back at the reset, so its remaining share is spent first.
