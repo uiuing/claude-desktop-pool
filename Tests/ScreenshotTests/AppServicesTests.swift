@@ -10,6 +10,28 @@ import PoolGateway
 
 @MainActor
 final class AppServicesTests: XCTestCase {
+    /// What the person does is logged by name with its outcome, and in the full log with what it set;
+    /// what is typed into a terminal (a sign-in code goes that way) is only counted.
+    func testActionsAreLoggedAndTerminalInputIsNot() {
+        let lock = NSLock()
+        nonisolated(unsafe) var lines: [Data] = []
+        DevRecord.install { entry in lock.withLock { lines.append(entry.line) } }
+        defer { DevRecord.install(nil) }
+        let policy = RoutingPolicy(reservePercent: 15), began = Date()
+        AppServices.recordAction(.routePolicy(policy), began: began, failure: nil)
+        AppServices.recordAction(.sendTerminalInput("code-synthetic-4417"), began: began, failure: nil)
+        AppServices.recordAction(.measureFullLog, began: began, failure: nil)
+        let all = lock.withLock { lines }
+        XCTAssertFalse(all.contains { String(decoding: $0, as: UTF8.self).contains("code-synthetic-4417") })
+        let records = all.compactMap { try? JSONDecoder().decode(JSONValue.self, from: $0) }
+        let logged = records.filter { $0["kind"] == .string("log.ui.action") }.compactMap { $0["data"]?["action"]?.stringValue }
+        XCTAssertEqual(logged, ["routePolicy", "sendTerminalInput"], "Reading the full log's size is not an action")
+        let set = records.first { $0["kind"] == .string("ui.action") && $0["action"] == .string("routePolicy") }
+        XCTAssertEqual(set?["data"]?["routing_policy"]?["reservePercent"], .number(15))
+        let typed = records.first { $0["kind"] == .string("ui.action") && $0["action"] == .string("sendTerminalInput") }
+        XCTAssertEqual(typed?["data"]?["chars"], .number(19))
+    }
+
     private func fixture() throws -> OwnedWorkspace {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent(".build/app-services-fixtures/\(UUID().uuidString)")

@@ -87,13 +87,15 @@ public struct DesktopConnection: Sendable {
         var config = try object(self.config), config3p = try object(self.config3p)
         var profile = try object(self.profile), meta = try object(self.meta)
         guard meta["entries"] == nil || meta["entries"]?.arrayValue != nil else { throw DesktopConnectionError.unreadable(self.meta.lastPathComponent) }
-        var record = try loadRecord() ?? {
+        let earlier = try loadRecord()
+        var record = earlier ?? {
             let made = [modeDirectory, self.config, threePDirectory, self.config3p, library, self.meta]
                 .filter { !FileManager.default.fileExists(atPath: $0.path) }.map(\.path)
             return Record(mode: config["deploymentMode"]?.stringValue, mode3p: config3p["deploymentMode"]?.stringValue,
                           appliedID: meta["appliedId"]?.stringValue, made: made, connectedAt: now)
         }()
         try saveRecord(record)
+        var written: [String: Bool] = [:]
 
         // Settings the user made in Desktop for this profile stay; the address and key are Pool's.
         profile["inferenceProvider"] = .string("gateway")
@@ -106,18 +108,29 @@ public struct DesktopConnection: Sendable {
         if profile[Self.toolSearchKey] == nil { profile[Self.toolSearchKey] = .bool(true) }
         if profile[Self.desktopHomeKey] == nil { profile[Self.desktopHomeKey] = .string("standard") }
         var changed = try write(profile, to: self.profile, privately: true)
+        written[self.profile.lastPathComponent] = changed
 
         var entries = meta["entries"]?.arrayValue ?? []
         if !entries.contains(where: Self.isOurs) {
             entries.append(.object(["id": .string(Self.profileID), "name": .string(Self.profileName)]))
         }
         meta["entries"] = .array(entries); meta["appliedId"] = .string(Self.profileID)
-        changed = try write(meta, to: self.meta) || changed
+        let metaChanged = try write(meta, to: self.meta); written["meta"] = metaChanged; changed = metaChanged || changed
 
         // The mode last: until here Desktop still starts as it did.
-        config3p["deploymentMode"] = .string("3p"); changed = try write(config3p, to: self.config3p) || changed
-        config["deploymentMode"] = .string("3p"); changed = try write(config, to: self.config) || changed
+        config3p["deploymentMode"] = .string("3p"); let mode3pChanged = try write(config3p, to: self.config3p)
+        config["deploymentMode"] = .string("3p"); let modeChanged = try write(config, to: self.config)
+        written["config-3p"] = mode3pChanged; written["config"] = modeChanged
+        changed = changed || mode3pChanged || modeChanged
         if changed { record.connectedAt = now; try saveRecord(record) }
+        // What Desktop had and what Pool wrote, by file and key; the gateway key is never recorded.
+        Diagnostics.record("desktop.connected", ["changed": changed ? "yes" : "no", "first": earlier == nil ? "yes" : "no",
+                                                 "mode_was": record.mode ?? "-", "mode3p_was": record.mode3p ?? "-",
+                                                 "files_changed": String(written.values.filter { $0 }.count)])
+        DevRecord.record(.events, "desktop.connected") {
+            ["kept_before": DevRecord.value(record), "written": .object(written.mapValues(JSONValue.bool)),
+             "profile_keys": .array(profile.keys.sorted().map(JSONValue.string)), "base_url": .string(baseURL)]
+        }
         return changed
     }
 
@@ -161,6 +174,12 @@ public struct DesktopConnection: Sendable {
             }
         }
         if record != nil { try FileManager.default.removeItem(at: self.record) }
+        Diagnostics.record("desktop.disconnected", ["changed": changed ? "yes" : "no", "had_record": record == nil ? "no" : "yes",
+                                                    "mode_restored": record?.mode ?? "-", "mode3p_restored": record?.mode3p ?? "-"])
+        DevRecord.record(.events, "desktop.disconnected") {
+            ["restored_from": record.map { DevRecord.value($0) } ?? .null, "applied_now": meta["appliedId"] ?? .null,
+             "profiles_left": .number(Double(entries.count))]
+        }
         return changed
     }
 

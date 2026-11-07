@@ -70,6 +70,8 @@ final class AppServices {
     private var privacyUpdateInFlight = false
     private var runtimeUpdateRecord: RuntimeUpdateRecord?
     private var runtimeInstallID = UUID()
+    /// The install stage last logged, so each is logged once.
+    private var runtimeInstallStage: String?
     private struct RuntimeUpdateRecord: Codable {
         var attemptedAt: Date
         var installedVersion: String
@@ -209,6 +211,7 @@ final class AppServices {
         defer { if case .refreshQuota = action { model.quotaReadRequested = false } }
         // Once connected, the pool serves: whatever completed setup also starts it.
         defer { if serial { Task { await self.startPoolIfReady() } } }
+        let began = Date()
         do {
             switch action {
             case .installRuntime, .updateRuntime: try await installRuntime()
@@ -221,8 +224,15 @@ final class AppServices {
             case .clearPrivacyReview: model.privacyReviews.removeAll()
             case .rollbackRuntime:
                 guard let managedRuntime else { throw RuntimeError.storageFailure }
-                let installed = try await managedRuntime.rollback()
-                await useRuntimePresentation(installed)
+                let from = model.runtime.installedVersion ?? "-"
+                do {
+                    let installed = try await managedRuntime.rollback()
+                    Diagnostics.record("runtime.rollback", ["from": from, "to": installed.version, "outcome": "ok"])
+                    await useRuntimePresentation(installed)
+                } catch {
+                    Diagnostics.record("runtime.rollback", ["from": from, "outcome": "failed", "error": String(describing: type(of: error))])
+                    throw error
+                }
             case .addAccount:
                 if let id = model.pendingSignInID { try await signIn(id) }
                 else {
@@ -341,7 +351,47 @@ final class AppServices {
             case .redaction(let value):
                 try await switchRedaction(value)
             }
-        } catch { report(error) }
+            Self.recordAction(action, began: began, failure: nil)
+        } catch { Self.recordAction(action, began: began, failure: error); report(error) }
+    }
+
+    /// What the person did in the app: in `pool.log` the action by name, its outcome and time; in the
+    /// full log also what it set. Terminal input is never recorded, as a sign-in code goes that way,
+    /// and the full log's size, read while Settings is open, is not an action.
+    static func recordAction(_ action: UIAction, began: Date, failure: Error?) {
+        if case .measureFullLog = action { return }
+        let name = Mirror(reflecting: action).children.first?.label ?? String(describing: action)
+        Diagnostics.record("ui.action", ["action": name, "outcome": failure == nil ? "ok" : "failed",
+                                         "ms": String(Int(Date().timeIntervalSince(began) * 1000)),
+                                         "subject": actionSubject(action).map(Diagnostics.id) ?? "-",
+                                         "error": failure.map { String(describing: type(of: $0)) } ?? "-"])
+        DevRecord.record(.events, "ui.action", ["action": name]) {
+            var data = actionSettings(action)
+            if let failure { data["error"] = .string(String(describing: failure)) }
+            return data
+        }
+    }
+    /// The account or session an action is about, if any.
+    private static func actionSubject(_ action: UIAction) -> UUID? {
+        switch action {
+        case .signIn(let id), .checkAccount(let id), .removeAccount(let id), .warmUpNow(let id),
+             .cancelSession(let id), .requestSessionExit(let id), .closeTerminal(let id): return id
+        case .refreshQuota(let id): return id
+        default: return nil
+        }
+    }
+    private static func actionSettings(_ action: UIAction) -> [String: JSONValue] {
+        switch action {
+        case .routePolicy(let policy): return ["routing_policy": DevRecord.value(policy)]
+        case .quotaRefreshPreferences(let preferences): return ["quota_refresh": DevRecord.value(preferences)]
+        case .warmUpPreferences(let preferences): return ["warm_up": DevRecord.value(preferences)]
+        case .menuBarPlan(let plan): return ["plan": DevRecord.string(plan)]
+        case .language(let value), .appearance(let value): return ["value": .string(value)]
+        case .maskEmail(let value), .redaction(let value), .fullLog(let value): return ["on": .bool(value)]
+        case .previewPrivacy(let text): return ["chars": .number(Double(text.count))]
+        case .sendTerminalInput(let text): return ["chars": .number(Double(text.count))]
+        default: return [:]
+        }
     }
 
     private func mutate(later: Bool = false, _ edit: @escaping @MainActor (inout PoolLibrary) -> Void) async throws {
@@ -392,6 +442,8 @@ final class AppServices {
         let operation = UUID(); runtimeInstallID = operation
         model.runtime.phase = .installing; model.runtime.progress = nil; model.runtime.stage = "Checking release…"
         model.runtime.targetVersion = nil; model.runtime.downloadedBytes = nil; model.runtime.totalBytes = nil
+        let began = Date(), from = model.runtime.installedVersion ?? "-"
+        func elapsed() -> String { String(Int(Date().timeIntervalSince(began) * 1000)) }
         do {
             let installed = try await managedRuntime.installLatest(progress: { [weak self] progress in
                 Task { @MainActor in
@@ -400,6 +452,20 @@ final class AppServices {
                     self.model.runtime.targetVersion = progress.version
                     self.model.runtime.downloadedBytes = progress.receivedBytes
                     self.model.runtime.totalBytes = progress.totalBytes
+                    // Each stage once, with how long the install had taken when it began.
+                    let stage: String
+                    switch progress {
+                    case .resolving: stage = "resolving"
+                    case .downloading: stage = "downloading"
+                    case .verifying: stage = "verifying"
+                    case .activating: stage = "activating"
+                    case .completed: stage = "completed"
+                    }
+                    if self.runtimeInstallStage != stage {
+                        self.runtimeInstallStage = stage
+                        Diagnostics.record("runtime.stage", ["stage": stage, "version": progress.version ?? "-", "ms": elapsed(),
+                                                            "bytes": progress.totalBytes.map { String($0) } ?? "-"])
+                    }
                     switch progress {
                     case .resolving: self.model.runtime.stage = "Checking release…"
                     case .downloading: self.model.runtime.stage = "Downloading…"
@@ -409,8 +475,14 @@ final class AppServices {
                     }
                 }
             })
+            runtimeInstallStage = nil
+            Diagnostics.record("runtime.install", ["from": from, "to": installed.version, "outcome": "ok", "ms": elapsed()])
             await useRuntimePresentation(installed)
         } catch {
+            Diagnostics.record("runtime.install", ["from": from, "outcome": "failed", "stage": runtimeInstallStage ?? "-", "ms": elapsed(),
+                                                   "error": String(describing: type(of: error))])
+            DevRecord.record(.events, "runtime.install_failed") { ["error": .string(String(describing: error))] }
+            runtimeInstallStage = nil
             model.runtime.phase = .failed; model.runtime.progress = nil
             throw error
         }
@@ -442,10 +514,16 @@ final class AppServices {
         }
         privacyInstallTask = task
         defer { privacyInstallTask = nil }
+        let began = Date()
         do {
             try await task.value
-            presentPrivacyStatus(await privacyDetector.status(), version: await privacyDetector.installedVersion())
+            let version = await privacyDetector.installedVersion()
+            Diagnostics.record("privacy.install", ["version": version, "outcome": "ok", "ms": String(Int(Date().timeIntervalSince(began) * 1000))])
+            presentPrivacyStatus(await privacyDetector.status(), version: version)
         } catch {
+            Diagnostics.record("privacy.install", ["outcome": "failed", "ms": String(Int(Date().timeIntervalSince(began) * 1000)),
+                                                   "error": String(describing: type(of: error))])
+            DevRecord.record(.events, "privacy.install_failed") { ["error": .string(String(describing: error))] }
             model.privacy.phase = .failed; model.privacy.progress = nil
             model.privacy.message = model.t(PrivacyFailure.installationFailed.errorDescription!)
             throw PrivacyFailure.installationFailed
@@ -536,18 +614,29 @@ final class AppServices {
         privacyUpdateInFlight = true
         defer { privacyUpdateInFlight = false }
         try? workspace.write(JSONEncoder().encode(now), to: recordURL)
+        let installed = model.privacy.modelVersion ?? "-", began = Date()
+        func elapsed() -> String { String(Int(Date().timeIntervalSince(began) * 1000)) }
         do {
             switch try await privacyDetector.checkForUpdate() {
-            case .none: model.privacy.updateMessage = nil
+            case .none:
+                Diagnostics.record("privacy.update", ["installed": installed, "outcome": "current"])
+                model.privacy.updateMessage = nil
             case .needsNewerApp(let version):
+                Diagnostics.record("privacy.update", ["installed": installed, "available": version, "outcome": "needs_newer_app"])
                 model.privacy.updateMessage = model.t("AstrLink Guard {0} needs a newer Claude Pool.", version)
             case .available(let release):
+                Diagnostics.record("privacy.update", ["installed": installed, "available": release.version, "outcome": "installing"])
                 model.privacy.updatingTo = release.version; model.privacy.updateMessage = nil
                 defer { model.privacy.updatingTo = nil }
                 try await privacyDetector.update(to: release, progress: { _ in })
                 model.privacy.modelVersion = await privacyDetector.installedVersion()
+                Diagnostics.record("privacy.update", ["installed": model.privacy.modelVersion ?? "-", "was": installed, "outcome": "switched", "ms": elapsed()])
             }
         } catch {
+            // The license, label and checksum checks fail here too, by name.
+            Diagnostics.record("privacy.update", ["installed": installed, "outcome": "failed", "ms": elapsed(),
+                                                  "error": String(describing: type(of: error))])
+            DevRecord.record(.events, "privacy.update_failed") { ["error": .string(String(describing: error))] }
             model.privacy.updateMessage = model.t("Could not update AstrLink Guard. The current version keeps working.")
         }
     }
@@ -576,7 +665,10 @@ final class AppServices {
             model.runtime.updateCheckMessage = nil
             model.runtime.stage = nil
             model.runtime.phase = release == nil ? (model.snapshot.executableReady ? .ready : .notInstalled) : .updateAvailable
+            Diagnostics.record("runtime.checked", ["installed": previous.installedVersion ?? "-", "available": release?.version ?? "-", "outcome": "ok"])
         } catch {
+            Diagnostics.record("runtime.checked", ["installed": previous.installedVersion ?? "-", "outcome": "failed",
+                                                   "error": String(describing: type(of: error))])
             model.runtime = previous
             model.runtime.updateCheckMessage = model.t("Could not check for updates. Try again.")
             throw error
@@ -889,18 +981,25 @@ final class AppServices {
 
     private func restartDesktop(disconnecting: Bool) async {
         guard let desktop = dependencies.desktop, let app = desktop.installedURL() else { return }
+        let began = Date(), why = disconnecting ? "disconnect" : "connect"
+        func log(_ outcome: String) {
+            Diagnostics.record("desktop.restart", ["why": why, "outcome": outcome, "ms": String(Int(Date().timeIntervalSince(began) * 1000))])
+        }
         if desktop.running() {
             guard desktop.confirm(model.t(disconnecting ? "Restart Claude Desktop to stop using the pool?" : "Restart Claude Desktop to use the pool?"),
                                   model.t("Desktop reads its connection only as it starts. It quits as with Command-Q and opens again."),
-                                  model.t("Restart"), model.t("Later")) else { return }
+                                  model.t("Restart"), model.t("Later")) else { log("later"); return }
             desktop.quit()
             let deadline = Date().addingTimeInterval(desktop.quitWait)
             while desktop.running(), Date() < deadline { try? await Task.sleep(for: .milliseconds(250)) }
             guard !desktop.running() else {
+                log("still_open")
                 model.notice = model.t("Claude Desktop is still open. Quit it, then open it again."); refreshDesktop(); return
             }
         }
-        if !(await desktop.open(app)) { model.notice = model.t("Could not open Claude Desktop. Open it from Applications.") }
+        if !(await desktop.open(app)) {
+            log("open_failed"); model.notice = model.t("Could not open Claude Desktop. Open it from Applications.")
+        } else { log("opened") }
         refreshDesktop()
     }
 

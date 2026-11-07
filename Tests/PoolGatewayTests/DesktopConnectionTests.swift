@@ -71,6 +71,29 @@ final class DesktopConnectionTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: profile.path))
     }
 
+    /// Connect and Disconnect say what Desktop had, what was written and what was put back, by file
+    /// and key, so a Desktop that will not reach the pool can be followed; Pool's key is never in them.
+    func testConnectAndDisconnectAreLoggedWithoutTheKey() throws {
+        let lock = NSLock()
+        nonisolated(unsafe) var lines: [Data] = []
+        DevRecord.install { entry in lock.withLock { lines.append(entry.line) } }
+        defer { DevRecord.install(nil) }
+        try put(#"{"deploymentMode":"1p"}"#, config)
+        try connection.connect(baseURL: url, token: token, now: Date())
+        try connection.disconnect()
+        let all = lock.withLock { lines }
+        XCTAssertFalse(all.contains { String(decoding: $0, as: UTF8.self).contains(token) })
+        let records = all.compactMap { try? JSONDecoder().decode(JSONValue.self, from: $0) }
+        let connected = try XCTUnwrap(records.first { $0["kind"] == .string("log.desktop.connected") })
+        XCTAssertEqual(connected["data"]?["mode_was"], .string("1p"))
+        XCTAssertEqual(connected["data"]?["changed"], .string("yes"))
+        let detail = try XCTUnwrap(records.first { $0["kind"] == .string("desktop.connected") })
+        XCTAssertEqual(detail["data"]?["written"]?["config"], .bool(true))
+        XCTAssertTrue(detail["data"]?["profile_keys"]?.arrayValue?.contains(.string("inferenceGatewayApiKey")) ?? false, "The key's name, not its value")
+        let disconnected = try XCTUnwrap(records.first { $0["kind"] == .string("log.desktop.disconnected") })
+        XCTAssertEqual(disconnected["data"]?["mode_restored"], .string("1p"))
+    }
+
     func testAChangeMadeInDesktopIsReportedAndKeptOnDisconnect() throws {
         try connection.connect(baseURL: url, token: token, now: Date())
         try put(#"{"appliedId":"other","entries":[{"id":"other"},{"id":"\#(DesktopConnection.profileID)"}]}"#, meta)
