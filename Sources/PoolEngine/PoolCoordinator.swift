@@ -175,6 +175,13 @@ public actor PoolCoordinator: BridgeBackend {
         }.first
     }
 
+    /// What a run is told, for the full log: as its change from what the same run was told before.
+    static func recorded(_ request: BridgeRequest, run: UUID) -> JSONValue {
+        guard case .object(var fields) = DevRecord.value(request), case .array(let messages)? = fields["messages"] else { return DevRecord.value(request) }
+        let conversation = DevRecord.conversation("run\u{0}" + run.uuidString, messages: messages, system: fields["system"], tools: fields["tools"])
+        for key in ["messages", "system", "tools"] { fields.removeValue(forKey: key) }
+        return .object(["request": .object(fields), "conversation": conversation])
+    }
     /// The Desktop conversation an alias belongs to, as a content-free tag of its client session: a
     /// redaction context's id carries it after "@", a direct key before its shape's "#". A request that
     /// named no session belongs to none.
@@ -720,7 +727,7 @@ public actor PoolCoordinator: BridgeBackend {
             DevRecord.record(.events, "coordinator.serving", ["run": Diagnostics.id(binding.worker.id), "binding": Diagnostics.id(id),
                                                               "account": Diagnostics.id(binding.session.accountID)]) {
                 ["conversation": .string(Diagnostics.tag(alias)), "replay": .bool(replayCompletedResults),
-                 "results": .number(Double(resultIDs.count)), "sent_to_run": DevRecord.value(workerRequest)]
+                 "results": .number(Double(resultIDs.count)), "sent_to_run": Self.recorded(workerRequest, run: binding.worker.id)]
             }
             resetProgress(id)
             var reportedUsage = false

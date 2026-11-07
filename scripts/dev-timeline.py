@@ -11,11 +11,19 @@ that served it, and a run brings in its terminal, stream, transcript and hook re
   scripts/dev-timeline.py --run 0a1b2c3d --kinds pty.,tap.
   scripts/dev-timeline.py --req 12 --bundle /tmp/req-12.jsonl
   scripts/dev-timeline.py --privacy --req 12
+
+A conversation is recorded as its change from the last record of the same thread (`kept` leading
+messages, then the new ones; instructions and tools "same" until they change). Records are read in
+order and each gets its whole request back under "whole"; a bundle carries it. A thread whose earlier
+records were let go for the channel's size limit is marked incomplete. A large item (a message or
+a tool of 1 KB or more) is kept the first time and named after. Closed files are raw DEFLATE
+(`.jsonl.deflate`) and read as they are; the client's transcript is kept by its rows' shape.
 """
 import argparse
 import json
 from pathlib import Path
 import sys
+import zlib
 
 DEFAULT_ROOT = Path.home() / "Library/Application Support/Claude Pool/developer-records"
 CHANNELS = ("privacy", "http", "session", "events")
@@ -27,15 +35,21 @@ def load(root):
         folder = root / channel
         if not folder.is_dir():
             continue
-        for path in sorted(folder.glob(channel + "-*.jsonl")):
-            with path.open("rb") as handle:
-                for raw in handle:
-                    try:
-                        record = json.loads(raw)
-                    except ValueError:
-                        continue  # a line cut by a full disk or a quit
-                    record["channel"] = channel
-                    records.append(record)
+        for path in sorted(list(folder.glob(channel + "-*.jsonl")) + list(folder.glob(channel + "-*.jsonl.deflate"))):
+            raw_bytes = path.read_bytes()
+            if path.name.endswith(".deflate"):
+                try:
+                    raw_bytes = zlib.decompress(raw_bytes, -15)  # raw DEFLATE, as the recorder writes a closed file
+                except zlib.error:
+                    print("%s could not be read" % path.name, file=sys.stderr)
+                    continue
+            for raw in raw_bytes.splitlines():
+                try:
+                    record = json.loads(raw)
+                except ValueError:
+                    continue  # a line cut by a full disk or a quit
+                record["channel"] = channel
+                records.append(record)
     # Launches in the order they began; within one, records in the order they were made.
     began = {}
     for r in records:
@@ -44,6 +58,52 @@ def load(root):
             began[launch] = r.get("t", "")
     records.sort(key=lambda r: (began.get(r.get("launch", "-"), ""), r.get("seq", 0)))
     return records, sorted(began, key=began.get)
+
+
+def conversations(record):
+    """The conversation changes a record carries: the gateway's request body, the request a run was told."""
+    data = record.get("data") or {}
+    for holder in (data.get("body"), data.get("sent_to_run")):
+        if isinstance(holder, dict) and isinstance(holder.get("conversation"), dict):
+            yield holder["conversation"]
+
+
+def rebuild(records):
+    """Puts each recorded conversation back whole, under "whole", from its thread's records before it.
+    A large item recorded once ({"as": digest, "item": ...}) stands for each later {"same_as": digest}."""
+    threads, items = {}, {}
+    def resolve(values):
+        out, ok = [], True
+        for v in values or []:
+            if isinstance(v, dict) and set(v) == {"as", "item"}:
+                items[v["as"]] = v["item"]; out.append(v["item"])
+            elif isinstance(v, dict) and set(v) == {"same_as"}:
+                ok = ok and v["same_as"] in items; out.append(items.get(v["same_as"], v))
+            else:
+                out.append(v)
+        return out, ok
+    for r in records:
+        if r.get("kind") == "log.devrecord.started":
+            items.clear()
+        for change in conversations(r):
+            key = (r.get("launch", "-"), change.get("thread"))
+            last = threads.get(key, {"messages": None, "system": None, "tools": None})
+            kept = int(change.get("kept", 0))
+            complete = kept == 0 or last["messages"] is not None and len(last["messages"]) >= kept
+            new, found = resolve(change.get("messages", []))
+            complete = complete and found
+            messages = (last["messages"] or [])[:kept] + new
+            whole = {"messages": messages, "complete": complete}
+            for part in ("system", "tools"):
+                value = change.get(part)
+                if value == "same":
+                    whole[part] = last[part]
+                elif part == "tools" and isinstance(value, list):
+                    whole[part], found = resolve(value); whole["complete"] = whole["complete"] and found
+                else:
+                    whole[part] = value
+            threads[key] = {"messages": messages if complete else None, "system": whole["system"], "tools": whole["tools"]}
+            change["whole"] = whole
 
 
 def select(records, args):
@@ -86,10 +146,18 @@ def text_of(value):
 def summary(r, width):
     data = r.get("data") or {}
     kind = r.get("kind", "?")
-    if kind in ("pty.out", "pty.in", "http.sent", "transcript.read"):
+    if kind in ("pty.out", "pty.in", "http.sent") or kind == "transcript.read" and "bytes" in data:
         body = text_of(data.get("bytes"))
+    elif kind == "transcript.read":
+        body = "offset=%s bytes=%s rows=%s" % (data.get("offset"), data.get("count"),
+                                              ",".join(str((row or {}).get("type", "?")) for row in data.get("rows", [])))
     elif kind == "http.request":
-        body = "%s %s %s" % (data.get("method"), data.get("path"), text_of(data.get("body")))
+        change = next(conversations(r), None)
+        if change:
+            body = "%s %s messages=%s new=%s%s" % (data.get("method"), data.get("path"), change.get("count"),
+                                                   len(change.get("messages", [])), "" if change.get("whole", {}).get("complete", True) else " incomplete")
+        else:
+            body = "%s %s %s" % (data.get("method"), data.get("path"), text_of(data.get("body")))
     elif kind == "privacy.prepared":
         read = data.get("read", {})
         body = "texts=%s read=%s partial=%s read_ms=%s categories=%s" % (
@@ -106,7 +174,7 @@ def summary(r, width):
 
 
 def privacy_report(records):
-    """Each prepared request: every text the model read, what the model and the rules found, and what was sent."""
+    """Each prepared request: what the model and the rules found in every text it read, and each replacement."""
     for r in records:
         if r.get("kind") != "privacy.prepared":
             continue
@@ -123,7 +191,7 @@ def privacy_report(records):
                     print("  %-5s not read" % source)
                     continue
                 for span in spans:
-                    piece = utf16_slice(text, span["start"], span["end"])
+                    piece = span["text"] if "text" in span else utf16_slice(text, span["start"], span["end"])
                     print("  %-5s %-10s %.2f  %r" % (source, span["category"], span.get("score", 1), piece))
         for field in data.get("review", []):
             print("  review %s" % field.get("location"))
@@ -157,6 +225,7 @@ def main():
     records, launches = load(args.root)
     if not records:
         sys.exit("The developer recording is empty.")
+    rebuild(records)
     if not args.all_launches:
         launch = args.launch or launches[-1]
         records = [r for r in records if r.get("launch", "-") == launch]

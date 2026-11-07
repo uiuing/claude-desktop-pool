@@ -164,7 +164,7 @@ private final class GatewayConnection: @unchecked Sendable {
                 let kept = raw.headers.filter { !Self.secretHeaders.contains($0.key) }.mapValues(JSONValue.string)
                 return ["method": .string(raw.method), "path": .string(raw.path), "headers": .object(kept),
                         "withheld_headers": .array(raw.headers.keys.filter(Self.secretHeaders.contains).sorted().map(JSONValue.string)),
-                        "body": DevRecord.bytes(raw.body)]
+                        "body": Self.recordedBody(raw)]
             }
             switch try router.route(raw) {
             case .response(let response): try await writer.respond(response)
@@ -190,6 +190,19 @@ private final class GatewayConnection: @unchecked Sendable {
     }
 
     static let secretHeaders: Set<String> = ["authorization", "x-api-key", "proxy-authorization", "cookie"]
+    /// A request body for the full log. A conversation is kept as its change from the client session's
+    /// last request of the same path and model (`DevRecord.conversation`); anything else as it came.
+    static func recordedBody(_ raw: GatewayHTTPRequest) -> JSONValue {
+        guard case .object(var fields)? = try? JSONDecoder().decode(JSONValue.self, from: raw.body),
+              case .array(let messages)? = fields["messages"] else { return DevRecord.bytes(raw.body) }
+        let session = raw.headers["x-claude-code-session-id"] ?? raw.headers["x-claude-session-id"] ?? raw.headers["x-session-id"] ?? ""
+        let path = String(raw.path.split(separator: "?", maxSplits: 1).first ?? "")
+        let model = fields["model"]?.stringValue ?? ""
+        let conversation = DevRecord.conversation("http\u{0}" + path + "\u{0}" + session + "\u{0}" + model,
+                                                  messages: messages, system: fields["system"], tools: fields["tools"])
+        for key in ["messages", "system", "tools"] { fields.removeValue(forKey: key) }
+        return .object(["json": .object(fields), "conversation": conversation, "bytes": .number(Double(raw.body.count))])
+    }
 
     /// Answers Desktop's check without a Claude session: the pool says whether it could take a
     /// request for the model now, and an empty single-token reply stands for "it could".

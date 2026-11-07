@@ -229,8 +229,13 @@ final class GatewayTests: XCTestCase {
         let records = all.compactMap { try? JSONDecoder().decode(JSONValue.self, from: $0) }
         let received = try XCTUnwrap(records.first { $0["kind"] == .string("http.request") })
         XCTAssertEqual(received["data"]?["withheld_headers"], .array([.string("authorization")]))
-        let body = try XCTUnwrap(received["data"]?["body"]?["text"]?.stringValue)
-        XCTAssertEqual(try JSONDecoder().decode(JSONValue.self, from: Data(body.utf8)), try JSONDecoder().decode(JSONValue.self, from: try message(stream: true)))
+        // A conversation is kept as a change from the session's last request; this is its first, so it is all there.
+        let body = try XCTUnwrap(received["data"]?["body"]), conversation = try XCTUnwrap(body["conversation"])
+        XCTAssertEqual(conversation["kept"], .number(0))
+        guard case .object(var whole)? = body["json"] else { return XCTFail("The body was not kept as JSON") }
+        whole["messages"] = conversation["messages"]
+        for key in ["system", "tools"] where conversation[key] != .null { whole[key] = conversation[key] }
+        XCTAssertEqual(JSONValue.object(whole), try JSONDecoder().decode(JSONValue.self, from: try message(stream: true)))
         let number = try XCTUnwrap(received["req"])
         let sent = records.filter { $0["kind"] == .string("http.sent") }
         XCTAssertTrue(sent.allSatisfy { $0["req"] == number })

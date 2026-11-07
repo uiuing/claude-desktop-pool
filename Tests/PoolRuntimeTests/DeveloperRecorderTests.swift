@@ -47,6 +47,39 @@ final class DeveloperRecorderTests: XCTestCase {
         XCTAssertEqual(recorder.totalBytes(), 0)
     }
 
+    /// Records repeat their field names and much of their words: a closed file is kept compressed,
+    /// whole, private, and counted and cleared as any other.
+    func testAClosedFileIsKeptCompressedAndReadsBackWhole() throws {
+        let recorder = DeveloperRecorder(root: root, fileLimit: 4 * 1024)
+        try recorder.install()
+        let chunk = String(repeating: "Claude Pool repeats itself. ", count: 20)
+        for _ in 0..<40 { DevRecord.record(.session, "pty.out") { ["bytes": .object(["text": .string(chunk)])] } }
+        recorder.uninstall()
+        let directory = recorder.directory(.session)
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
+        XCTAssertFalse(names.isEmpty)
+        XCTAssertTrue(names.allSatisfy { $0.hasSuffix(DeveloperRecorder.compressedSuffix) }, "Closed files, the last one at turning off included")
+        var lines = 0, packed = 0
+        for name in names {
+            let path = directory.appendingPathComponent(name).path
+            XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int, 0o600)
+            let data = try Data(contentsOf: URL(fileURLWithPath: path)); packed += data.count
+            let text = try XCTUnwrap(String(data: try (data as NSData).decompressed(using: .zlib) as Data, encoding: .utf8))
+            lines += text.split(separator: "\n").filter { $0.contains("\"pty.out\"") }.count
+        }
+        XCTAssertEqual(lines, 40)
+        XCTAssertLessThan(packed, 40 * chunk.utf8.count / 4)
+        // Pool's own log lines went to the events channel, compressed too; the total counts every channel.
+        let everyFile = DevRecord.Channel.allCases.flatMap { channel in
+            ((try? FileManager.default.contentsOfDirectory(atPath: recorder.directory(channel).path)) ?? []).map { recorder.directory(channel).appendingPathComponent($0).path }
+        }
+        XCTAssertTrue(everyFile.allSatisfy { $0.hasSuffix(DeveloperRecorder.compressedSuffix) })
+        XCTAssertEqual(recorder.totalBytes(), everyFile.reduce(0) { $0 + ((try? FileManager.default.attributesOfItem(atPath: $1)[.size] as? Int) ?? 0) })
+        XCTAssertGreaterThan(recorder.totalBytes(), packed - 1)
+        recorder.deleteAll()
+        XCTAssertEqual(recorder.totalBytes(), 0)
+    }
+
     func testUninstalledRecorderWritesNothing() throws {
         let recorder = DeveloperRecorder(root: root)
         DevRecord.record(.privacy, "privacy.prepared") { ["sent": .string("text")] }

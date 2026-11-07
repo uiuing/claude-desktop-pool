@@ -140,7 +140,15 @@ struct ClaudeTranscript {
         let count = chunk.withUnsafeMutableBytes { raw in pread(descriptor, raw.baseAddress!, length, off_t(offset)) }
         guard count > 0 else { return [] }
         DevRecord.record(.session, "transcript.read", ["run": String(session.prefix(8))]) {
-            ["offset": .number(Double(offset)), "bytes": DevRecord.bytes(chunk.prefix(count))]
+            // The client's own record repeats the conversation, its instructions and tools, which the
+            // gateway and run records keep: its rows are kept by their shape and short fields.
+            let read = chunk.prefix(count)
+            let rows: [JSONValue] = read.split(separator: 10, omittingEmptySubsequences: true).map { line in
+                (try? JSONDecoder().decode(JSONValue.self, from: Data(line))).map { DevRecord.outline($0) }
+                    ?? .object(["unparsed_bytes": .number(Double(line.count))])
+            }
+            return ["offset": .number(Double(offset)), "count": .number(Double(count)), "rows": .array(rows),
+                    "ends_in_row": .bool(read.last != 10)]
         }
         offset += UInt64(count)
         return lines(chunk.prefix(count))

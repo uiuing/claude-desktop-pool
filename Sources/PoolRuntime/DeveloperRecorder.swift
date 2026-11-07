@@ -4,7 +4,8 @@ import PoolCore
 
 /// Writes the developer recording (`DevRecord`): one folder per channel under `root`, each a run of
 /// JSON-lines files cut at `fileLimit`, the oldest removed once the channel passes its limit. Folders
-/// are 0700 and files 0600. Writing happens on one background queue: a record waits for nothing,
+/// are 0700 and files 0600. A file is compressed once it is closed (`.jsonl.deflate`, raw DEFLATE), as
+/// records repeat their field names and much of their words. Writing happens on one background queue: a record waits for nothing,
 /// and when the queue holds more than `backlogLimit` bytes, records are dropped and counted, never
 /// slowing a request. A failed write stops the recording and says so in `pool.log`.
 public final class DeveloperRecorder: @unchecked Sendable {
@@ -22,7 +23,8 @@ public final class DeveloperRecorder: @unchecked Sendable {
     private var backlog = 0
     private var dropped = 0
     private var stopped = false
-    private var files: [Channel: (handle: FileHandle, size: Int)] = [:]
+    private var files: [Channel: (handle: FileHandle, size: Int, url: URL)] = [:]
+    public static let compressedSuffix = ".jsonl.deflate"
     private let stamp: DateFormatter = {
         let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "UTC")
         f.dateFormat = "yyyyMMdd'T'HHmmss.SSS'Z'"; return f
@@ -91,8 +93,9 @@ public final class DeveloperRecorder: @unchecked Sendable {
         do {
             if let open = files[channel], open.size + line.count > fileLimit {
                 try? open.handle.close(); files[channel] = nil
+                compress(open.url)
             }
-            if files[channel] == nil { trim(channel); files[channel] = (try openFile(channel), 0) }
+            if files[channel] == nil { trim(channel); let (handle, url) = try openFile(channel); files[channel] = (handle, 0, url) }
             try files[channel]!.handle.write(contentsOf: line)
             files[channel]!.size += line.count
         } catch {
@@ -103,14 +106,25 @@ public final class DeveloperRecorder: @unchecked Sendable {
         }
     }
 
-    private func openFile(_ channel: Channel) throws -> FileHandle {
+    private func openFile(_ channel: Channel) throws -> (FileHandle, URL) {
         try Self.makePrivateDirectory(directory(channel))
         let name = channel.rawValue + "-" + stamp.string(from: Date()) + "-" + String(UUID().uuidString.prefix(4)).lowercased() + ".jsonl"
         let path = directory(channel).appendingPathComponent(name).path
         let fd = Darwin.open(path, O_WRONLY | O_APPEND | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw RuntimeError.storageFailure }
         fchmod(fd, 0o600)
-        return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        return (FileHandle(fileDescriptor: fd, closeOnDealloc: true), URL(fileURLWithPath: path))
+    }
+    /// Replaces a closed file with its compressed copy; one that cannot be compressed stays as it is.
+    private func compress(_ url: URL) {
+        guard let data = try? Data(contentsOf: url), !data.isEmpty,
+              let packed = try? (data as NSData).compressed(using: .zlib) as Data else { return }
+        let path = url.path.replacingOccurrences(of: ".jsonl", with: Self.compressedSuffix)
+        let fd = Darwin.open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        do { try handle.write(contentsOf: packed); try handle.close() } catch { unlink(path); return }
+        unlink(url.path)
     }
 
     /// Removes the oldest closed files until the channel is within its limit, keeping room for a new file.
@@ -127,7 +141,7 @@ public final class DeveloperRecorder: @unchecked Sendable {
     /// The channel's record files, oldest first (their names begin with the time they were opened).
     private func recordFiles(_ channel: Channel) -> [URL] {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: directory(channel).path)) ?? []
-        return names.filter { $0.hasPrefix(channel.rawValue + "-") && $0.hasSuffix(".jsonl") }.sorted()
+        return names.filter { $0.hasPrefix(channel.rawValue + "-") && ($0.hasSuffix(".jsonl") || $0.hasSuffix(Self.compressedSuffix)) }.sorted()
             .map { directory(channel).appendingPathComponent($0) }
     }
     private func size(_ file: URL) -> Int {
@@ -135,7 +149,7 @@ public final class DeveloperRecorder: @unchecked Sendable {
         return lstat(file.path, &info) == 0 ? Int(info.st_size) : 0
     }
     private func closeAll() {
-        for (_, open) in files { try? open.handle.close() }
+        for (_, open) in files { try? open.handle.close(); compress(open.url) }
         files = [:]
     }
 

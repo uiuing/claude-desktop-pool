@@ -106,7 +106,7 @@ public actor PrivacyBridge: BridgeBackend {
                                                     "total_ms": String(Self.milliseconds(since: began))])
             DevRecord.record(.privacy, "privacy.prepared", ["review": token.uuidString.lowercased(), "context": Diagnostics.id(id),
                                                             "conversation": Diagnostics.tag(alias)]) {
-                Self.recorded(request: request, masked: masked, alias: alias, backend: context.backendID, prepared: prepared,
+                Self.recorded(request: request, alias: alias, backend: context.backendID, prepared: prepared,
                               read: read, readMS: readMS, totalMS: Self.milliseconds(since: began), counts: counts, reviewed: reviewed)
             }
             processing -= 1; preprocessing = false; onUpdate(.processing(active: processing))
@@ -284,23 +284,28 @@ public actor PrivacyBridge: BridgeBackend {
         }
         return (wanted.count, read, late.count)
     }
-    /// The developer recording of one prepared request: the request as received and as sent whole,
-    /// every text the model was given with what it and the rules found in it, and the review.
-    private static func recorded(request: BridgeRequest, masked: BridgeRequest, alias: String, backend: String,
+    /// The full log of one prepared request, as the app's review shows it: each replacement with the
+    /// words around it, and for every text the model was given, what it and the rules found (the found
+    /// words only). The request itself is the gateway's record; what was sent is it with these replacements.
+    private static func recorded(request: BridgeRequest, alias: String, backend: String,
                                  prepared: PrivacyPreparation, read: (texts: Int, read: Int, late: Int), readMS: Int, totalMS: Int,
                                  counts: [PrivacyCategory: Int], reviewed: [PrivacyReviewField]) -> [String: JSONValue] {
-        func spans(_ list: [PrivacySpan]?) -> JSONValue {
+        func spans(_ list: [PrivacySpan]?, in text: String) -> JSONValue {
             guard let list else { return .null }
-            return .array(list.map { .object(["start": .number(Double($0.start)), "end": .number(Double($0.end)),
-                                              "category": .string($0.category.rawValue), "score": .number($0.score)]) })
+            let ns = text as NSString
+            return .array(list.map { span in
+                let found = PrivacyConversation.valid(span, in: ns) ? ns.substring(with: NSRange(location: span.start, length: span.end - span.start)) : ""
+                return .object(["start": .number(Double(span.start)), "end": .number(Double(span.end)), "text": .string(found),
+                                "category": .string(span.category.rawValue), "score": .number(span.score)])
+            })
         }
         let texts: [JSONValue] = prepared.newestFirst.map { entry in
-            .object(["key": .string(String(entry.key.prefix(16))), "text": .string(entry.text),
-                     "model": spans(prepared.finds[entry.key]), "rules": spans(prepared.rules[entry.key])])
+            .object(["key": .string(String(entry.key.prefix(16))), "chars": .number(Double(entry.text.utf16.count)),
+                     "model": spans(prepared.finds[entry.key], in: entry.text), "rules": spans(prepared.rules[entry.key], in: entry.text)])
         }
         let lookedUp: [JSONValue] = prepared.lookUps.map { entry in
             .object(["key": .string(String(entry.key.prefix(16))), "chars": .number(Double(entry.text.utf16.count)),
-                     "model": spans(prepared.finds[entry.key])])
+                     "model": spans(prepared.finds[entry.key], in: entry.text)])
         }
         let review: [JSONValue] = reviewed.map { field in
             .object(["location": .string(field.location), "segments": .array(field.segments.map { segment in
@@ -312,7 +317,7 @@ public actor PrivacyBridge: BridgeBackend {
             })])
         }
         return ["alias": .string(alias), "backend_conversation": .string(backend),
-                "received": DevRecord.value(request), "sent": DevRecord.value(masked),
+                "messages": .number(Double(request.messages.count)),
                 "model_texts": .array(texts), "looked_up": .array(lookedUp),
                 "read": .object(["texts": .number(Double(read.texts)), "read": .number(Double(read.read)), "late": .number(Double(read.late)),
                                  "partial": .bool(read.read < read.texts), "read_ms": .number(Double(readMS)), "total_ms": .number(Double(totalMS))]),

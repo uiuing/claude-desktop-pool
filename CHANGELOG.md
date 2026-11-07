@@ -7,7 +7,7 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 ### Added
 
 - Sensitive data redaction can be turned off in Settings after a confirmation; new requests then go to Claude as written.
-- The full log in Settings › General keeps everything Pool receives and sends on this Mac for your own analysis. It asks twice before it turns on, shows its size and can be cleared there.
+- The full log in Settings › General keeps everything Pool receives and sends on this Mac for your own analysis. It asks twice before it turns on, shows its size and can be cleared there. It keeps each conversation once, adding only what is new at each turn, and redaction as each replacement in its context.
 
 ### Fixed
 

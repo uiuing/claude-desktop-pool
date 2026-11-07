@@ -661,7 +661,9 @@ final class PrivacyBridgeTests: XCTestCase {
         }
     }
 
-    func testDeveloperRecordingKeepsTheRequestAsReceivedAndSentAndWhatWasPutBack() async throws {
+    /// A real full log (11-07): each prepared request kept the conversation whole twice, as received and
+    /// as sent, 955 KB a request. It keeps what the review shows and what was found, not the conversation.
+    func testTheFullLogKeepsEachReplacementAndWhatWasFoundNotTheConversation() async throws {
         let lock = NSLock()
         nonisolated(unsafe) var lines: [Data] = []
         DevRecord.install { entry in if entry.channel == .privacy { lock.withLock { lines.append(entry.line) } } }
@@ -675,11 +677,16 @@ final class PrivacyBridgeTests: XCTestCase {
         _ = try await reply.value
         let records = lock.withLock { lines }.compactMap { try? JSONDecoder().decode(JSONValue.self, from: $0) }
         let prepared = try XCTUnwrap(records.first { $0["kind"] == .string("privacy.prepared") })
-        XCTAssertEqual(prepared["data"]?["received"]?["messages"]?.arrayValue?.first?["content"], .string("Write to Synthetic Person"))
-        XCTAssertEqual(prepared["data"]?["sent"]?["messages"]?.arrayValue?.first?["content"], .string(sent))
+        XCTAssertNil(prepared["data"]?["received"]); XCTAssertNil(prepared["data"]?["sent"])
+        let replaced = prepared["data"]?["review"]?.arrayValue?.first?["segments"]?.arrayValue?.first { $0["original"] != nil }
+        XCTAssertEqual(replaced?["original"], .string("Synthetic Person"))
+        XCTAssertEqual(replaced?["placeholder"], .string(placeholder))
+        XCTAssertTrue(sent.contains(placeholder))
         let text = try XCTUnwrap(prepared["data"]?["model_texts"]?.arrayValue?.first)
-        XCTAssertEqual(text["text"], .string("Write to Synthetic Person"))
+        XCTAssertNil(text["text"], "A text the model read is kept by its length and what was found in it")
+        XCTAssertEqual(text["chars"], .number(25))
         XCTAssertEqual(text["model"]?.arrayValue?.first?["category"], .string("PERSON"))
+        XCTAssertEqual(text["model"]?.arrayValue?.first?["text"], .string("Synthetic Person"))
         let restored = try XCTUnwrap(records.first { $0["kind"] == .string("privacy.reply_text") })
         XCTAssertEqual(restored["data"]?["from_model"], .string("Hello " + placeholder))
         XCTAssertEqual(restored["data"]?["to_client"], .string("Hello Synthetic Person"))
