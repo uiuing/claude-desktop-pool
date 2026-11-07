@@ -55,6 +55,11 @@ final class CoordinatorHandoffTests: XCTestCase {
         _ = try await collect(coordinator, request(), id: "desktop-2#main")
         let order = await factory.order
         XCTAssertEqual(order, [accounts[0].id, accounts[0].id, accounts[1].id])
+        // The title's run ends with the client's exit after its reply has streamed: wait for that.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while await coordinator.sessions().contains(where: \.isOneOff), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
         let sessions = await coordinator.sessions()
         let tags = Dictionary(grouping: sessions, by: { $0.conversation ?? "" }).mapValues { Set($0.map(\.accountID)) }
         XCTAssertEqual(tags.count, 2, "Runs are grouped by their Desktop conversation")

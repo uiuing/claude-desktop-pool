@@ -33,11 +33,14 @@ final class PrivacyReaderTests: XCTestCase {
     /// Past its wait a request goes with what is known (nil for what the model had not read). The chunks
     /// being read for it are finished and kept for the next request; the rest is left.
     func testOnlyTheChunksBeingReadAreFinishedAfterTheWait() async throws {
-        let detector = GatedDetector(gated: false, delay: .milliseconds(60))
+        // The first chunk is held until the wait is over, so a slow machine cannot finish it in time.
+        let detector = GatedDetector()
         let reader = PrivacyReader(detector: detector, wait: .milliseconds(10))
         let texts = (1...4).map { "delta text \($0) " + String(repeating: "d", count: 3_000) }
         let first = await reader.read(texts, until: ContinuousClock.now.advanced(by: .milliseconds(10)))
         XCTAssertTrue(first.read.contains { $0 == nil }, "Not read within the wait")
+        try await privacyQueueEventually { await detector.texts.count == 1 }
+        await detector.release()
         try await privacyQueueEventually { await reader.state == (0, 0) }
         let asked = await detector.texts.count
         XCTAssertEqual(asked, 1, "Only the chunk in flight was finished: a request reads one at a time")

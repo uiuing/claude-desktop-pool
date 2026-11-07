@@ -906,6 +906,10 @@ private actor QuotaObserver {
     func close(endHeld: Bool = false) async -> Bool {
         if ended { return cleanupRun() }
         try? pollHooks()
+        // Another close of this run is under way (a refresh ending it as Pool stops): wait for it,
+        // then go on from where it left the run instead of reporting it held.
+        while closing, !Task.isCancelled { try? await Task.sleep(nanoseconds: 20_000_000) }
+        if ended { return cleanupRun() }
         guard let transport, !closing else { return self.transport == nil }
         closing = true; defer { closing = false }
         do {
