@@ -4,6 +4,8 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-11-08
+
 ### Fixed
 
 - A new conversation now stays on an account that already holds its model's cache when the others have about as much left. In 0.1.5 this almost never applied: it required the same instructions as an earlier conversation and counted too little of what the cache holds.
@@ -88,7 +90,8 @@ First public release.
 - Update checks against GitHub Releases with verified one-click install.
 - Option to hide email addresses throughout the app.
 
-[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.2...v0.1.3
