@@ -461,6 +461,39 @@ final class CoordinatorReplayTests: XCTestCase {
         _ = await pool.shutdown()
     }
 
+    /// Pool's own: quitting shelves an idle run, the shelf is saved with the conversations' accounts,
+    /// and after the restart the conversation's next turn still resumes its session.
+    func testTheShelfOutlivesARestartOfTheApp() async throws {
+        let original = ReplayWorker(steps: [.reply([.text("Three items."), .finished(.endTurn)])], keeps: true)
+        let before0 = ReplayFactory([original])
+        let before = PoolCoordinator(accounts: [account()], maximumWorkers: 4, roomWait: 0, duplicateWait: 0.1,
+                                     factory: { _, _ in try await before0.make() })
+        _ = try await collect(before, first())
+        let ended = await before.shutdown(keepingShelf: true)
+        XCTAssertTrue(ended)
+        let shelved = await original.shelves, closes = await original.closes
+        XCTAssertEqual(shelved, 1); XCTAssertEqual(closes, 0)
+        let remembered = await before.rememberedAccounts()
+        let saved = try XCTUnwrap(remembered)
+
+        let resumed = ReplayWorker(steps: [.reply([.text("The second is longest."), .finished(.endTurn)])], keeps: true)
+        let after0 = ReplayFactory([resumed])
+        let after = PoolCoordinator(accounts: [account()], maximumWorkers: 4, roomWait: 0, duplicateWait: 0.1,
+                                    factory: { _, _ in try await after0.make() })
+        let removed = RemovedSessions()
+        await after.restoreRememberedAccounts(saved, discard: { _, session in removed.add(session) })
+        var next = first()
+        next.messages += [.init(role: "assistant", content: .array([.object(["type": .string("text"), "text": .string("Three items.")])])),
+                          .init(role: "user", content: .string("Which is longest?"))]
+        let answer = try await collect(after, next)
+        XCTAssertEqual(answer, [.text("The second is longest."), .finished(.endTurn)])
+        let from = await resumed.resumedFrom, told = await resumed.regular
+        XCTAssertEqual(from, "fixture-session-\(original.id.uuidString.prefix(8))")
+        XCTAssertEqual(told, [next])
+        XCTAssertTrue(removed.sessions.isEmpty, "A session restored and taken is not removed")
+        _ = await after.shutdown()
+    }
+
     /// A conversation whose earlier messages changed does not take the shelved session.
     func testAShelvedSessionIsNotTakenByAnEditedConversation() async throws {
         let original = ReplayWorker(steps: [.reply([.text("Three items."), .finished(.endTurn)])], keeps: true)
@@ -481,6 +514,12 @@ final class CoordinatorReplayTests: XCTestCase {
     }
 }
 
+private final class RemovedSessions: @unchecked Sendable {
+    private let lock = NSLock()
+    private var names: [String] = []
+    var sessions: [String] { lock.withLock { names } }
+    func add(_ name: String) { lock.withLock { names.append(name) } }
+}
 private final class ReplayClock: @unchecked Sendable {
     private let lock = NSLock()
     private var value = Date(timeIntervalSince1970: 1_900_000_000)

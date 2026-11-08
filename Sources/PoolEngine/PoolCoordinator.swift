@@ -88,8 +88,9 @@ public actor PoolCoordinator: BridgeBackend {
     private struct Shelved {
         var saved: ShelvedSession
         var model: String
-        var system: JSONValue?
-        var tools: [BridgeTool]?
+        /// A digest of the model, instructions and tools the session was started with: the shelf is
+        /// kept across a restart of the app, so it holds no instructions or tools themselves.
+        var context: String
         var until: Date
         /// Only a conversation's own turns are shelved and taken: none with a tool choice, search or schema.
         func plain(_ request: BridgeRequest) -> Bool { request.toolChoice == nil && !request.webSearch && request.answerSchema == nil }
@@ -107,11 +108,14 @@ public actor PoolCoordinator: BridgeBackend {
     /// conversation after an error or a restart, and its next turns then carry a new session id.
     private var recentOpenings: [String: (account: UUID, until: Date)] = [:]
     private static let recentAccountsMost = 256
-    /// The accounts whose prompt cache holds a model's instructions and tools, by a digest of them, each
-    /// until its hour is out, and about how many tokens those are (Pool's own: the cache is the
-    /// account's and the model's, and a new conversation with the same instructions and tools that
-    /// goes to one of them is asked a prefix it has cached). Digests, accounts and counts only.
-    private var warmPrefixes: [String: (tokens: Int, until: [UUID: Date])] = [:]
+    /// The accounts whose prompt cache holds a model's opening, each until its hour is out (Pool's own).
+    /// Most of what a new conversation reads from the cache is Claude Code's own instructions and
+    /// tools, the same for every conversation of a model on an account, whatever the client's own
+    /// instructions are; so an account that served a conversation of the model within the hour is warm.
+    private var warmAccounts: [String: [UUID: Date]] = [:]
+    /// How many tokens a model's first turn read from a warm cache, the largest measured within the
+    /// hour: what a warm account saves a new conversation (PoolRouting.warmBonus). Counts only.
+    private var openingRead: [String: (tokens: Int, until: Date)] = [:]
     private static let shelfMost = 64
     private static let unconfirmedRest: TimeInterval = 60
 
@@ -147,19 +151,43 @@ public actor PoolCoordinator: BridgeBackend {
     }
     /// Which account each recent conversation is on, by content-free tags only, so a restart of the
     /// app keeps conversations on their accounts and their prompt caches.
-    private struct Remembered: Codable { var conversations: [String: Entry]; var openings: [String: Entry]
-        struct Entry: Codable { var account: UUID; var until: Date } }
+    /// The shelf goes with them (Pool's own): each shelved session by its key, Claude Code's session id,
+    /// its account, how many messages it holds and a digest of its model, instructions and tools, so a
+    /// conversation's next turn after a restart still resumes its session and reads its cache.
+    private struct Remembered: Codable { var conversations: [String: Entry]; var openings: [String: Entry]; var shelf: [String: Saved]?
+        struct Entry: Codable { var account: UUID; var until: Date }
+        struct Saved: Codable { var session: String; var account: UUID; var held: Int?; var model: String; var context: String; var until: Date } }
+    /// Removes a saved session's files by its account and session id, for a shelf restored after a restart.
+    private var savedSessionDiscard: (@Sendable (UUID, String) -> Void)?
     public func rememberedAccounts() -> Data? {
         let date = now()
         for binding in bindings.values { rememberAccount(binding) }
         func pack(_ table: [String: (account: UUID, until: Date)]) -> [String: Remembered.Entry] {
             table.filter { $0.value.until > date }.mapValues { .init(account: $0.account, until: $0.until) }
         }
-        return try? JSONEncoder().encode(Remembered(conversations: pack(recentAccounts), openings: pack(recentOpenings)))
+        let shelved = shelf.filter { $0.value.until > date }.mapValues {
+            Remembered.Saved(session: $0.saved.session, account: $0.saved.accountID, held: $0.saved.held, model: $0.model,
+                             context: $0.context, until: $0.until)
+        }
+        return try? JSONEncoder().encode(Remembered(conversations: pack(recentAccounts), openings: pack(recentOpenings), shelf: shelved))
     }
-    public func restoreRememberedAccounts(_ data: Data) {
+    /// `discard` removes a saved session's files: a shelved session restored here is discarded as the
+    /// shelf discards its own, and one already out of its hour or of an account gone is removed now.
+    public func restoreRememberedAccounts(_ data: Data, discard: (@Sendable (UUID, String) -> Void)? = nil) {
         guard let saved = try? JSONDecoder().decode(Remembered.self, from: data) else { return }
         let date = now(), known = Set(accounts.map(\.id))
+        if let discard { savedSessionDiscard = discard }
+        for (key, entry) in saved.shelf ?? [:] {
+            guard let discard else { break }
+            let account = entry.account, session = entry.session
+            // The session's files are removed, and resumed, only by an id of Claude Code's own shape.
+            guard entry.until > date, known.contains(account), shelf[key] == nil else { discard(account, session); continue }
+            shelf[key] = Shelved(saved: ShelvedSession(session: session, accountID: account, held: entry.held, discard: { discard(account, session) }),
+                                 model: entry.model, context: entry.context, until: entry.until)
+        }
+        if saved.shelf?.isEmpty == false {
+            Diagnostics.record("coordinator.route", ["decision": "shelf_restored", "sessions": String(shelf.count)])
+        }
         for (key, entry) in saved.conversations where entry.until > date && known.contains(entry.account) && recentAccounts[key] == nil {
             recentAccounts[key] = (entry.account, entry.until)
         }
@@ -224,40 +252,38 @@ public actor PoolCoordinator: BridgeBackend {
         guard let recent = recentAccounts[conversation], recent.until > now() else { return nil }
         return recent.account
     }
-    /// What a request's prompt cache keys on before its conversation: the model, instructions and tools
-    /// as a digest, and about how many tokens the instructions and tools are (four bytes each). Nil for a
-    /// request with a tool choice, search or schema, which offers its tools another way.
-    private static func prefix(_ request: BridgeRequest) -> (key: String, tokens: Int)? {
-        guard request.toolChoice == nil, !request.webSearch, request.answerSchema == nil else { return nil }
+    /// The model, instructions and tools a run is started with, as a digest.
+    static func context(_ request: BridgeRequest) -> String {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        guard let system = try? encoder.encode(request.system ?? .null), let tools = try? encoder.encode(request.tools ?? []) else { return nil }
         var hasher = SHA256()
-        hasher.update(data: Data(request.model.utf8)); hasher.update(data: Data([0])); hasher.update(data: system)
-        hasher.update(data: Data([0])); hasher.update(data: tools)
-        return (hasher.finalize().map { String(format: "%02x", $0) }.joined(), (system.count + tools.count) / 4)
+        hasher.update(data: Data(request.model.utf8)); hasher.update(data: Data([0]))
+        hasher.update(data: (try? encoder.encode(request.system ?? .null)) ?? Data()); hasher.update(data: Data([0]))
+        hasher.update(data: (try? encoder.encode(request.tools ?? [])) ?? Data())
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
-    /// The account's cache holds the run's instructions and tools for its hour, renewed at each reply.
+    /// The account's cache holds the model's opening for the run's hour, renewed at each reply.
     private func rememberWarm(_ binding: Binding) {
-        guard let prefix = Self.prefix(binding.request) else { return }
-        let date = now()
-        var entry = warmPrefixes[prefix.key] ?? (prefix.tokens, [:])
-        entry.until[binding.session.accountID] = binding.lastActive.addingTimeInterval(idleTimeout)
-        warmPrefixes[prefix.key] = entry
-        for (key, value) in warmPrefixes {
-            let live = value.until.filter { $0.value > date }
-            warmPrefixes[key] = live.isEmpty ? nil : (value.tokens, live)
-        }
-        while warmPrefixes.count > Self.recentAccountsMost,
-              let oldest = warmPrefixes.min(by: { ($0.value.until.values.max() ?? .distantPast) < ($1.value.until.values.max() ?? .distantPast) }) {
-            warmPrefixes.removeValue(forKey: oldest.key)
+        guard !binding.session.isOneOff else { return }
+        let date = now(), model = binding.request.model
+        warmAccounts[model, default: [:]][binding.session.accountID] = binding.lastActive.addingTimeInterval(idleTimeout)
+        for (key, value) in warmAccounts {
+            let live = value.filter { $0.value > date }
+            warmAccounts[key] = live.isEmpty ? nil : live
         }
     }
-    /// The points each account's warm cache adds for a request (PoolRouting.warmBonus).
+    /// A conversation's first turn read `tokens` from the cache: what a warm account holds of the model.
+    private func measureOpening(model: String, tokens: Int) {
+        guard tokens > 0 else { return }
+        let date = now()
+        if let known = openingRead[model], known.until > date, known.tokens >= tokens { return }
+        openingRead[model] = (tokens, date.addingTimeInterval(idleTimeout))
+    }
+    /// The points each warm account adds for a new conversation of the request's model.
     private func warmBonus(_ request: BridgeRequest) -> [UUID: Double] {
-        guard let prefix = Self.prefix(request), let entry = warmPrefixes[prefix.key] else { return [:] }
-        let date = now(), points = PoolRouting.warmBonus(tokens: entry.tokens)
-        guard points > 0 else { return [:] }
-        return Dictionary(uniqueKeysWithValues: entry.until.filter { $0.value > date }.map { ($0.key, points) })
+        let date = now()
+        guard !Self.isOneOff(request), let read = openingRead[request.model], read.until > date,
+              case let points = PoolRouting.warmBonus(tokens: read.tokens), points > 0 else { return [:] }
+        return Dictionary(uniqueKeysWithValues: (warmAccounts[request.model] ?? [:]).filter { $0.value > date }.map { ($0.key, points) })
     }
     private func rememberAccount(_ binding: Binding) {
         guard let conversation = binding.session.conversation, !binding.session.isOneOff else { return }
@@ -875,6 +901,9 @@ public actor PoolCoordinator: BridgeBackend {
                             let seconds = current.generationDuration + (current.generationBeganAt.map { max(0, date.timeIntervalSince($0)) } ?? 0)
                             onUpdate(.usage(scope: AccountScope(binding.accountAtStart), model: model.listedID, name: model.listedName, usage: usage, at: date,
                                             generationSeconds: seconds > 0 ? seconds : nil))
+                            if request.messages.count == 1, !replay, !binding.session.isOneOff {
+                                measureOpening(model: request.model, tokens: max(0, usage.cacheReadInputTokens ?? 0))
+                            }
                             // Which run on which account read the prompt cache or wrote it again: tags and counts only.
                             Diagnostics.record("coordinator.usage", [
                                 "conversation": Diagnostics.tag(alias), "run": Diagnostics.id(id),
@@ -1132,7 +1161,7 @@ public actor PoolCoordinator: BridgeBackend {
         guard let saved = await binding.worker.shelve() else { bindings[id]?.retiring = false; return await retire(id) }
         let key = shelfKey(binding.history, model: binding.request.model)
         shelf.removeValue(forKey: key)?.saved.discard()
-        shelf[key] = Shelved(saved: saved, model: binding.request.model, system: binding.request.system, tools: binding.request.tools,
+        shelf[key] = Shelved(saved: saved, model: binding.request.model, context: Self.context(binding.request),
                              until: binding.lastActive.addingTimeInterval(idleTimeout))
         while shelf.count > Self.shelfMost, let oldest = shelf.min(by: { $0.value.until < $1.value.until }) {
             shelf.removeValue(forKey: oldest.key)?.saved.discard()
@@ -1191,7 +1220,7 @@ public actor PoolCoordinator: BridgeBackend {
         guard let saved = await binding.worker.shelveCalls() else { bindings[id]?.retiring = false; return false }
         let key = callShelfKey(ConversationWords.key(binding.told), model: binding.request.model)
         shelf.removeValue(forKey: key)?.saved.discard()
-        shelf[key] = Shelved(saved: saved, model: binding.request.model, system: binding.request.system, tools: binding.request.tools,
+        shelf[key] = Shelved(saved: saved, model: binding.request.model, context: Self.context(binding.request),
                              until: binding.lastActive.addingTimeInterval(idleTimeout))
         while shelf.count > Self.shelfMost, let oldest = shelf.min(by: { $0.value.until < $1.value.until }) {
             shelf.removeValue(forKey: oldest.key)?.saved.discard()
@@ -1220,7 +1249,7 @@ public actor PoolCoordinator: BridgeBackend {
     /// tools, and its account still able to serve it without a handoff.
     private func fits(_ entry: Shelved, _ request: BridgeRequest, model: PoolModel) -> Bool {
         let account = entry.saved.accountID
-        return entry.until > now() && entry.system == request.system && entry.tools == request.tools && entry.plain(request) &&
+        return entry.until > now() && entry.context == Self.context(request) && entry.plain(request) &&
             PoolRouting.candidates(accounts, model: model.cliAlias, excluding: restingAccounts(), policy: routingPolicy).contains(where: { $0.id == account }) &&
             PoolRouting.handoff(accounts, model: model.cliAlias, currentID: account, policy: routingPolicy)?.reason != .lowQuota
     }
@@ -1378,19 +1407,26 @@ public actor PoolCoordinator: BridgeBackend {
     /// its request cancelled and receives the client's own Ctrl-C (`requestExit`), never a forced
     /// end. Sessions end together, so one slow child does not hold up the rest. Returns false only
     /// when a child did not end; that session is kept and reported.
-    public func shutdown() async -> Bool {
+    /// `keepingShelf`: the app saves the shelf after this (rememberedAccounts), so it is kept, and an
+    /// idle run or one waiting on its calls is shelved as it ends, for its conversation after the restart.
+    public func shutdown(keepingShelf: Bool = false) async -> Bool {
         paused = true; closing = true
-        discardShelf { _ in true }
+        if !keepingShelf { discardShelf { _ in true } }
         let ids = Array(bindings.keys)
         return await withTaskGroup(of: Bool.self) { group in
-            for id in ids { group.addTask { await self.endForShutdown(id) } }
+            for id in ids { group.addTask { await self.endForShutdown(id, keepingShelf: keepingShelf) } }
             var allEnded = true
             for await ended in group where !ended { allEnded = false }
             return allEnded
         }
     }
-    private func endForShutdown(_ id: UUID) async -> Bool {
+    private func endForShutdown(_ id: UUID, keepingShelf: Bool) async -> Bool {
         guard let binding = bindings[id] else { return true }
+        if keepingShelf {
+            if isRetirable(binding), !binding.history.isEmpty, await shelveOrRetire(id) { return true }
+            if bindings[id]?.parkedAt != nil, bindings[id]?.busy == false, bindings[id]?.retiring == false, await shelveCalls(id) { return true }
+        }
+        guard bindings[id] != nil else { return true }
         bindings[id]?.retiring = true
         var ended = false
         if !binding.busy && binding.pending.isEmpty { ended = await binding.worker.close() }

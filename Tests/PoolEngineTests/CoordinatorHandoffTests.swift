@@ -75,31 +75,37 @@ final class CoordinatorHandoffTests: XCTestCase {
         _ = await coordinator.shutdown()
     }
 
-    /// Pool's warmPrefixes: a new conversation with the instructions and tools an account's cache already
-    /// holds leans toward that account when the others have about as much left; other instructions do not.
-    func testANewConversationLeansTowardTheAccountWarmWithItsInstructions() async throws {
+    /// Pool's warmAccounts: an account that served a conversation of the model within the hour holds
+    /// Claude Code's own opening in its cache, whatever the client's instructions, and a new conversation
+    /// of that model leans toward it by what a first turn was measured to read. Another model's is not
+    /// warm there, and an account with clearly more left still comes first.
+    func testANewConversationLeansTowardAnAccountWarmWithItsModel() async throws {
         let date = Date()
         func quota(_ used: Double) -> [QuotaWindow] { [.init(id: "five_hour", usedPercent: used, observedAt: date, resetsAt: date.addingTimeInterval(3600))] }
         var accounts = accounts()
         accounts[0].windows = quota(20); accounts[1].windows = quota(40)
         let reply = { HandoffWorker(steps: [.reply([.text("Synthetic reply."), .finished(.endTurn)])]) }
-        let factory = HandoffFactory(queues: [accounts[0].id: [reply(), reply()], accounts[1].id: [reply()]])
+        let measured = HandoffWorker(steps: [.reply([.text("Synthetic reply."), .finished(.endTurn)])], cacheRead: 60_000)
+        let factory = HandoffFactory(queues: [accounts[0].id: [measured, reply()], accounts[1].id: [reply(), reply()]])
         let coordinator = PoolCoordinator(accounts: accounts, idleMost: 0, now: { date }, factory: { account, _ in try await factory.make(account.id) })
-        var project = request()
-        project.system = .string("Synthetic project instructions. " + String(repeating: "Keep the synthetic notes tidy. ", count: 2_000))
-        _ = try await collect(coordinator, project, id: "desktop-1#main")
+        _ = try await collect(coordinator, request(), id: "desktop-1#main")
         try await handoffWait { await coordinator.sessions().isEmpty }
-        // The other account now has a little more left.
-        accounts[0].windows = quota(22); accounts[1].windows = quota(20)
+        // The other account now has a little more left; the new conversation has instructions of its own.
+        accounts[0].windows = quota(30); accounts[1].windows = quota(25)
         await coordinator.updateAccounts(accounts)
-        var second = project; second.messages[0].content = .string("Read the second synthetic note.")
+        var second = request(); second.system = .string("Other synthetic project instructions.")
+        second.messages[0].content = .string("Read the second synthetic note.")
         _ = try await collect(coordinator, second, id: "desktop-2#main")
         try await handoffWait { await coordinator.sessions().isEmpty }
-        var other = second; other.system = .string("Other synthetic instructions.")
-        other.messages[0].content = .string("Read the third synthetic note.")
-        _ = try await collect(coordinator, other, id: "desktop-3#main")
+        var opus = request(); opus.model = "claude-opus"; opus.messages[0].content = .string("Read the third synthetic note.")
+        _ = try await collect(coordinator, opus, id: "desktop-3#main")
+        try await handoffWait { await coordinator.sessions().isEmpty }
+        accounts[0].windows = quota(80)
+        await coordinator.updateAccounts(accounts)
+        var fourth = request(); fourth.messages[0].content = .string("Read the fourth synthetic note.")
+        _ = try await collect(coordinator, fourth, id: "desktop-4#main")
         let order = await factory.order
-        XCTAssertEqual(order, [accounts[0].id, accounts[0].id, accounts[1].id])
+        XCTAssertEqual(order, [accounts[0].id, accounts[0].id, accounts[1].id, accounts[1].id])
         _ = await coordinator.shutdown()
     }
 
@@ -336,7 +342,10 @@ private actor HandoffWorker: SessionWorker {
     private(set) var regularRequests: [BridgeRequest] = []
     private(set) var replays: [BridgeRequest] = []
     private(set) var closeCount = 0
-    init(steps: [Step], cancelError: BridgeFailure = .cancelled) { self.steps = steps; self.cancelError = cancelError }
+    private let cacheRead: Int?
+    init(steps: [Step], cancelError: BridgeFailure = .cancelled, cacheRead: Int? = nil) {
+        self.steps = steps; self.cancelError = cancelError; self.cacheRead = cacheRead
+    }
     func events(for request: BridgeRequest) throws -> AsyncThrowingStream<BridgeEvent, Error> {
         regularRequests.append(request); return try next()
     }
@@ -350,7 +359,7 @@ private actor HandoffWorker: SessionWorker {
         return AsyncThrowingStream { continuation in
             switch step {
             case .reply(let events):
-                continuation.yield(.usage(.init(inputTokens: 20, outputTokens: 5)))
+                continuation.yield(.usage(.init(inputTokens: 20, outputTokens: 5, cacheReadInputTokens: cacheRead)))
                 events.forEach { continuation.yield($0) }; continuation.finish()
             case .failure(let events, let failure): events.forEach { continuation.yield($0) }; continuation.finish(throwing: failure)
             case .hold(let events): events.forEach { continuation.yield($0) }; held = continuation

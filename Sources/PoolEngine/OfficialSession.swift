@@ -1166,6 +1166,11 @@ public actor OfficialSession: SessionWorker {
             ClaudeReplay.remove(config: config, work: work, session: session)
         })
     }
+    /// Removes a session the shelf kept, by its account and Claude Code's session id.
+    public static func removeSavedSession(workspace: OwnedWorkspace, account: UUID, session: String) {
+        guard let config = try? workspace.accountDirectory(account), let work = try? workspace.workDirectory(account) else { return }
+        ClaudeReplay.remove(config: config, work: work, session: session)
+    }
     /// Before its first request, the run goes on from a session of its account.
     public func resume(from saved: ShelvedSession) async -> Bool {
         guard transport == nil, !submitted, saved.accountID == account.id, UUID(uuidString: saved.session) != nil else { return false }

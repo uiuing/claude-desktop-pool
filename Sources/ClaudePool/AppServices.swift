@@ -1029,7 +1029,9 @@ final class AppServices {
         }, onUpdate: { [weak self] update in Task { @MainActor in await self?.receive(update) } })
         // Conversations go on on the accounts they were on before the app was restarted.
         if let saved = try? workspace.read(workspace.root.appendingPathComponent(Self.conversationAccountsFile), limit: 512 * 1024) {
-            await coordinator.restoreRememberedAccounts(saved)
+            await coordinator.restoreRememberedAccounts(saved, discard: { account, session in
+                OfficialSession.removeSavedSession(workspace: workspace, account: account, session: session)
+            })
         }
         let protection = PrivacyBridge(backend: coordinator, detector: privacyDetector,
             onUpdate: { [weak self] update in Task { @MainActor in await self?.receivePrivacy(update) } })
@@ -1565,12 +1567,13 @@ final class AppServices {
         }
         // Observers and sessions end together: nothing here waits its turn behind a slow child.
         let quota = quotaService, pool = coordinator
+        async let observersClosing = quota?.stop() ?? true
+        async let sessionsClosing = pool?.shutdown(keepingShelf: true) ?? true
+        let (observersClosed, sessionsEnded) = await (observersClosing, sessionsClosing)
+        // After the sessions end, so the shelf they were kept on is saved with the conversations' accounts.
         if let pool, let workspace, let saved = await pool.rememberedAccounts() {
             try? workspace.write(saved, to: workspace.root.appendingPathComponent(Self.conversationAccountsFile))
         }
-        async let observersClosing = quota?.stop() ?? true
-        async let sessionsClosing = pool?.shutdown() ?? true
-        let (observersClosed, sessionsEnded) = await (observersClosing, sessionsClosing)
         guard observersClosed, sessionsEnded else {
             if wasRunning { try? await quota?.start() }
             return await refuse("Claude is still closing. Keep this window open and try again.",

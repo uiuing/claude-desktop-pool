@@ -4,6 +4,11 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+### Fixed
+
+- A new conversation now stays on an account that already holds its model's cache when the others have about as much left. In 0.1.5 this almost never applied: it required the same instructions as an earlier conversation and counted too little of what the cache holds.
+- Updating or restarting Claude Pool no longer makes each open conversation write itself to the cache again. Conversations go on from their own sessions after the restart.
+
 ## [0.1.5] - 2026-11-08
 
 ### Changed
