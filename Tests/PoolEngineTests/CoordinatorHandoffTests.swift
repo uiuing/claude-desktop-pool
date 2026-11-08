@@ -109,6 +109,33 @@ final class CoordinatorHandoffTests: XCTestCase {
         _ = await coordinator.shutdown()
     }
 
+    /// The accounts warm with a model, and what a new conversation of it read first, outlive a restart of the app.
+    func testAWarmAccountOutlivesARestartOfTheApp() async throws {
+        let date = Date()
+        func quota(_ used: Double) -> [QuotaWindow] { [.init(id: "five_hour", usedPercent: used, observedAt: date, resetsAt: date.addingTimeInterval(3600))] }
+        var accounts = accounts()
+        accounts[0].windows = quota(20); accounts[1].windows = quota(40)
+        let reply = { HandoffWorker(steps: [.reply([.text("Synthetic reply."), .finished(.endTurn)])]) }
+        let measured = HandoffWorker(steps: [.reply([.text("Synthetic reply."), .finished(.endTurn)])], cacheRead: 60_000)
+        let before0 = HandoffFactory(queues: [accounts[0].id: [measured], accounts[1].id: []])
+        let before = PoolCoordinator(accounts: accounts, idleMost: 0, now: { date }, factory: { account, _ in try await before0.make(account.id) })
+        _ = try await collect(before, request(), id: "desktop-1#main")
+        try await handoffWait { await before.sessions().isEmpty }
+        _ = await before.shutdown()
+        let remembered = await before.rememberedAccounts()
+        let saved = try XCTUnwrap(remembered)
+
+        accounts[0].windows = quota(30); accounts[1].windows = quota(25)
+        let after0 = HandoffFactory(queues: [accounts[0].id: [reply()], accounts[1].id: [reply()]])
+        let after = PoolCoordinator(accounts: accounts, idleMost: 0, now: { date }, factory: { account, _ in try await after0.make(account.id) })
+        await after.restoreRememberedAccounts(saved)
+        var second = request(); second.messages[0].content = .string("Read the second synthetic note.")
+        _ = try await collect(after, second, id: "desktop-2#main")
+        let order = await after0.order
+        XCTAssertEqual(order, [accounts[0].id])
+        _ = await after.shutdown()
+    }
+
     /// Pool's recentAccounts: a conversation whose run has ended goes back to the account it was on,
     /// whose cache holds it, while a new conversation goes where routing puts it.
     func testAConversationWhoseRunEndedGoesBackToItsAccount() async throws {

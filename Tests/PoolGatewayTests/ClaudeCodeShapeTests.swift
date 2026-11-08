@@ -92,6 +92,27 @@ final class ClaudeCodeShapeTests: XCTestCase {
         XCTAssertEqual(decoded.messages.filter { $0.role == "user" }.count, 4)
     }
 
+    func testASystemNoteStaysWithTheUserTurnItFollowsAsTheConversationGoesOn() throws {
+        // Claude Code puts a note as a system message after the turn it was made for; on the next
+        // request a reply and a new user turn follow it. Each request must tell that turn the same.
+        let results = #"""
+        {"role":"assistant","content":[{"type":"tool_use","id":"toolu_03","name":"Bash","input":{"command":"true"}}]},
+        {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_03","content":"ok"}]},
+        {"role":"system","content":[{"type":"text","text":"Synthetic note: the user waits for an update."}]}
+        """#
+        let next = #"""
+        {"role":"assistant","content":[{"type":"text","text":"Done."}]},
+        {"role":"user","content":"Next."}
+        """#
+        let first = try GatewayRequestValidation.decodeRequest(body(turn + "," + results)).request
+        let second = try GatewayRequestValidation.decodeRequest(body(turn + "," + results + "," + next)).request
+        let note = JSONValue.object(["type": .string("text"), "text": .string("Synthetic note: the user waits for an update.")])
+        XCTAssertEqual(first.messages.last?.content.arrayValue?.last, note)
+        XCTAssertEqual(Array(second.messages.prefix(first.messages.count)), first.messages)
+        XCTAssertEqual(second.messages.last?.content, .string("Next."))
+        XCTAssertFalse(second.messages.contains { $0.role == "system" })
+    }
+
     func testRouterKeepsOneConversationAcrossToolSearch() throws {
         let router = try GatewayRouter(port: 18473, token: String(repeating: "ab", count: 32))
         let headers = ["host": "127.0.0.1:18473", "authorization": "Bearer " + String(repeating: "ab", count: 32),

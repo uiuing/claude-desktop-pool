@@ -147,6 +147,25 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(body["content"]?.arrayValue?[1]["id"], .string("tool_fixture"))
         XCTAssertThrowsError(try encoder.encode(.text("Late event")))
     }
+    /// What the request read, told before the reply, is in `message_start` as Anthropic's is: Claude
+    /// Code counts the conversation's context from it, and from `message_delta` only the output.
+    func testMessageStartSaysWhatTheRequestRead() throws {
+        var encoder = MessageResponseEncoder(model: "claude-sonnet", id: "msg_fixture")
+        var read = BridgeUsage(inputTokens: 2, outputTokens: 1, cacheReadInputTokens: 180_000, cacheCreationInputTokens: 900)
+        var chunks = try encoder.encode(.usage(read))
+        chunks += try encoder.encode(.text("Synthetic answer"))
+        read.outputTokens = 40
+        chunks += try encoder.encode(.usage(read))
+        chunks += try encoder.encode(.finished(.endTurn))
+        let wire = String(decoding: chunks.reduce(Data(), +), as: UTF8.self)
+        let start = try XCTUnwrap(wire.components(separatedBy: "\n").first { $0.hasPrefix("data: {\"message\"") || ($0.hasPrefix("data: ") && $0.contains("\"message_start\"")) })
+        let event = try JSONDecoder().decode(JSONValue.self, from: Data(start.dropFirst(6).utf8))
+        XCTAssertEqual(event["message"]?["usage"]?["cache_read_input_tokens"], .number(180_000))
+        XCTAssertEqual(event["message"]?["usage"]?["cache_creation_input_tokens"], .number(900))
+        XCTAssertEqual(event["message"]?["usage"]?["input_tokens"], .number(2))
+        let body = try JSONDecoder().decode(JSONValue.self, from: encoder.completeBody())
+        XCTAssertEqual(body["usage"]?["output_tokens"], .number(40))
+    }
     /// A reply the client never measured is whole with zero
     /// counts, never a failure, and none of its text is lost.
     func testUnobservedUsageCompletesWithZeroCounts() throws {

@@ -36,6 +36,8 @@ public actor OfficialSession: SessionWorker {
     private var resumeFrom: String?
     /// How many of the client's messages that session holds, when it was let go on its calls.
     private var resumeHeld: Int?
+    /// The calls the resumed session is cut before: the run goes on from a copy of it up to them.
+    private var resumeCut: Set<String>?
     private var keepSession = false
     /// What the turn may call and its answer tool: the
     /// answer a call gave, the turn's words held back meanwhile, and whether it was asked for one.
@@ -271,11 +273,22 @@ public actor OfficialSession: SessionWorker {
             let from = try resumeSplit(request.messages)
             if from <= 0 || from >= request.messages.count {
                 // nothing the shelved session holds is this conversation's: the run is its own
-                resumeFrom = nil; resumeHeld = nil; sessionKey = ClaudeReplay.sessionKey(id)
+                resumeFrom = nil; resumeHeld = nil; resumeCut = nil; sessionKey = ClaudeReplay.sessionKey(id)
             }
         }
         let config = try workspace.accountDirectory(account.id), work = try workspace.workDirectory(account.id)
         accountDirectory = config; workDirectory = work
+        if let from = resumeFrom, let calls = resumeCut {
+            // A session cut before calls is the run's own copy, under its own id; the saved one stays.
+            let own = ClaudeReplay.sessionKey(id)
+            if ClaudeReplay.fork(config: config, work: work, from: from, to: own, before: calls) {
+                resumeFrom = own; sessionKey = own
+            } else {
+                Diagnostics.record("session.failed", ["run": runTag, "reason": "fork_unwritten"])
+                resumeFrom = nil; resumeHeld = nil; sessionKey = own
+            }
+            resumeCut = nil
+        }
 
         // What is typed, and the saved session it goes on from (claude_replay.go:31-93): a
         // conversation with a reply in it is given to the client as its own transcript, and only
@@ -885,6 +898,7 @@ public actor OfficialSession: SessionWorker {
                 outstanding.insert(call.id); replyCalls += 1
                 response?.yield(.toolUse(call))
             case .finish(let reason): finish(reason)
+            case .prompt(let usage): response?.yield(.usage(usage))
             case .fail(let failure):
                 guard response != nil else { continue }
                 invalidated = true; failed("stream_cut"); observer?.yield(.attention)
@@ -1174,7 +1188,7 @@ public actor OfficialSession: SessionWorker {
     /// Before its first request, the run goes on from a session of its account.
     public func resume(from saved: ShelvedSession) async -> Bool {
         guard transport == nil, !submitted, saved.accountID == account.id, UUID(uuidString: saved.session) != nil else { return false }
-        resumeFrom = saved.session; resumeHeld = saved.held; sessionKey = saved.session
+        resumeFrom = saved.session; resumeHeld = saved.held; resumeCut = saved.cut; sessionKey = saved.session
         return true
     }
     /// Where the messages a resumed session is told begin: after those it holds.

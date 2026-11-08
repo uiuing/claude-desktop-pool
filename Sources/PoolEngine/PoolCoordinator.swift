@@ -92,6 +92,9 @@ public actor PoolCoordinator: BridgeBackend {
         /// kept across a restart of the app, so it holds no instructions or tools themselves.
         var context: String
         var until: Date
+        /// Where the session can be cut for a conversation that went another way at one of its calls:
+        /// the conversation before each call, by the start of its key (`forkKeys`).
+        var forks: Set<String> = []
         /// Only a conversation's own turns are shelved and taken: none with a tool choice, search or schema.
         func plain(_ request: BridgeRequest) -> Bool { request.toolChoice == nil && !request.webSearch && request.answerSchema == nil }
     }
@@ -155,8 +158,11 @@ public actor PoolCoordinator: BridgeBackend {
     /// its account, how many messages it holds and a digest of its model, instructions and tools, so a
     /// conversation's next turn after a restart still resumes its session and reads its cache.
     private struct Remembered: Codable { var conversations: [String: Entry]; var openings: [String: Entry]; var shelf: [String: Saved]?
+        /// The accounts warm with each model and what a new conversation of it read first, so a restart keeps leaning toward them.
+        var warm: [String: [String: Date]]?; var openingRead: [String: Read]?
+        struct Read: Codable { var tokens: Int; var until: Date }
         struct Entry: Codable { var account: UUID; var until: Date }
-        struct Saved: Codable { var session: String; var account: UUID; var held: Int?; var model: String; var context: String; var until: Date } }
+        struct Saved: Codable { var session: String; var account: UUID; var held: Int?; var model: String; var context: String; var until: Date; var forks: [String]? } }
     /// Removes a saved session's files by its account and session id, for a shelf restored after a restart.
     private var savedSessionDiscard: (@Sendable (UUID, String) -> Void)?
     public func rememberedAccounts() -> Data? {
@@ -167,9 +173,14 @@ public actor PoolCoordinator: BridgeBackend {
         }
         let shelved = shelf.filter { $0.value.until > date }.mapValues {
             Remembered.Saved(session: $0.saved.session, account: $0.saved.accountID, held: $0.saved.held, model: $0.model,
-                             context: $0.context, until: $0.until)
+                             context: $0.context, until: $0.until, forks: $0.forks.sorted())
         }
-        return try? JSONEncoder().encode(Remembered(conversations: pack(recentAccounts), openings: pack(recentOpenings), shelf: shelved))
+        let warm = warmAccounts.mapValues { accounts in
+            Dictionary(uniqueKeysWithValues: accounts.filter { $0.value > date }.map { ($0.key.uuidString, $0.value) })
+        }.filter { !$0.value.isEmpty }
+        let reads = openingRead.filter { $0.value.until > date }.mapValues { Remembered.Read(tokens: $0.tokens, until: $0.until) }
+        return try? JSONEncoder().encode(Remembered(conversations: pack(recentAccounts), openings: pack(recentOpenings), shelf: shelved,
+                                                    warm: warm, openingRead: reads))
     }
     /// `discard` removes a saved session's files: a shelved session restored here is discarded as the
     /// shelf discards its own, and one already out of its hour or of an account gone is removed now.
@@ -183,7 +194,7 @@ public actor PoolCoordinator: BridgeBackend {
             // The session's files are removed, and resumed, only by an id of Claude Code's own shape.
             guard entry.until > date, known.contains(account), shelf[key] == nil else { discard(account, session); continue }
             shelf[key] = Shelved(saved: ShelvedSession(session: session, accountID: account, held: entry.held, discard: { discard(account, session) }),
-                                 model: entry.model, context: entry.context, until: entry.until)
+                                 model: entry.model, context: entry.context, until: entry.until, forks: Set(entry.forks ?? []))
         }
         if saved.shelf?.isEmpty == false {
             Diagnostics.record("coordinator.route", ["decision": "shelf_restored", "sessions": String(shelf.count)])
@@ -193,6 +204,15 @@ public actor PoolCoordinator: BridgeBackend {
         }
         for (key, entry) in saved.openings where entry.until > date && known.contains(entry.account) && recentOpenings[key] == nil {
             recentOpenings[key] = (entry.account, entry.until)
+        }
+        for (model, accounts) in saved.warm ?? [:] {
+            for (account, until) in accounts {
+                guard until > date, let id = UUID(uuidString: account), known.contains(id), warmAccounts[model]?[id] == nil else { continue }
+                warmAccounts[model, default: [:]][id] = until
+            }
+        }
+        for (model, read) in saved.openingRead ?? [:] where read.until > date && openingRead[model] == nil {
+            openingRead[model] = (read.tokens, read.until)
         }
     }
     public func updateAccounts(_ accounts: [PoolAccount]) { self.accounts = accounts }
@@ -350,6 +370,17 @@ public actor PoolCoordinator: BridgeBackend {
                         Diagnostics.record("coordinator.route", ["decision": "calls_unshelved", "conversation": Diagnostics.tag(requestAlias),
                                                                  "messages": String(request.messages.count), "held": String(entry.saved.held ?? 0)])
                     } else { entry.saved.discard() }
+                } else if let fork = await takeForkShelf(request, model: model) {
+                    // A conversation that went another way at its calls goes on from a copy of a
+                    // session told it up to them, on that session's account; else as any new run
+                    do { bindingID = try await create(request: request, model: model, generation: generation, continuing: true, only: fork.accountID) }
+                    catch BridgeFailure.unavailable {
+                        bindingID = try await create(request: request, model: model, generation: generation, continuing: true)
+                    }
+                    if bindings[bindingID]?.session.accountID == fork.accountID, await bindings[bindingID]?.worker.resume(from: fork) == true {
+                        Diagnostics.record("coordinator.route", ["decision": "session_forked", "conversation": Diagnostics.tag(requestAlias),
+                                                                 "messages": String(request.messages.count), "held": String(fork.held ?? 0)])
+                    }
                 } else { bindingID = try await create(request: request, model: model, generation: generation, continuing: true) }
                 replay = true
             }
@@ -823,6 +854,7 @@ public actor PoolCoordinator: BridgeBackend {
             }
             resetProgress(id)
             var reportedUsage = false
+            var lastUsage: BridgeUsage?
             do {
                 let source: AsyncThrowingStream<BridgeEvent, Error>
                 if replayCompletedResults {
@@ -862,6 +894,27 @@ public actor PoolCoordinator: BridgeBackend {
                 for try await event in source {
                     try Task.checkCancellation()
                     guard !cancelled(), bindings[id]?.stopped == false else { throw BridgeFailure.cancelled }
+                    if case .finished = event, let usage = lastUsage {
+                        if !reportedUsage, sameIdentity(binding) {
+                            reportedUsage = true
+                            publishProgress(id, usage: usage, force: true)
+                            // One ledger row per reply, one record per call.
+                            // Generating time of this request, as the quota progress counts it; tool waits are not in it.
+                            let date = now(), current = bindings[id] ?? binding
+                            let seconds = current.generationDuration + (current.generationBeganAt.map { max(0, date.timeIntervalSince($0)) } ?? 0)
+                            onUpdate(.usage(scope: AccountScope(binding.accountAtStart), model: model.listedID, name: model.listedName, usage: usage, at: date,
+                                            generationSeconds: seconds > 0 ? seconds : nil))
+                            if request.messages.count == 1, !replay, !binding.session.isOneOff {
+                                measureOpening(model: request.model, tokens: max(0, usage.cacheReadInputTokens ?? 0))
+                            }
+                            // Which run on which account read the prompt cache or wrote it again: tags and counts only.
+                            Diagnostics.record("coordinator.usage", [
+                                "conversation": Diagnostics.tag(alias), "run": Diagnostics.id(id),
+                                "account": Diagnostics.id(binding.accountAtStart.id), "replay": replay ? "yes" : "no",
+                                "cache_r": String(max(0, usage.cacheReadInputTokens ?? 0)),
+                                "cache_w": String(max(0, usage.cacheCreationInputTokens ?? 0))])
+                        }
+                    }
                     switch event {
                     case .text(let delta):
                         committed = true; text += delta
@@ -892,25 +945,9 @@ public actor PoolCoordinator: BridgeBackend {
                         }
                         publish(id)
                     case .usage(let usage):
-                        if !reportedUsage, sameIdentity(binding) {
-                            reportedUsage = true
-                            publishProgress(id, usage: usage, force: true)
-                            // One ledger row per reply, one record per call.
-                            // Generating time of this request, as the quota progress counts it; tool waits are not in it.
-                            let date = now(), current = bindings[id] ?? binding
-                            let seconds = current.generationDuration + (current.generationBeganAt.map { max(0, date.timeIntervalSince($0)) } ?? 0)
-                            onUpdate(.usage(scope: AccountScope(binding.accountAtStart), model: model.listedID, name: model.listedName, usage: usage, at: date,
-                                            generationSeconds: seconds > 0 ? seconds : nil))
-                            if request.messages.count == 1, !replay, !binding.session.isOneOff {
-                                measureOpening(model: request.model, tokens: max(0, usage.cacheReadInputTokens ?? 0))
-                            }
-                            // Which run on which account read the prompt cache or wrote it again: tags and counts only.
-                            Diagnostics.record("coordinator.usage", [
-                                "conversation": Diagnostics.tag(alias), "run": Diagnostics.id(id),
-                                "account": Diagnostics.id(binding.accountAtStart.id), "replay": replay ? "yes" : "no",
-                                "cache_r": String(max(0, usage.cacheReadInputTokens ?? 0)),
-                                "cache_w": String(max(0, usage.cacheCreationInputTokens ?? 0))])
-                        }
+                        // The reply may say what its request read as it begins, and says its total
+                        // as it ends: the client is told each, the ledger the last.
+                        lastUsage = usage
                     }
                     continuation.yield(event)
                     if completed { break }
@@ -1162,7 +1199,7 @@ public actor PoolCoordinator: BridgeBackend {
         let key = shelfKey(binding.history, model: binding.request.model)
         shelf.removeValue(forKey: key)?.saved.discard()
         shelf[key] = Shelved(saved: saved, model: binding.request.model, context: Self.context(binding.request),
-                             until: binding.lastActive.addingTimeInterval(idleTimeout))
+                             until: binding.lastActive.addingTimeInterval(idleTimeout), forks: Self.forkKeys(binding.history))
         while shelf.count > Self.shelfMost, let oldest = shelf.min(by: { $0.value.until < $1.value.until }) {
             shelf.removeValue(forKey: oldest.key)?.saved.discard()
         }
@@ -1221,7 +1258,7 @@ public actor PoolCoordinator: BridgeBackend {
         let key = callShelfKey(ConversationWords.key(binding.told), model: binding.request.model)
         shelf.removeValue(forKey: key)?.saved.discard()
         shelf[key] = Shelved(saved: saved, model: binding.request.model, context: Self.context(binding.request),
-                             until: binding.lastActive.addingTimeInterval(idleTimeout))
+                             until: binding.lastActive.addingTimeInterval(idleTimeout), forks: Self.forkKeys(binding.told))
         while shelf.count > Self.shelfMost, let oldest = shelf.min(by: { $0.value.until < $1.value.until }) {
             shelf.removeValue(forKey: oldest.key)?.saved.discard()
         }
@@ -1244,6 +1281,41 @@ public actor PoolCoordinator: BridgeBackend {
             return entry
         }
         return nil
+    }
+    /// The start of the key of the conversation before each call in `history`: where a session told
+    /// it can be cut. Sixteen hex digits each, as the model, instructions and tools are compared too
+    /// and the cut is made only at the calls themselves.
+    static func forkKeys(_ history: [BridgeMessage]) -> Set<String> {
+        let keys = ConversationWords.prefixKeys(history)
+        var forks = Set<String>()
+        for index in history.indices where index > 0 && history[index].role == "assistant" && ConversationWords.callsTool(history[index]) {
+            forks.insert(String(keys[index - 1].prefix(16)))
+        }
+        return forks
+    }
+    /// A session to go on from for results no run waits on, of a conversation that went another way
+    /// at its calls (Pool's own): Claude Code's compaction asks the conversation up to the last
+    /// call's results with its own words after them, of a session whose run answered past them. A
+    /// run of that conversation idle now is shelved first. The session is cut before the call
+    /// (`ShelvedSession.forking`) and stays on the shelf for the conversation's own next turn. Nil
+    /// when no session told that conversation fits the request.
+    private func takeForkShelf(_ request: BridgeRequest, model: PoolModel) async -> ShelvedSession? {
+        let messages = request.messages
+        guard messages.last?.role == "user", let call = messages.lastIndex(where: { $0.role == "assistant" }), call > 0,
+              ConversationWords.callsTool(messages[call]) else { return nil }
+        let calls = Set((messages[call].content.arrayValue ?? []).compactMap { block in
+            block["type"]?.stringValue == "tool_use" ? block["id"]?.stringValue : nil
+        })
+        let key = String(ConversationWords.prefixKeys(messages)[call - 1].prefix(16))
+        func found() -> Shelved? {
+            shelf.values.filter { $0.model == request.model && $0.forks.contains(key) }.max { $0.until < $1.until }
+        }
+        if found() == nil, let (id, _) = bindings.first(where: { isRetirable($0.value) && $0.value.request.model == request.model &&
+                                                                 Self.forkKeys($0.value.history).contains(key) }) {
+            _ = await shelveOrRetire(id)
+        }
+        guard !calls.isEmpty, let entry = found(), fits(entry, request, model: model) else { return nil }
+        return entry.saved.forking(call, before: calls)
     }
     /// Whether a shelved session can take the request: within its hour, the same instructions and
     /// tools, and its account still able to serve it without a handoff.

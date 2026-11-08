@@ -7,8 +7,8 @@ import PoolCore
 ///
 /// - `thinking.display`, `safeguards` (auto mode), `speed`, sampling hints and the like are advisory.
 /// - A `{"role":"system"}` message inside `messages` holds a turn's effort (`output_config`) and,
-///   at times, text. The effort is advisory; the text joins the user turn it came with, so the
-///   session's instructions stay the same from turn to turn.
+///   at times, text. The effort is advisory; the text joins the user turn before it (the next one
+///   when none came before), so the session's instructions stay the same from turn to turn.
 /// - Thinking from earlier answers is the service's own record; the live session keeps its own.
 /// - Deferred tools (`defer_loading`, tool search): a tool is offered to the session once it is
 ///   loaded — ToolSearch answered with a `tool_reference` naming it, or a `tool_addition` brought
@@ -112,7 +112,16 @@ enum ClientRequestShape {
             }
             m = m.filter { $0.key == "role" || $0.key == "content" }
             if role == "system" {
-                carried += textBlocks(m["content"])
+                // The text joins the user turn it follows, where it stays once the conversation goes on;
+                // carried to the next user turn only when none came before it. Joined to the next turn,
+                // it would sit on the last user turn while it ends the request and move on at the next,
+                // a history the conversation's run never had.
+                let text = textBlocks(m["content"])
+                if !text.isEmpty, let index = adapted.indices.last, adapted[index]["role"]?.stringValue == "user",
+                   var last = adapted[index].objectValue {
+                    let existing = last["content"]?.stringValue.map { [JSONValue.object(["type": .string("text"), "text": .string($0)])] } ?? last["content"]?.arrayValue ?? []
+                    last["content"] = .array(existing + text); adapted[index] = .object(last)
+                } else { carried += text }
                 continue
             }
             guard let content = m["content"] else { throw BridgeFailure.invalidRequest("Each message must have a role and content.") }

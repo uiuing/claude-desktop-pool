@@ -23,6 +23,9 @@ struct ClaudeReply {
         /// The reply ends: its message called the client's tools.
         case finish(BridgeStopReason)
         case fail(BridgeFailure)
+        /// What the reply's request read, as its stream began: told before anything of the reply, so
+        /// the client's `message_start` says the conversation's size, as Anthropic's does. Not its total.
+        case prompt(BridgeUsage)
     }
 
     /// How long a call the helper hands over waits for its message before it tells the client
@@ -162,7 +165,11 @@ struct ClaudeReply {
         case "message_start":
             let id = event["message"]?["id"]?.stringValue ?? ""
             streamed.insert(id); begin(id)
-            if !id.isEmpty { note(id, ClaudeTranscript.usage(event["message"]?["usage"])) }
+            let read = ClaudeTranscript.usage(event["message"]?["usage"])
+            if !id.isEmpty { note(id, read) }
+            if listening, !shown, let read, read.inputTokens + (read.cacheReadInputTokens ?? 0) + (read.cacheCreationInputTokens ?? 0) > 0 {
+                out.append(.prompt(read))
+            }
         case "content_block_start":
             guard let index = Self.index(event["index"]), let block = event["content_block"] else { break }
             switch block["type"]?.stringValue {

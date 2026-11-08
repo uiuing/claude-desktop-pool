@@ -576,8 +576,21 @@ final class PoolAppModel {
     func displayedWindows(_ account: PoolAccount) -> [QuotaWindow] {
         account.windows.filter { !$0.isNotApplicable(at: now) }.sorted { quotaWindowOrder($0.id) < quotaWindowOrder($1.id) }
     }
+    /// What a limit has left as shown: none while Claude refuses the account at it, whatever the
+    /// last reading said (`readRemaining` keeps that reading).
     func remaining(_ account: PoolAccount, window: String) -> Double? {
+        guard let reading = account.windows.first(where: { $0.id == window }) else { return nil }
+        if account.isRefused(reading, at: now) { return 0 }
+        return PoolRouting.remaining(reading, in: account, now: now)
+    }
+    func readRemaining(_ account: PoolAccount, window: String) -> Double? {
         account.windows.first { $0.id == window }.flatMap { PoolRouting.remaining($0, in: account, now: now) }
+    }
+    /// For a limit Claude refused the account at though its reading had room left: what the reading said.
+    func refusedNote(_ account: PoolAccount, window: String) -> String? {
+        guard let reading = account.windows.first(where: { $0.id == window }), account.isRefused(reading, at: now),
+              let left = readRemaining(account, window: window) else { return nil }
+        return t("Claude refused at this limit · usage showed {0}% left", "\(Int(left.rounded()))")
     }
     func quotaText(_ account: PoolAccount, window: String) -> String {
         if let reading = account.windows.first(where: { $0.id == window }), reading.isNotApplicable(at: now) { return t("Not applicable") }

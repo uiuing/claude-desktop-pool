@@ -4,6 +4,14 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+### Fixed
+
+- An account Claude refused at its 5-hour limit now shows that limit at 0 until its reset, matching its status. Before, the ring showed what Claude's usage panel still read, such as 19% left; hovering it now shows that reading.
+- A conversation no longer writes itself to the cache again after a note from Claude Code, such as an environment or tool update or a reminder that the user is waiting. Pool used to move the note to the next turn once the conversation went on, so the conversation looked edited and was started over.
+- Claude Code's compaction of a long conversation no longer writes the whole conversation to the cache again. It goes on from a copy of the conversation's own session, cut before the call it was made at.
+- A restart keeps new conversations leaning toward accounts already warm with their model.
+- Desktop's context meter now shows a conversation's real size. Pool used to say what a request read only at the end of each reply, so the meter showed a few hundred tokens while the conversation was nearly full and compacted without warning.
+
 ## [0.1.6] - 2026-11-08
 
 ### Fixed

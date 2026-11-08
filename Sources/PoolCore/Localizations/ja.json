@@ -500,6 +500,7 @@
   "Couldn't start {0}'s limits: {1}": "{0} の上限を開始できませんでした：{1}",
   "Last started {0}'s limits {1}.": "{0} の上限を {1} に最後に開始しました。",
   "Renewed · full again": "更新済み · 満タンに復帰",
+  "Claude refused at this limit · usage showed {0}% left": "この上限で Claude に拒否されました · 使用量の表示は残り {0}%",
   "Last read {0}": "最終取得 {0}",
   "Now": "今",
   "Tomorrow {0}": "明日 {0}",

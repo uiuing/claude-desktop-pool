@@ -87,6 +87,40 @@ enum ClaudeReplay {
         return file
     }
 
+    /// Writes `session` as a copy of the saved session `from` up to the answer that made one of
+    /// `calls`: its rows before that answer's first, kept byte for byte, so Claude Code resumed on it
+    /// asks the conversation before the calls as the saved session asked it, a prefix the service has
+    /// cached. Rows of a side task are not the answer. False, and nothing written, when the saved
+    /// session has no such answer or cannot be read.
+    static func fork(config: URL, work: URL, from: String, to session: String, before calls: Set<String>) -> Bool {
+        guard !calls.isEmpty, UUID(uuidString: from) != nil, UUID(uuidString: session) != nil,
+              let file = projectDirectories(config: config, work: work).reversed()
+                .map({ $0.appendingPathComponent(from + ".jsonl") })
+                .first(where: { FileManager.default.fileExists(atPath: $0.path) }),
+              let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { return false }
+        let lines = data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false)
+        func row(_ line: Data.SubSequence) -> JSONValue? {
+            guard !line.isEmpty, let value = try? JSONDecoder().decode(JSONValue.self, from: Data(line)),
+                  value["type"]?.stringValue == "assistant", value["isSidechain"]?.boolValue != true else { return nil }
+            return value
+        }
+        // the answer that made a call, by its message id; then the first of its rows
+        var answer: String?
+        for line in lines {
+            guard let value = row(line), let blocks = value["message"]?["content"]?.arrayValue,
+                  blocks.contains(where: { $0["type"]?.stringValue == "tool_use" && calls.contains($0["id"]?.stringValue ?? "") }) else { continue }
+            answer = value["message"]?["id"]?.stringValue; break
+        }
+        guard let answer, !answer.isEmpty,
+              let first = lines.firstIndex(where: { row($0)?["message"]?["id"]?.stringValue == answer }), first > 0 else { return false }
+        var kept = Data()
+        for line in lines[..<first] { kept.append(contentsOf: line); kept.append(UInt8(ascii: "\n")) }
+        // the rows name their session: the copy's are its own
+        kept = Data(String(decoding: kept, as: UTF8.self)
+            .replacingOccurrences(of: "\"sessionId\":\"\(from)\"", with: "\"sessionId\":\"\(session)\"").utf8)
+        return (try? write(kept, config: config, work: work, session: session)) != nil
+    }
+
     /// Removes a session's file and the folder of its own the client may keep beside it, once
     /// its run has ended (claude_subscription.go removeSession, 2660-2671).
     static func remove(config: URL, work: URL, session: String) {

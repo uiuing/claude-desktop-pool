@@ -500,6 +500,7 @@
   "Couldn't start {0}'s limits: {1}": "{0}의 한도를 시작하지 못했습니다: {1}",
   "Last started {0}'s limits {1}.": "{0}의 한도를 {1}에 마지막으로 시작했습니다.",
   "Renewed · full again": "갱신됨 · 다시 가득 참",
+  "Claude refused at this limit · usage showed {0}% left": "이 한도에서 Claude가 거부함 · 사용량 표시는 {0}% 남음",
   "Last read {0}": "마지막 확인 {0}",
   "Now": "지금",
   "Tomorrow {0}": "내일 {0}",

@@ -105,6 +105,14 @@ public struct PoolAccount: Codable, Equatable, Sendable, Identifiable {
         if let cooldownUntil, cooldownUntil > now { return .limited }
         return windows.contains { $0.modelFamily == nil && $0.isExhausted(at: now) } ? .limited : .ready
     }
+    /// Whether Claude refused the account at `window`'s limit before its reset, though the last
+    /// reading had some of it left: the refusal's cooldown ends at the window's reset. Claude's usage
+    /// panel can show room a turn still does not fit in, so until then the window has none.
+    public func isRefused(_ window: QuotaWindow, at now: Date) -> Bool {
+        guard effectiveState(at: now) == .limited, window.modelFamily == nil, let cooldownUntil, cooldownUntil > now,
+              let reset = window.resetsAt, abs(reset.timeIntervalSince(cooldownUntil)) < 60 else { return false }
+        return !window.isExhausted(at: now)
+    }
     /// How usable the account is now. Lists put better standing first; pool figures count only
     /// accounts that can serve this week.
     public func standing(at now: Date) -> AccountStanding {

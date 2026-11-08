@@ -500,6 +500,7 @@
   "Couldn't start {0}'s limits: {1}": "未能啟動 {0} 的額度視窗：{1}",
   "Last started {0}'s limits {1}.": "{1}啟動了 {0} 的額度視窗。",
   "Renewed · full again": "已重置 · 額度已滿",
+  "Claude refused at this limit · usage showed {0}% left": "Claude 已在此額度拒絕 · 用量顯示還剩 {0}%",
   "Last read {0}": "上次讀取 {0}",
   "Now": "現在",
   "Tomorrow {0}": "明天 {0}",

@@ -41,14 +41,24 @@ public struct ShelvedSession: Sendable {
     /// its calls: what follows, the calls first, is told to the run that resumes it. Nil: the
     /// conversation up to its last reply.
     public let held: Int?
+    /// The ids of the calls the session is cut before, for a conversation that went another way at
+    /// them (Claude Code's compaction asks the conversation up to a call's results with its own
+    /// words after them): the run that resumes it goes on from a copy of the session up to those
+    /// calls, and the session itself stays as it is. Nil: the session whole.
+    public let cut: Set<String>?
     /// Removes the session's files, once its conversation is not coming back for it.
     public let discard: @Sendable () -> Void
-    public init(session: String, accountID: UUID, held: Int? = nil, discard: @escaping @Sendable () -> Void) {
-        self.session = session; self.accountID = accountID; self.held = held; self.discard = discard
+    public init(session: String, accountID: UUID, held: Int? = nil, cut: Set<String>? = nil, discard: @escaping @Sendable () -> Void) {
+        self.session = session; self.accountID = accountID; self.held = held; self.cut = cut; self.discard = discard
     }
     /// The same session, holding `count` of the client's messages.
     public func holding(_ count: Int) -> ShelvedSession {
-        ShelvedSession(session: session, accountID: accountID, held: count, discard: discard)
+        ShelvedSession(session: session, accountID: accountID, held: count, cut: cut, discard: discard)
+    }
+    /// A copy of the session cut before `calls`, holding `count` of the client's messages: the
+    /// session's own files stay with it, so the copy discards nothing.
+    public func forking(_ count: Int, before calls: Set<String>) -> ShelvedSession {
+        ShelvedSession(session: session, accountID: accountID, held: count, cut: calls, discard: {})
     }
 }
 

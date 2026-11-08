@@ -155,6 +155,41 @@ final class ClaudeReplayTests: XCTestCase {
 
     // MARK: Units
 
+    /// A session cut before a call is a copy of its rows before the answer that made it, under the
+    /// copy's own session id; the saved session stays whole. Rows modelled on Claude Code's transcript.
+    func testASessionIsCopiedUpToTheAnswerThatMadeACall() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("fork-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let config = root.appendingPathComponent("config"), work = root.appendingPathComponent("work")
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        let from = UUID().uuidString.lowercased(), to = UUID().uuidString.lowercased()
+        func row(_ type: String, _ message: String, side: Bool = false) -> String {
+            #"{"parentUuid":null,"isSidechain":\#(side),"type":"\#(type)","sessionId":"\#(from)","message":\#(message)}"#
+        }
+        let rows = [
+            row("user", #"{"role":"user","content":"Read the synthetic notes."}"#),
+            row("assistant", #"{"id":"msg_side","role":"assistant","content":[{"type":"tool_use","id":"toolu_fixture_02","name":"mcp__pool__Read","input":{}}]}"#, side: true),
+            row("assistant", #"{"id":"msg_one","role":"assistant","content":[{"type":"tool_use","id":"toolu_fixture_01","name":"mcp__pool__Read","input":{"n":1.0}}]}"#),
+            row("user", #"{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_fixture_01","content":"One."}]}"#),
+            #"{"type":"api-request","sessionId":"\#(from)"}"#,
+            row("assistant", #"{"id":"msg_two","role":"assistant","content":[{"type":"thinking","thinking":"","signature":"c2ln"}]}"#),
+            row("assistant", #"{"id":"msg_two","role":"assistant","content":[{"type":"tool_use","id":"toolu_fixture_02","name":"mcp__pool__Read","input":{}}]}"#),
+            row("user", #"{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_fixture_02","content":"Two."}]}"#),
+            row("assistant", #"{"id":"msg_three","role":"assistant","content":[{"type":"text","text":"Two notes."}]}"#)]
+        let saved = Data((rows.joined(separator: "\n") + "\n").utf8)
+        _ = try ClaudeReplay.write(saved, config: config, work: work, session: from)
+
+        XCTAssertTrue(ClaudeReplay.fork(config: config, work: work, from: from, to: to, before: ["toolu_fixture_02"]))
+        let folder = try XCTUnwrap(ClaudeReplay.projectDirectories(config: config, work: work).last)
+        let copy = try String(contentsOf: folder.appendingPathComponent(to + ".jsonl"), encoding: .utf8)
+        XCTAssertEqual(copy, rows[..<5].joined(separator: "\n").replacingOccurrences(of: from, with: to) + "\n",
+                       "Every row before the answer's first, byte for byte, naming the copy")
+        XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent(from + ".jsonl")), saved, "The saved session stays whole")
+        XCTAssertFalse(ClaudeReplay.fork(config: config, work: work, from: from, to: UUID().uuidString.lowercased(), before: ["toolu_fixture_09"]))
+        XCTAssertFalse(ClaudeReplay.fork(config: config, work: work, from: from, to: to, before: ["toolu_fixture_02"]),
+                       "A copy is never written over")
+    }
+
     func testTranscriptRowsAreClassified() {
         func row(_ json: String) -> ClaudeTranscript.Row? { ClaudeTranscript.row(Data(json.utf8)) }
         XCTAssertEqual(row(#"{"type":"user","message":{"role":"user","content":"hi"}}"#), .accepted)

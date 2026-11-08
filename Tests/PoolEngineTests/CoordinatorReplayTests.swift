@@ -494,6 +494,42 @@ final class CoordinatorReplayTests: XCTestCase {
         _ = await after.shutdown()
     }
 
+    /// Claude Code's compaction asks the conversation up to the last call's results with its own
+    /// words after them. A session told that conversation, its run shelved past its answer, is cut
+    /// before the call for it, and stays shelved whole for the conversation's own next turn.
+    func testACompactionGoesOnFromTheSessionCutBeforeItsCall() async throws {
+        let original = ReplayWorker(steps: [.reply([.text("Reading it."), .toolUse(call), .finished(.toolUse)]),
+                                            .reply([.text("Three items."), .finished(.endTurn)])], keeps: true)
+        let compacting = ReplayWorker(steps: [.reply([.text("A synthetic summary."), .finished(.endTurn)])], keeps: true)
+        let resumed = ReplayWorker(steps: [.reply([.text("The second is longest."), .finished(.endTurn)])], keeps: true)
+        let factory = ReplayFactory([original, compacting, resumed])
+        let pool = PoolCoordinator(accounts: [account()], maximumWorkers: 4, idleMost: 0, roomWait: 0, duplicateWait: 0.1,
+                                   factory: { _, _ in try await factory.make() })
+        _ = try await collect(pool, first())
+        let results = withResult(first())
+        _ = try await collect(pool, results)
+        try await replayWait { await original.shelves == 1 }
+
+        var compaction = results
+        compaction.messages[2].content = .array((compaction.messages[2].content.arrayValue ?? []) +
+            [.object(["type": .string("text"), "text": .string("Synthetic: summarise the conversation so far.")])])
+        let summary = try await collect(pool, compaction)
+        XCTAssertEqual(summary, [.text("A synthetic summary."), .finished(.endTurn)])
+        let from = await compacting.resumedFrom, held = await compacting.resumedHeld, cut = await compacting.resumedCut
+        XCTAssertEqual(from, "fixture-session-\(original.id.uuidString.prefix(8))")
+        XCTAssertEqual(held, 1, "The copy holds the conversation before the call")
+        XCTAssertEqual(cut, [call.id])
+
+        var next = results
+        next.messages += [.init(role: "assistant", content: .array([.object(["type": .string("text"), "text": .string("Three items.")])])),
+                          .init(role: "user", content: .string("Which is longest?"))]
+        _ = try await collect(pool, next)
+        let whole = await resumed.resumedFrom, wholeCut = await resumed.resumedCut, discards = await original.discards
+        XCTAssertEqual(whole, "fixture-session-\(original.id.uuidString.prefix(8))", "The session itself stayed shelved")
+        XCTAssertNil(wholeCut); XCTAssertEqual(discards, 0)
+        _ = await pool.shutdown()
+    }
+
     /// A conversation whose earlier messages changed does not take the shelved session.
     func testAShelvedSessionIsNotTakenByAnEditedConversation() async throws {
         let original = ReplayWorker(steps: [.reply([.text("Three items."), .finished(.endTurn)])], keeps: true)
@@ -550,6 +586,7 @@ private actor ReplayWorker: SessionWorker {
     private(set) var endShelves = 0
     private(set) var resumedFrom: String?
     private(set) var resumedHeld: Int?
+    private(set) var resumedCut: Set<String>?
     private(set) var discards = 0
     private let keeps: Bool
     init(steps: [Step], keeps: Bool = false) { self.steps = steps; self.keeps = keeps }
@@ -573,7 +610,7 @@ private actor ReplayWorker: SessionWorker {
                               discard: { [weak self] in Task { await self?.discarded() } })
     }
     private func discarded() { discards += 1 }
-    func resume(from saved: ShelvedSession) -> Bool { resumedFrom = saved.session; resumedHeld = saved.held; return keeps }
+    func resume(from saved: ShelvedSession) -> Bool { resumedFrom = saved.session; resumedHeld = saved.held; resumedCut = saved.cut; return keeps }
     func events(for request: BridgeRequest) throws -> AsyncThrowingStream<BridgeEvent, Error> { regular.append(request); return try next() }
     func events(replaying replay: VerifiedToolReplay) throws -> AsyncThrowingStream<BridgeEvent, Error> { replays.append(replay.request); return try next() }
     private func next() throws -> AsyncThrowingStream<BridgeEvent, Error> {

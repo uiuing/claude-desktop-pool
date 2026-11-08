@@ -500,6 +500,7 @@
   "Couldn't start {0}'s limits: {1}": "Couldn't start {0}'s limits: {1}",
   "Last started {0}'s limits {1}.": "Last started {0}'s limits {1}.",
   "Renewed · full again": "Renewed · full again",
+  "Claude refused at this limit · usage showed {0}% left": "Claude refused at this limit · usage showed {0}% left",
   "Last read {0}": "Last read {0}",
   "Now": "Now",
   "Tomorrow {0}": "Tomorrow {0}",

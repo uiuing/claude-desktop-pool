@@ -240,6 +240,7 @@ struct MenuAccountCard: View {
             HStack(spacing: 8) {
                 ForEach(limits, id: \.self) { id in
                     QuotaRing(value: standing == .unavailable ? nil : model.remaining(account, window: id), label: model.limitShortName(id))
+                        .help(model.refusedNote(account, window: id) ?? "")
                 }
             }.poolReading(model.quotaRefresh[account.id]?.phase == .refreshing)
         }.padding(.horizontal, 11).padding(.vertical, 8)

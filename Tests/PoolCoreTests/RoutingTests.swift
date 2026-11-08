@@ -331,6 +331,22 @@ final class RoutingTests: XCTestCase {
         XCTAssertEqual(QuotaRecovery.account(a, model: "sonnet", now: before), .scheduled(now))
     }
 
+    /// Claude refused the account at its 5-hour limit while its usage panel still showed some left:
+    /// that limit has none until its reset, the week is untouched, and after the reset it is read again.
+    func testALimitClaudeRefusedAtHasNoneLeftUntilItsReset() {
+        let reset = now.addingTimeInterval(3600)
+        var a = account(session: 81, week: 50)
+        a.windows[0].resetsAt = reset; a.windows[1].resetsAt = now.addingTimeInterval(86400 * 3)
+        XCTAssertFalse(a.isRefused(a.windows[0], at: now))
+        a.state = .limited; a.cooldownUntil = reset
+        XCTAssertTrue(a.isRefused(a.windows[0], at: now))
+        XCTAssertFalse(a.isRefused(a.windows[1], at: now), "Only the limit it was refused at")
+        XCTAssertEqual(a.standing(at: now), .limited)
+        XCTAssertFalse(a.isRefused(a.windows[0], at: reset), "Not past its reset")
+        a.windows[0].usedPercent = 100
+        XCTAssertFalse(a.isRefused(a.windows[0], at: now), "A used-up reading already says so")
+    }
+
     func testInactiveCycleReadingsRetainTheirExactOfficialTimestampUntilReset() {
         let recorded = now.addingTimeInterval(-7200)
         let reset = now.addingTimeInterval(7200)

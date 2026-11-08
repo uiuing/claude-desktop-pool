@@ -44,7 +44,7 @@ final class ClaudeStreamTests: XCTestCase {
         try harness.turnEnded()
         try await waitFor { await log.ended }
         let events = await log.events
-        XCTAssertEqual(events, [.text("Hel"), .text("lo"), .usage(.init(inputTokens: 3, outputTokens: 7)), .finished(.endTurn)])
+        XCTAssertEqual(events, [.usage(.init(inputTokens: 3, outputTokens: 1)), .text("Hel"), .text("lo"), .usage(.init(inputTokens: 3, outputTokens: 7)), .finished(.endTurn)])
         _ = await session.close()
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path), "The tap goes with its run")
     }
@@ -170,7 +170,7 @@ final class ClaudeStreamTests: XCTestCase {
         try harness.tap(#"{"s":1,"end":"done"}"#)
         try await waitFor { await log.ended }
         let events = await log.events
-        XCTAssertEqual(events, [.text("Looking"),
+        XCTAssertEqual(events, [.usage(.init(inputTokens: 3, outputTokens: 1)), .text("Looking"),
                                 .toolUse(.init(id: "toolu_a", name: "read", input: .object(["path": .string("a")]))),
                                 .toolUse(.init(id: "toolu_b", name: "screenshot", input: .object(["size": .number(2)]))),
                                 .usage(.init(inputTokens: 3, outputTokens: 12)), .finished(.toolUse)])
@@ -198,7 +198,7 @@ final class ClaudeStreamTests: XCTestCase {
         try harness.turnEnded()
         try await waitFor { await second.ended }
         let secondEvents = await second.events
-        XCTAssertEqual(secondEvents, [.text("Done"), .usage(.init(inputTokens: 3, outputTokens: 2)), .finished(.endTurn)])
+        XCTAssertEqual(secondEvents, [.usage(.init(inputTokens: 3, outputTokens: 1)), .text("Done"), .usage(.init(inputTokens: 3, outputTokens: 2)), .finished(.endTurn)])
         _ = await session.close()
     }
 

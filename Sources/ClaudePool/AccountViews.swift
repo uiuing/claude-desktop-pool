@@ -188,7 +188,7 @@ struct AccountsPage: View {
             }
             PoolGauge(value: remaining, height: 4)
         }.frame(maxWidth: .infinity)
-            .help(account.windows.first(where: { $0.id == id })?.resetsAt.map { model.t("Resets {0}", model.exactTime($0)) + " · " + model.countdown($0) } ?? model.resetText(account, window: id))
+            .help(model.refusedNote(account, window: id) ?? account.windows.first(where: { $0.id == id })?.resetsAt.map { model.t("Resets {0}", model.exactTime($0)) + " · " + model.countdown($0) } ?? model.resetText(account, window: id))
             .accessibilityElement(children: .combine)
     }
 }
