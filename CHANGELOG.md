@@ -4,6 +4,8 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-11-08
+
 ### Changed
 
 - A conversation reads more of its prompt cache. When a tool runs long and its run is let go, or a reply fails or is stopped, the conversation goes on from its own session on the same account instead of writing the whole conversation to the cache again.
@@ -81,7 +83,8 @@ First public release.
 - Update checks against GitHub Releases with verified one-click install.
 - Option to hide email addresses throughout the app.
 
-[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.1...v0.1.2
