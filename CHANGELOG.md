@@ -4,6 +4,8 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-11-09
+
 ### Fixed
 
 - An account Claude refused at its 5-hour limit now shows that limit at 0 until its reset, matching its status. Before, the ring showed what Claude's usage panel still read, such as 19% left; hovering it now shows that reading.
@@ -98,7 +100,8 @@ First public release.
 - Update checks against GitHub Releases with verified one-click install.
 - Option to hide email addresses throughout the app.
 
-[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.3...v0.1.4
