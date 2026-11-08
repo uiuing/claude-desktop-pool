@@ -37,10 +37,18 @@ public struct ShelvedSession: Sendable {
     /// Claude Code's session id, as its transcript is named.
     public let session: String
     public let accountID: UUID
+    /// How many of the client's messages the session holds, for a session let go while it waited on
+    /// its calls: what follows, the calls first, is told to the run that resumes it. Nil: the
+    /// conversation up to its last reply.
+    public let held: Int?
     /// Removes the session's files, once its conversation is not coming back for it.
     public let discard: @Sendable () -> Void
-    public init(session: String, accountID: UUID, discard: @escaping @Sendable () -> Void) {
-        self.session = session; self.accountID = accountID; self.discard = discard
+    public init(session: String, accountID: UUID, held: Int? = nil, discard: @escaping @Sendable () -> Void) {
+        self.session = session; self.accountID = accountID; self.held = held; self.discard = discard
+    }
+    /// The same session, holding `count` of the client's messages.
+    public func holding(_ count: Int) -> ShelvedSession {
+        ShelvedSession(session: session, accountID: accountID, held: count, discard: discard)
     }
 }
 
@@ -57,6 +65,13 @@ public protocol SessionWorker: Sendable {
     /// Ends the idle run normally and keeps its session for the conversation's next turn;
     /// nil when it could not be kept, the run then ended as `close` ends it, or still running.
     func shelve() async -> ShelvedSession?
+    /// Ends the run waiting on its calls with the client's own interrupt and keeps its session for the
+    /// request that brings their results; nil when it could not be kept, the run then still to be ended.
+    func shelveCalls() async -> ShelvedSession?
+    /// Ends a run that cannot take its conversation's next turn (its reply stopped or failed, or the
+    /// turn is not one it can be told) as `close`, else the client's interrupt, ends it, and keeps its
+    /// session for the run that takes the turn; nil when it could not be kept, the run then still to be ended.
+    func shelveEnding() async -> ShelvedSession?
     /// Before its first request: the run goes on from a shelved session of its account (unshelve), and
     /// is then told only what came since the conversation's last reply. False when it cannot.
     func resume(from saved: ShelvedSession) async -> Bool
@@ -68,6 +83,8 @@ public extension SessionWorker {
         throw BridgeFailure.invalidRequest("This session cannot continue completed tool history.")
     }
     func shelve() async -> ShelvedSession? { nil }
+    func shelveCalls() async -> ShelvedSession? { nil }
+    func shelveEnding() async -> ShelvedSession? { nil }
     func resume(from saved: ShelvedSession) async -> Bool { false }
 }
 

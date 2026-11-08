@@ -458,6 +458,48 @@ final class ClaudeStreamTests: XCTestCase {
         XCTAssertEqual(lines.filter { $0["open"] != nil }.count, 1, "Only the main turn's request is copied")
     }
 
+    /// A run let go while it waits on its call ends with the client's interrupt and keeps its session; the
+    /// run that resumes it is told the call and its result, not the conversation before them.
+    func testASessionLetGoOnItsCallsIsResumedWithTheirResults() async throws {
+        let harness = try SessionHarness(); defer { harness.clean() }
+        harness.exitAfterInterrupts = 1
+        let first = harness.session()
+        let opening = request("Summarise the synthetic notes.", tools: tools)
+        let log = EventLog.recording(try await first.events(for: opening))
+        try await waitFor { harness.sentCount == 1 }
+        try harness.tap(#"{"tap":"on"}"#, #"{"s":1,"open":true}"#)
+        try harness.stream(1, Self.start("msg_shelf"), Self.toolStart(0, "toolu_shelf", "read"), Self.toolInput(0, #"{\"path\":\"notes\"}"#),
+                           Self.blockStop(0), Self.delta("tool_use", out: 7), Self.messageStop)
+        try harness.tool("toolu_shelf", alias: "read", input: .object(["path": .string("notes")]))
+        try harness.tap(#"{"s":1,"end":"done"}"#)
+        try await waitFor { await log.ended }
+        try harness.toolUseRow([("toolu_shelf", "read")], message: "msg_shelf")
+        let transcript = try harness.transcriptURL
+        let shelved = await first.shelveCalls()
+        let saved = try XCTUnwrap(shelved)
+        XCTAssertGreaterThanOrEqual(harness.interruptCount, 1, "The run is let go with the client's own interrupt")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: transcript.path), "The session outlives its run")
+
+        let second = harness.session()
+        let resumed = await second.resume(from: saved.holding(1))
+        XCTAssertTrue(resumed)
+        var next = opening
+        next.messages.append(.init(role: "assistant", content: .array([.object(["type": .string("tool_use"), "id": .string("toolu_shelf"),
+                                                                                "name": .string("read"), "input": .object(["path": .string("notes")])])])))
+        next.messages.append(.init(role: "user", content: .array([.object(["type": .string("tool_result"), "tool_use_id": .string("toolu_shelf"),
+                                                                           "content": .string("Synthetic notes: three items.")])])))
+        _ = EventLog.recording(try await second.events(replaying: VerifiedToolReplay(request: next)))
+        try await waitFor { harness.sentCount == 2 }
+        let arguments = try XCTUnwrap(harness.plan).arguments
+        XCTAssertEqual(Array(arguments.prefix(2)), ["--resume", saved.session])
+        XCTAssertTrue(harness.typed.contains("Synthetic notes: three items."))
+        XCTAssertFalse(harness.typed.contains("Summarise the synthetic notes."), "The conversation before the call is the session's")
+        _ = await second.cancel()
+        _ = await second.requestExit()
+        saved.discard()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: transcript.path))
+    }
+
     // MARK: Fixtures
 
     private func request(_ text: String, tools: [BridgeTool]? = nil) -> BridgeRequest {

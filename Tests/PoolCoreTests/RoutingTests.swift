@@ -114,6 +114,21 @@ final class RoutingTests: XCTestCase {
         XCTAssertEqual(PoolRouting.candidates([spentSession, fullSession], model: "sonnet", now: now).first?.email, "s@example.com")
     }
 
+    /// Pool's own: a warm prompt cache is one more weight. It turns a near tie toward the account
+    /// that holds the request's instructions and tools, never one that clearly has less left.
+    func testAWarmCacheTurnsANearTieButNotAClearlyRoomierAccount() {
+        let warm = account("warm@example.com", session: 50, week: 50)
+        let close = account("close@example.com", session: 48, week: 48)
+        let roomy = account("roomy@example.com", session: 20, week: 20)
+        XCTAssertEqual(PoolRouting.candidates([warm, close], model: "sonnet", now: now).first?.id, close.id)
+        let points = PoolRouting.warmBonus(tokens: 25_000)
+        XCTAssertEqual(points, 5)
+        XCTAssertEqual(PoolRouting.candidates([warm, close], model: "sonnet", now: now, bonus: [warm.id: points]).first?.id, warm.id)
+        XCTAssertEqual(PoolRouting.candidates([warm, roomy], model: "sonnet", now: now, bonus: [warm.id: points]).first?.id, roomy.id)
+        XCTAssertEqual(PoolRouting.warmBonus(tokens: 2_000), 0.4, accuracy: 0.001, "A small prefix is worth little")
+        XCTAssertEqual(PoolRouting.warmBonus(tokens: 400_000), PoolRouting.warmMost)
+    }
+
     func testAFullFiveHoursDoesNotHideAWeekThatIsNearlyGone() {
         func pool(_ email: String, session: Double, sessionReset: TimeInterval, week: Double, weekReset: TimeInterval) -> PoolAccount {
             .init(email: email, plan: "Pro", state: .ready, windows: [

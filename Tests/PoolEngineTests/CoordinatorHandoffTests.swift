@@ -75,6 +75,34 @@ final class CoordinatorHandoffTests: XCTestCase {
         _ = await coordinator.shutdown()
     }
 
+    /// Pool's warmPrefixes: a new conversation with the instructions and tools an account's cache already
+    /// holds leans toward that account when the others have about as much left; other instructions do not.
+    func testANewConversationLeansTowardTheAccountWarmWithItsInstructions() async throws {
+        let date = Date()
+        func quota(_ used: Double) -> [QuotaWindow] { [.init(id: "five_hour", usedPercent: used, observedAt: date, resetsAt: date.addingTimeInterval(3600))] }
+        var accounts = accounts()
+        accounts[0].windows = quota(20); accounts[1].windows = quota(40)
+        let reply = { HandoffWorker(steps: [.reply([.text("Synthetic reply."), .finished(.endTurn)])]) }
+        let factory = HandoffFactory(queues: [accounts[0].id: [reply(), reply()], accounts[1].id: [reply()]])
+        let coordinator = PoolCoordinator(accounts: accounts, idleMost: 0, now: { date }, factory: { account, _ in try await factory.make(account.id) })
+        var project = request()
+        project.system = .string("Synthetic project instructions. " + String(repeating: "Keep the synthetic notes tidy. ", count: 2_000))
+        _ = try await collect(coordinator, project, id: "desktop-1#main")
+        try await handoffWait { await coordinator.sessions().isEmpty }
+        // The other account now has a little more left.
+        accounts[0].windows = quota(22); accounts[1].windows = quota(20)
+        await coordinator.updateAccounts(accounts)
+        var second = project; second.messages[0].content = .string("Read the second synthetic note.")
+        _ = try await collect(coordinator, second, id: "desktop-2#main")
+        try await handoffWait { await coordinator.sessions().isEmpty }
+        var other = second; other.system = .string("Other synthetic instructions.")
+        other.messages[0].content = .string("Read the third synthetic note.")
+        _ = try await collect(coordinator, other, id: "desktop-3#main")
+        let order = await factory.order
+        XCTAssertEqual(order, [accounts[0].id, accounts[0].id, accounts[1].id])
+        _ = await coordinator.shutdown()
+    }
+
     /// Pool's recentAccounts: a conversation whose run has ended goes back to the account it was on,
     /// whose cache holds it, while a new conversation goes where routing puts it.
     func testAConversationWhoseRunEndedGoesBackToItsAccount() async throws {

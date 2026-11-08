@@ -34,6 +34,8 @@ public actor OfficialSession: SessionWorker {
     /// The shelved session this run goes on from (`--resume` on it, its id the
     /// run's), and whether the run's session outlives it (shelve).
     private var resumeFrom: String?
+    /// How many of the client's messages that session holds, when it was let go on its calls.
+    private var resumeHeld: Int?
     private var keepSession = false
     /// What the turn may call and its answer tool: the
     /// answer a call gave, the turn's words held back meanwhile, and whether it was asked for one.
@@ -265,9 +267,12 @@ public actor OfficialSession: SessionWorker {
         answerSchema = request.answerSchema.map(TurnChoice.toolSchema)
         answerName = answerSchema == nil ? nil : TurnChoice.answerName(avoiding: originalTools)
         _ = try publishTools(offered(request))
-        if resumeFrom != nil, ClaudePrompt.historyEnd(try ClaudePrompt.messages(request.messages)) == 0 {
-            // nothing the shelved session holds is this conversation's: the run is its own
-            resumeFrom = nil; sessionKey = ClaudeReplay.sessionKey(id)
+        if resumeFrom != nil {
+            let from = try resumeSplit(request.messages)
+            if from <= 0 || from >= request.messages.count {
+                // nothing the shelved session holds is this conversation's: the run is its own
+                resumeFrom = nil; resumeHeld = nil; sessionKey = ClaudeReplay.sessionKey(id)
+            }
         }
         let config = try workspace.accountDirectory(account.id), work = try workspace.workDirectory(account.id)
         accountDirectory = config; workDirectory = work
@@ -342,9 +347,12 @@ public actor OfficialSession: SessionWorker {
         // transcript, which that control would put at risk; cleanRun removes the file instead.
         // The saved session is written last, just before the run that takes it; a run that never
         // starts removes it.
+        var told = split
         if resumeFrom != nil {
-            // The run's own session holds the conversation up to its last reply
-            firstPieces = ClaudePrompt.pieces(ClaudePrompt.turn(Array(messages[split...]), name: callableName))
+            // The run's own session holds the conversation up to its last reply, or up to the
+            // calls it was let go on, which are then told with their results
+            told = try resumeSplit(request.messages)
+            firstPieces = ClaudePrompt.pieces(ClaudePrompt.turn(Array(messages[told...]), name: callableName))
             try ClaudePrompt.validatePasted(firstPieces)
             resumed = true; arguments[0] = "--resume"
         } else if let replay {
@@ -360,7 +368,7 @@ public actor OfficialSession: SessionWorker {
                                  directory: work, runDirectory: directory, sessionID: id)
         self.plan = plan
         transcript = ClaudeTranscript(config: config, work: work, session: sessionKey)
-        do { try launchChild(plan, history: resumed ? split : 0, bytes: resumed ? replay?.data.count ?? 0 : 0) }
+        do { try launchChild(plan, history: resumed ? told : 0, bytes: resumed ? replay?.data.count ?? 0 : 0) }
         catch {
             if resumed { ClaudeReplay.remove(config: config, work: work, session: sessionKey) }
             tap?.remove(); tap = nil
@@ -1130,6 +1138,29 @@ public actor OfficialSession: SessionWorker {
               let config = accountDirectory, let work = workDirectory else { return nil }
         keepSession = true
         guard await close() else { keepSession = false; return nil }
+        return keptSession(config: config, work: work)
+    }
+    /// The run waiting on its calls ends with the client's own interrupt, as a parked run is let go,
+    /// and its session stays. Resumed, Claude Code keeps the conversation before those calls as it
+    /// was sent, so the request with their results is asked a prefix the service has cached.
+    public func shelveCalls() async -> ShelvedSession? {
+        guard submitted, !ended, response == nil, !outstanding.isEmpty,
+              let config = accountDirectory, let work = workDirectory else { return nil }
+        keepSession = true
+        guard await requestExit() else { keepSession = false; return nil }
+        return keptSession(config: config, work: work)
+    }
+    /// The run ends as a stopped run is ended, normally or else with the client's interrupt, and its
+    /// session stays: resumed, Claude Code has the conversation as it was sent, the stopped turn after it.
+    public func shelveEnding() async -> ShelvedSession? {
+        guard submitted, let config = accountDirectory, let work = workDirectory else { return nil }
+        keepSession = true
+        var ended = await close()
+        if !ended { ended = await requestExit() }
+        guard ended else { keepSession = false; return nil }
+        return keptSession(config: config, work: work)
+    }
+    private func keptSession(config: URL, work: URL) -> ShelvedSession {
         let session = sessionKey
         return ShelvedSession(session: session, accountID: account.id, discard: {
             ClaudeReplay.remove(config: config, work: work, session: session)
@@ -1138,8 +1169,13 @@ public actor OfficialSession: SessionWorker {
     /// Before its first request, the run goes on from a session of its account.
     public func resume(from saved: ShelvedSession) async -> Bool {
         guard transport == nil, !submitted, saved.accountID == account.id, UUID(uuidString: saved.session) != nil else { return false }
-        resumeFrom = saved.session; sessionKey = saved.session
+        resumeFrom = saved.session; resumeHeld = saved.held; sessionKey = saved.session
         return true
+    }
+    /// Where the messages a resumed session is told begin: after those it holds.
+    private func resumeSplit(_ messages: [BridgeMessage]) throws -> Int {
+        if let resumeHeld { return resumeHeld }
+        return ClaudePrompt.historyEnd(try ClaudePrompt.messages(messages))
     }
 
     public func close() async -> Bool {

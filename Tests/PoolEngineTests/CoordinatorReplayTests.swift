@@ -380,6 +380,87 @@ final class CoordinatorReplayTests: XCTestCase {
         _ = await pool.shutdown()
     }
 
+    /// A run waiting on its call that gives its room up keeps its session while the prompt cache lasts,
+    /// and the call's result goes on from it in a new run on the same account, told the call and its result.
+    func testARunLetGoOnItsCallsKeepsItsSessionForTheirResults() async throws {
+        let clock = ReplayClock()
+        let original = ReplayWorker(steps: [.reply([.text("Reading it."), .toolUse(call), .finished(.toolUse)])], keeps: true)
+        let other = ReplayWorker(steps: [.reply([.text("Another answer."), .finished(.endTurn)])])
+        let resumed = ReplayWorker(steps: [.reply([.text("Three items."), .finished(.endTurn)])], keeps: true)
+        let factory = ReplayFactory([original, other, resumed])
+        let pool = pool(factory, capacity: 1, clock: clock)
+        _ = try await collect(pool, first())
+        // past parkLongest a new conversation takes the waiting run's room
+        clock.advance(301)
+        var another = first(); another.messages[0].content = .string("A synthetic second conversation.")
+        _ = try await collect(pool, another, id: "another-session")
+        let callShelves = await original.callShelves, closes = await original.closes
+        XCTAssertEqual(callShelves, 1); XCTAssertEqual(closes, 0)
+        let next = withResult(first())
+        let answer = try await collect(pool, next)
+        XCTAssertEqual(answer, [.text("Three items."), .finished(.endTurn)])
+        let from = await resumed.resumedFrom, held = await resumed.resumedHeld, replays = await resumed.replays
+        XCTAssertEqual(from, "fixture-session-\(original.id.uuidString.prefix(8))")
+        XCTAssertEqual(held, 1, "The session holds the conversation before the call")
+        XCTAssertEqual(replays, [next])
+        _ = await pool.shutdown()
+    }
+
+    /// A run whose reply failed never takes another turn, but its session does: the retry goes on from
+    /// it in a new run on the same account, told what came after the run's last reply.
+    func testAStoppedRunHandsItsSessionOnToTheRetry() async throws {
+        let original = ReplayWorker(steps: [.reply([.text("Three items."), .finished(.endTurn)]), .failure([], .transport)], keeps: true)
+        let resumed = ReplayWorker(steps: [.reply([.text("The second is longest."), .finished(.endTurn)])], keeps: true)
+        let factory = ReplayFactory([original, resumed])
+        let pool = pool(factory)
+        _ = try await collect(pool, first())
+        var next = first()
+        next.messages += [.init(role: "assistant", content: .array([.object(["type": .string("text"), "text": .string("Three items.")])])),
+                          .init(role: "user", content: .string("Which is longest?"))]
+        do { _ = try await collect(pool, next); XCTFail("The stream error was hidden.") }
+        catch { XCTAssertEqual(error as? BridgeFailure, .transport) }
+        let answer = try await collect(pool, next)
+        XCTAssertEqual(answer, [.text("The second is longest."), .finished(.endTurn)])
+        let kept = await original.endShelves, from = await resumed.resumedFrom, held = await resumed.resumedHeld
+        let told = await resumed.regular, replays = await resumed.replays.count
+        XCTAssertEqual(kept, 1)
+        XCTAssertEqual(from, "fixture-session-\(original.id.uuidString.prefix(8))")
+        XCTAssertEqual(held, 2, "The session holds the conversation up to the run's last reply")
+        XCTAssertEqual(told, [next]); XCTAssertEqual(replays, 0)
+        _ = await pool.shutdown()
+    }
+
+    /// A stopped run whose conversation was edited before its last reply is ended as before.
+    func testAStoppedRunKeepsNoSessionForAnEditedConversation() async throws {
+        let original = ReplayWorker(steps: [.reply([.text("Three items."), .finished(.endTurn)]), .failure([], .transport)], keeps: true)
+        let fresh = ReplayWorker(steps: [.reply([.text("Two items."), .finished(.endTurn)])], keeps: true)
+        let factory = ReplayFactory([original, fresh])
+        let pool = pool(factory)
+        _ = try await collect(pool, first())
+        var next = first()
+        next.messages += [.init(role: "assistant", content: .string("Three items.")), .init(role: "user", content: .string("Which is longest?"))]
+        _ = try? await collect(pool, next)
+        var edited = next; edited.messages[0].content = .string("Summarise the edited notes.")
+        _ = try await collect(pool, edited)
+        let kept = await original.endShelves, closes = await original.closes, from = await fresh.resumedFrom
+        XCTAssertEqual(kept, 0); XCTAssertEqual(closes, 1); XCTAssertNil(from)
+        _ = await pool.shutdown()
+    }
+
+    /// Past its prompt cache's hour a run waiting on its calls is let go as before: nothing is kept.
+    func testARunWaitingPastItsCacheHourKeepsNoSession() async throws {
+        let clock = ReplayClock()
+        let original = ReplayWorker(steps: [.reply([.toolUse(call), .finished(.toolUse)])], keeps: true)
+        let factory = ReplayFactory([original])
+        let pool = pool(factory, clock: clock)
+        _ = try await collect(pool, first())
+        clock.advance(3601)
+        await pool.retireIdle()
+        let callShelves = await original.callShelves, closes = await original.closes
+        XCTAssertEqual(callShelves, 0); XCTAssertEqual(closes, 1)
+        _ = await pool.shutdown()
+    }
+
     /// A conversation whose earlier messages changed does not take the shelved session.
     func testAShelvedSessionIsNotTakenByAnEditedConversation() async throws {
         let original = ReplayWorker(steps: [.reply([.text("Three items."), .finished(.endTurn)])], keeps: true)
@@ -426,7 +507,10 @@ private actor ReplayWorker: SessionWorker {
     private(set) var cancels = 0
     private(set) var closes = 0
     private(set) var shelves = 0
+    private(set) var callShelves = 0
+    private(set) var endShelves = 0
     private(set) var resumedFrom: String?
+    private(set) var resumedHeld: Int?
     private(set) var discards = 0
     private let keeps: Bool
     init(steps: [Step], keeps: Bool = false) { self.steps = steps; self.keeps = keeps }
@@ -436,8 +520,21 @@ private actor ReplayWorker: SessionWorker {
         return ShelvedSession(session: "fixture-session-\(id.uuidString.prefix(8))", accountID: UUID(uuidString: "0a1b2c3d-2222-4aaa-8bbb-000000000001")!,
                               discard: { [weak self] in Task { await self?.discarded() } })
     }
+    func shelveEnding() -> ShelvedSession? {
+        guard keeps else { return nil }
+        endShelves += 1
+        held?.finish(throwing: BridgeFailure.cancelled); held = nil
+        return ShelvedSession(session: "fixture-session-\(id.uuidString.prefix(8))", accountID: UUID(uuidString: "0a1b2c3d-2222-4aaa-8bbb-000000000001")!,
+                              discard: { [weak self] in Task { await self?.discarded() } })
+    }
+    func shelveCalls() -> ShelvedSession? {
+        guard keeps else { return nil }
+        callShelves += 1
+        return ShelvedSession(session: "fixture-session-\(id.uuidString.prefix(8))", accountID: UUID(uuidString: "0a1b2c3d-2222-4aaa-8bbb-000000000001")!,
+                              discard: { [weak self] in Task { await self?.discarded() } })
+    }
     private func discarded() { discards += 1 }
-    func resume(from saved: ShelvedSession) -> Bool { resumedFrom = saved.session; return keeps }
+    func resume(from saved: ShelvedSession) -> Bool { resumedFrom = saved.session; resumedHeld = saved.held; return keeps }
     func events(for request: BridgeRequest) throws -> AsyncThrowingStream<BridgeEvent, Error> { regular.append(request); return try next() }
     func events(replaying replay: VerifiedToolReplay) throws -> AsyncThrowingStream<BridgeEvent, Error> { replays.append(replay.request); return try next() }
     private func next() throws -> AsyncThrowingStream<BridgeEvent, Error> {

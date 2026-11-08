@@ -4,6 +4,11 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+### Changed
+
+- A conversation reads more of its prompt cache. When a tool runs long and its run is let go, or a reply fails or is stopped, the conversation goes on from its own session on the same account instead of writing the whole conversation to the cache again.
+- A new conversation with the same instructions and tools as one an account served within the hour leans toward that account when the others have about as much left, so it reads that account's cache. An account with clearly more left still comes first.
+
 ## [0.1.4] - 2026-11-07
 
 ### Added

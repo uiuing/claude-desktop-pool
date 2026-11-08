@@ -568,9 +568,17 @@ public enum PoolRouting {
         let total = 0.45 * sessionValue + 0.40 * weekValue + 0.15 * expiring - 8 * Double(max(0, load))
         return total
     }
+    /// Points a warm prompt cache adds to an account's score: one per `warmTokensPerPoint` tokens of
+    /// instructions and tools it already holds for the model, at most `warmMost` (Pool's own). It weighs
+    /// with the quota factors and never decides alone: an account with clearly more left still wins, and
+    /// the largest prefix is worth about one conversation already on the account.
+    public static let warmTokensPerPoint = 5000.0
+    public static let warmMost = 10.0
+    public static func warmBonus(tokens: Int) -> Double { min(warmMost, max(0, Double(tokens)) / warmTokensPerPoint) }
+    /// `bonus`: points added to an account's score, for what it already has cached of the request.
     public static func candidates(_ accounts: [PoolAccount], model: String, preferred: UUID? = nil,
                                   excluding: Set<UUID> = [], now: Date = Date(), policy: RoutingPolicy = .init(),
-                                  load: [UUID: Int] = [:]) -> [PoolAccount] {
+                                  load: [UUID: Int] = [:], bonus: [UUID: Double] = [:]) -> [PoolAccount] {
         let originalOrder = Dictionary(accounts.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
         let configuredOrder = Dictionary(policy.accountOrder.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: { first, _ in first })
         func rank(_ id: UUID) -> Int { configuredOrder[id] ?? (policy.accountOrder.count + (originalOrder[id] ?? accounts.count)) }
@@ -581,7 +589,8 @@ public enum PoolRouting {
         }.sorted { a, b in
             if (a.id == preferred) != (b.id == preferred) { return a.id == preferred }
             if policy.strategy == .mostHeadroom {
-                let qa = score(a, model: model, now: now, load: load[a.id] ?? 0), qb = score(b, model: model, now: now, load: load[b.id] ?? 0)
+                let qa = score(a, model: model, now: now, load: load[a.id] ?? 0).map { $0 + (bonus[a.id] ?? 0) }
+                let qb = score(b, model: model, now: now, load: load[b.id] ?? 0).map { $0 + (bonus[b.id] ?? 0) }
                 if (qa == nil) != (qb == nil) { return qa != nil }
                 if let qa, let qb, qa != qb { return qa > qb }
             }
