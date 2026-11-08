@@ -184,9 +184,6 @@ public actor OfficialSession: SessionWorker {
             throw BridgeFailure.invalidRequest("This tool result has no live Claude session.")
         }
         guard let last = request.messages.last, last.role == "user" else { throw BridgeFailure.invalidRequest("The last message must be from the user.") }
-        if !results.isEmpty, last.content.arrayValue?.contains(where: { $0["type"]?.stringValue == "image" }) == true {
-            throw BridgeFailure.unsupported("Send additional images after the current tools finish.")
-        }
         let extraBlocks = results.isEmpty ? [] : last.content.arrayValue?.filter { $0["type"]?.stringValue == "text" } ?? []
         let extraText = extraBlocks.isEmpty ? nil : try RequestContent.text(.array(extraBlocks))
         var pieces: [ClaudePrompt.Piece]?
@@ -304,7 +301,6 @@ public actor OfficialSession: SessionWorker {
                                               model: model.listedID, at: Date())
             replay = (data, ClaudePrompt.pieces(ClaudePrompt.turn(Array(messages[split...]), name: callableName)))
         }
-        try ClaudePrompt.validatePasted(replay?.pieces ?? whole)
         firstPieces = whole
 
         let helper = shellQuote(helperExecutable.path), run = shellQuote(directory.path)
@@ -370,7 +366,6 @@ public actor OfficialSession: SessionWorker {
             // calls it was let go on, which are then told with their results
             told = try resumeSplit(request.messages)
             firstPieces = ClaudePrompt.pieces(ClaudePrompt.turn(Array(messages[told...]), name: callableName))
-            try ClaudePrompt.validatePasted(firstPieces)
             resumed = true; arguments[0] = "--resume"
         } else if let replay {
             do {
@@ -380,6 +375,10 @@ public actor OfficialSession: SessionWorker {
             } catch {
                 Diagnostics.record("session.failed", ["run": runTag, "reason": "replay_unwritten", "history_messages": String(split)])
             }
+        }
+        if !ClaudePrompt.typeable(firstPieces) {
+            firstPieces = try untyped(firstPieces, config: config, work: work)
+            resumed = true; arguments[0] = "--resume"
         }
         let plan = SessionLaunch(executable: executable, arguments: arguments, environment: environment,
                                  directory: work, runDirectory: directory, sessionID: id)
@@ -431,14 +430,18 @@ public actor OfficialSession: SessionWorker {
         Diagnostics.record("session.failed", ["run": runTag, "reason": "replay_failed",
                                               "ms": String(Int(Date().timeIntervalSince(launchedAt) * 1000))])
         retriedWhole = true; exitedBeforeReady = false; resumed = false
-        try ClaudePrompt.validatePasted(wholePieces)
         ClaudeReplay.remove(config: accountDirectory, work: workDirectory, session: sessionKey)
         try? FileManager.default.removeItem(at: directory.appendingPathComponent("tools-listed.json"))
         screen = TerminalScreen(); firstRun = FirstRunScreens(); drawn = Data()
         var next = plan
-        if let index = next.arguments.firstIndex(of: "--resume") { next.arguments[index] = "--session-id" }
-        self.plan = next
         firstPieces = wholePieces
+        if ClaudePrompt.typeable(wholePieces) {
+            if let index = next.arguments.firstIndex(of: "--resume") { next.arguments[index] = "--session-id" }
+        } else {
+            firstPieces = try untyped(wholePieces, config: accountDirectory, work: workDirectory)
+            if let index = next.arguments.firstIndex(of: "--session-id") { next.arguments[index] = "--resume" }
+        }
+        self.plan = next
         transcript = ClaudeTranscript(config: accountDirectory, work: workDirectory, session: sessionKey)
         tap?.restart(); streamQueue = []; rows = []; holdUntil = nil
         try launchChild(next, history: 0, bytes: 0)
@@ -578,6 +581,9 @@ public actor OfficialSession: SessionWorker {
                 drawn = Data()
                 try transport?.write(Data(("\u{1B}[200~" + file.path + "\u{1B}[201~").utf8))
                 image = try await awaitImage(after: image, responseToken: responseToken)
+            case .block:
+                // never typed: start puts such a turn in the session (`untyped`)
+                throw BridgeFailure.unsupported("This turn holds content that cannot be typed into the session.")
             case .text(var text):
                 text = index == 0 ? Self.pasteable(text, busy: busy) : Self.typeable(text)
                 if index == 0 && pieces.count == 1 && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { text = "." }
@@ -1281,6 +1287,22 @@ public actor OfficialSession: SessionWorker {
         if !endedPublished { endedPublished = true; observer?.yield(.ended); observer?.finish() }
         return true
     }
+    /// A turn that cannot be typed as it is goes in the run's session as one user message, its content
+    /// as it came, whatever its kind (Pool's own: only words and images Claude Code can paste can be
+    /// typed). What is typed is then only `[continue]`, which Claude Code answers after its own
+    /// "No response requested." for that message.
+    private func untyped(_ pieces: [ClaudePrompt.Piece], config: URL, work: URL) throws -> [ClaudePrompt.Piece] {
+        let content: [JSONValue] = pieces.compactMap { piece in
+            switch piece {
+            case .text(let text): return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : .object(["type": .string("text"), "text": .string(text)])
+            case .image(let block), .block(let block): return block
+            }
+        }
+        try ClaudeReplay.append(user: content, config: config, work: work, session: sessionKey, at: Date())
+        Diagnostics.record("session.untyped", ["run": runTag, "blocks": String(content.count)])
+        return [.text(Self.continueWord)]
+    }
+    static let continueWord = "[continue]"
     /// How long the run's prompt cache lasts, as Claude Code keeps it on a subscription: "1h" for a
     /// main conversation, "5m" for a subagent's turns and one-off asks.
     static func cacheTerm(_ request: BridgeRequest) -> String {

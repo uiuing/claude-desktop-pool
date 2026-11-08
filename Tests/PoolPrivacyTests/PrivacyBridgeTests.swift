@@ -597,6 +597,29 @@ final class PrivacyBridgeTests: XCTestCase {
         XCTAssertEqual(events.last, .finished(.endTurn))
     }
 
+    /// A block of any kind the person sent keeps its encoded bytes as they are (`"type": "base64"` beside
+    /// its `data`) while words in it, a text source's data too, are masked like any words.
+    func testEncodedBytesPassAndWordsAreMaskedInBlocksOfAnyKind() async throws {
+        let backend = PrivacyBackendFixture(), bridge = PrivacyBridge(backend: backend, detector: FixtureDetector(words: ["Synthetic Person": .person]))
+        let bytes = Data("Synthetic Person %PDF fixture".utf8).base64EncodedString()
+        let encoded = JSONValue.object(["type": .string("fixture_file"), "source": .object(["type": .string("base64"),
+            "media_type": .string("application/x-fixture"), "data": .string(bytes)]), "title": .string("Synthetic Person's file")])
+        let written = JSONValue.object(["type": .string("fixture_file"), "source": .object(["type": .string("text"),
+            "media_type": .string("text/plain"), "data": .string("Written by Synthetic Person.")])])
+        var request = textRequest("Read these.")
+        request.messages[0].content = .array([.object(["type": .string("text"), "text": .string("Read these.")]), encoded, written])
+        let task = Task { try await collectPrivacy(try await bridge.events(for: request, conversationID: "desktop")) }
+        try await privacyEventually { await backend.requests.count == 1 }
+        let first = await backend.requests[0]
+        let sent = try XCTUnwrap(first.messages[0].content.arrayValue)
+        XCTAssertEqual(sent[1]["source"]?["data"], .string(bytes), "Encoded bytes are not text")
+        XCTAssertEqual(sent[1]["source"]?["media_type"], .string("application/x-fixture"))
+        XCTAssertFalse(sent[1]["title"]?.stringValue?.contains("Synthetic Person") ?? true)
+        XCTAssertFalse(sent[2]["source"]?["data"]?.stringValue?.contains("Synthetic Person") ?? true, "A text source's words are masked")
+        await backend.finish(0, [.text("Read."), .finished(.endTurn)])
+        _ = try await task.value
+    }
+
     /// Claude Code's ToolSearch answers with `tool_reference` blocks inside its tool result; they are
     /// walked like any other block (protocol fields kept), never refused.
     func testToolSearchReferencesPassThroughAndOtherBlocksAreMasked() async throws {

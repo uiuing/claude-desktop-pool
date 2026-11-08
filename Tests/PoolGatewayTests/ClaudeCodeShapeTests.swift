@@ -154,7 +154,8 @@ final class ClaudeCodeShapeTests: XCTestCase {
     /// What the interactive client cannot apply is taken without being refused:
     /// server tools are not offered (web search noted, the advisor's instructions said to be void),
     /// stop sequences are not applied, tool_choice and a structured answer's schema are kept for the
-    /// session, and blocks of kinds the session has no use for are left out.
+    /// session. What the person and their tools sent is kept as it came, whatever its kind (a document
+    /// here); an answer keeps its words and calls, the rest being the service's record of it.
     func testControlsTheClientCannotApplyAreTakenNotRefused() throws {
         let server = #"[{"name":"Bash","description":"Run","input_schema":{"type":"object"}},{"type":"web_search_20250305","name":"web_search","max_uses":5},{"type":"advisor_20260301","name":"advisor","model":"claude-opus-5-5"}]"#
         let history = #"""
@@ -174,12 +175,16 @@ final class ClaudeCodeShapeTests: XCTestCase {
         XCTAssertEqual(decoded.toolChoice, "name:Bash")
         XCTAssertEqual(decoded.answerSchema?["type"], .string("object"))
         let first = decoded.messages[0].content.arrayValue!
-        XCTAssertEqual(first.count, 2, "The document is left out.")
+        XCTAssertEqual(first.count, 3, "The document is kept")
+        XCTAssertEqual(first[1], .object(["type": .string("document"), "source": .object(["type": .string("base64"),
+            "media_type": .string("application/pdf"), "data": .string("JVBERg==")])]))
         XCTAssertEqual(first[0]["text"]?.stringValue, "<system-reminder>\n" + ClientRequestShape.advisorGone + "\n</system-reminder>")
         let reply = decoded.messages[1].content.arrayValue!
         XCTAssertEqual(reply.map { $0["type"]?.stringValue }, ["text", "tool_use"])
         XCTAssertNil(reply[1]["caller"])
-        XCTAssertEqual(decoded.messages[2].content.arrayValue![0]["content"], .array([.object(["type": .string("text"), "text": .string("ok")])]))
+        XCTAssertEqual(decoded.messages[2].content.arrayValue![0]["content"], .array([.object(["type": .string("text"), "text": .string("ok")]),
+            .object(["type": .string("document"), "source": .object(["type": .string("text"), "media_type": .string("text/plain"),
+                                                                       "data": .string("synthetic")])])]), "What the tool returned is kept")
         // a turn told none of its tools (a title, a summary) is a conversation of its own
         var aside = object; aside["tool_choice"] = .object(["type": .string("none")])
         let main = try GatewayRequestValidation.decodeRequest(body(turn)).shape

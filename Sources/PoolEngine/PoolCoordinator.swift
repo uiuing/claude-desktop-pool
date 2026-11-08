@@ -335,8 +335,8 @@ public actor PoolCoordinator: BridgeBackend {
         }
         guard !request.messages.isEmpty else { throw BridgeFailure.invalidRequest("The conversation is empty.") }
         let requestAlias = conversationID ?? "request:\(UUID().uuidString)"
-        let results = try RequestContent.toolResults(request)
-        guard Set(results.map(\.0)).count == results.count else { throw BridgeFailure.invalidRequest("A tool result was supplied more than once.") }
+        let results = try RequestContent.resultIDs(request)
+        guard Set(results).count == results.count else { throw BridgeFailure.invalidRequest("A tool result was supplied more than once.") }
         if closing || (paused && results.isEmpty) { route(model: model.id, reason: .paused); throw BridgeFailure.paused }
         generations += 1
         let generation = generations
@@ -352,7 +352,7 @@ public actor PoolCoordinator: BridgeBackend {
         var replay = false
         var workerRequest = request
         if !results.isEmpty {
-            let ids = Set(results.map(\.0))
+            let ids = Set(results)
             let (owner, why) = toolOwner(ids, request: request, concurrent: concurrent)
             if let owner {
                 bindingID = owner
@@ -421,7 +421,10 @@ public actor PoolCoordinator: BridgeBackend {
                     Diagnostics.record("coordinator.route", ["decision": "run_not_idle", "state": binding.session.state.rawValue,
                         "conversation": Diagnostics.tag(requestAlias), "messages": String(request.messages.count)])
                 }
-                if binding.session.state == .idle, let turn, eligible(binding, model: model), !lowQuota {
+                // a turn holding what cannot be typed goes on from the run's session in a new run (`untyped`)
+                let typed = turn.map(ClaudePrompt.typeableTurn) ?? true
+                if !typed { Diagnostics.record("coordinator.route", ["decision": "turn_untyped", "conversation": Diagnostics.tag(requestAlias)]) }
+                if binding.session.state == .idle, let turn, typed, eligible(binding, model: model), !lowQuota {
                     bindingID = existing; workerRequest = turn
                     route(id: existing, model: model.id, reason: .sessionAffinity)
                 } else {
@@ -438,12 +441,17 @@ public actor PoolCoordinator: BridgeBackend {
             }
             if turns.count == 1, let (only, turn) = turns.first, let candidate = bindings[only] {
                 let lowQuota = shouldHandoff(candidate, model: model)
-                if eligible(candidate, model: model) && !lowQuota {
+                let typed = ClaudePrompt.typeableTurn(turn)
+                if eligible(candidate, model: model) && !lowQuota && typed {
                     bindingID = only; workerRequest = turn; route(id: only, model: model.id, reason: .sessionAffinity)
                 }
                 else {
                     if lowQuota { recordMove(candidate, model: model) }
-                    route(id: only, model: model.id, reason: lowQuota ? .lowQuota : unavailableReason(candidate, model: model))
+                    if lowQuota || !eligible(candidate, model: model) {
+                        route(id: only, model: model.id, reason: lowQuota ? .lowQuota : unavailableReason(candidate, model: model))
+                    } else {
+                        Diagnostics.record("coordinator.route", ["decision": "turn_untyped", "conversation": Diagnostics.tag(requestAlias)])
+                    }
                     bindingID = try await replaceRun(only, alias: requestAlias, request: request, model: model, generation: generation, lowQuota: lowQuota)
                 }
             } else if let (entry, turn) = takeShelved(request, model: model) {
@@ -544,6 +552,8 @@ public actor PoolCoordinator: BridgeBackend {
         }
         guard sameIdentity(binding) else { return (nil, "account_changed") }
         guard binding.request.model == request.model else { return (nil, "model_changed") }
+        // what the results hold, or what came beside them, that MCP cannot carry as it is: the run's session takes it
+        guard RequestContent.liveResults(request) else { return (nil, "not_live") }
         guard compatible(binding, request: request, allowingToolChanges: true) else { return (nil, "context_changed") }
         // The request goes on from the one the run was told, or is it with only the client's images
         // taken out, or only the reminders Claude Code puts in once and takes out after (lostNotices, Pool's own).
@@ -596,6 +606,10 @@ public actor PoolCoordinator: BridgeBackend {
                 // parkLongest more as a process that holds memory.
                 release(owner)
                 Task { [weak self] in _ = await self?.evictParked(owner, why: "replaced") }
+            case "not_live":
+                // Pool's own: the run lets its calls go with its session shelved, and the results go on
+                // from it on the same account, told as they came in the session's transcript (`calls_unshelved`)
+                if !(await shelveCalls(owner)) { release(owner) }
             case "model_changed", "context_changed", "history_changed": release(owner)
             default: break
             }
@@ -879,7 +893,7 @@ public actor PoolCoordinator: BridgeBackend {
                        generation: UInt64, continuation: AsyncThrowingStream<BridgeEvent, Error>.Continuation) async {
         defer { endGeneration(generation) }
         let resultIDs: Set<String>
-        do { resultIDs = Set(try RequestContent.toolResults(request).map(\.0)) }
+        do { resultIDs = Set(try RequestContent.resultIDs(request)) }
         catch { continuation.finish(throwing: error); return }
         var id = initialID
         var attempted: Set<UUID> = []
@@ -1329,8 +1343,11 @@ public actor PoolCoordinator: BridgeBackend {
         if toolsChanged { return "tools_changed" }
         return written > read ? "cold" : "turn"
     }
+    /// Keys sorted: a dictionary's order differs from one encoding to the next, and the same tools must
+    /// give the same digest.
     static func toolsDigest(_ tools: [BridgeTool]?) -> String {
-        let data = (try? JSONEncoder().encode(tools ?? [])) ?? Data()
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        let data = (try? encoder.encode(tools ?? [])) ?? Data()
         return SHA256.hash(data: data).prefix(8).map { String(format: "%02x", $0) }.joined()
     }
     /// The shelf's key for a session let go on its calls: the conversation it was told before them.

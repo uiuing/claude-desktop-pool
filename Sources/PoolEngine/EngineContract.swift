@@ -193,32 +193,62 @@ enum RequestContent {
         }.joined(separator: "\n")
     }
 
+    /// The client's results for a run's calls, each as the MCP helper hands it to its call: words and
+    /// images, which MCP carries as they are. Images sent beside the results, in the same message, go with
+    /// the last result. Anything a result holds that MCP cannot
+    /// carry as it is throws: such results go in the session instead (`liveResults`).
     static func toolResults(_ request: BridgeRequest) throws -> [(String, JSONValue)] {
+        guard let last = request.messages.last, last.role == "user", let blocks = last.content.arrayValue,
+              blocks.contains(where: { $0["type"]?.stringValue == "tool_result" }) else { return [] }
+        var results: [(String, [JSONValue], Bool)] = []
+        var beside: [JSONValue] = []
+        for block in blocks {
+            switch block["type"]?.stringValue {
+            case "tool_result":
+                guard let id = block["tool_use_id"]?.stringValue, !id.isEmpty else {
+                    throw BridgeFailure.invalidRequest("A tool result must identify its original call.")
+                }
+                let content = block["content"] ?? .string("")
+                var parts: [JSONValue] = []
+                if let text = content.stringValue {
+                    parts = [.object(["type": .string("text"), "text": .string(text)])]
+                } else {
+                    guard let inner = content.arrayValue else { throw BridgeFailure.invalidRequest("Invalid tool result content.") }
+                    parts = try inner.map(mcpPart)
+                }
+                results.append((id, parts, block["is_error"]?.boolValue ?? false))
+            case "image": beside.append(try mcpPart(block))
+            case "text": continue // the person's words beside the results: typed as a message of theirs
+            default: throw BridgeFailure.unsupported("This message holds content a running session cannot take.")
+            }
+        }
+        if !beside.isEmpty, !results.isEmpty { results[results.count - 1].1 += beside }
+        return results.map { ($0.0, .object(["content": .array($0.1), "isError": .bool($0.2)])) }
+    }
+    /// The calls a request's last message answers, by Claude Code's ids, whatever the results hold.
+    static func resultIDs(_ request: BridgeRequest) throws -> [String] {
         guard let last = request.messages.last, last.role == "user", let blocks = last.content.arrayValue else { return [] }
         return try blocks.compactMap { block in
             guard block["type"]?.stringValue == "tool_result" else { return nil }
             guard let id = block["tool_use_id"]?.stringValue, !id.isEmpty else {
                 throw BridgeFailure.invalidRequest("A tool result must identify its original call.")
             }
-            let content = block["content"] ?? .string("")
-            let parts: JSONValue
-            if let text = content.stringValue {
-                parts = .array([.object(["type": .string("text"), "text": .string(text)])])
-            } else {
-                guard let blocks = content.arrayValue else { throw BridgeFailure.invalidRequest("Invalid tool result content.") }
-                parts = .array(try blocks.map { block in
-                    if block["type"]?.stringValue == "text", block["text"]?.stringValue != nil { return block }
-                    guard block["type"]?.stringValue == "image", let source = block["source"], source["type"]?.stringValue == "base64",
-                          let mime = source["media_type"]?.stringValue, ["image/png", "image/jpeg", "image/webp", "image/gif"].contains(mime),
-                          let data = source["data"]?.stringValue, data.utf8.count <= 6 * 1024 * 1024,
-                          let decoded = Data(base64Encoded: data), !decoded.isEmpty, decoded.count <= 4 * 1024 * 1024 else {
-                        throw BridgeFailure.unsupported("This tool result must contain text or an attached image.")
-                    }
-                    return .object(["type": .string("image"), "data": .string(data), "mimeType": .string(mime)])
-                })
-            }
-            return (id, .object(["content": parts, "isError": .bool(block["is_error"]?.boolValue ?? false)]))
+            return id
         }
+    }
+    /// Whether a request's results, and what came beside them, can go to the run waiting on them as they
+    /// are: through MCP, with the person's words typed (Pool's own; else the run's session takes them).
+    static func liveResults(_ request: BridgeRequest) -> Bool { (try? toolResults(request)) != nil }
+    /// A part MCP carries as it is: words, or an image within what the helper hands on.
+    private static func mcpPart(_ block: JSONValue) throws -> JSONValue {
+        if block["type"]?.stringValue == "text", block["text"]?.stringValue != nil { return block }
+        guard block["type"]?.stringValue == "image", let source = block["source"], source["type"]?.stringValue == "base64",
+              let mime = source["media_type"]?.stringValue, ["image/png", "image/jpeg", "image/webp", "image/gif"].contains(mime),
+              let data = source["data"]?.stringValue, data.utf8.count <= 6 * 1024 * 1024,
+              let decoded = Data(base64Encoded: data), !decoded.isEmpty, decoded.count <= 4 * 1024 * 1024 else {
+            throw BridgeFailure.unsupported("This tool result holds content a running session cannot take.")
+        }
+        return .object(["type": .string("image"), "data": .string(data), "mimeType": .string(mime)])
     }
 
 }

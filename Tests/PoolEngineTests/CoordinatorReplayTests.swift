@@ -406,6 +406,56 @@ final class CoordinatorReplayTests: XCTestCase {
         _ = await pool.shutdown()
     }
 
+    /// Results holding what MCP cannot carry as it is (a block of any kind) do not go to the run waiting on
+    /// them: it lets its calls go with its session shelved, and a new run on the same account goes on from
+    /// that session told the calls and results, which then go in its transcript as they came.
+    func testResultsMCPCannotCarryGoOnFromTheWaitingRunsSession() async throws {
+        let original = ReplayWorker(steps: [.reply([.text("Reading it."), .toolUse(call), .finished(.toolUse)])], keeps: true)
+        let resumed = ReplayWorker(steps: [.reply([.text("Three items."), .finished(.endTurn)])], keeps: true)
+        let factory = ReplayFactory([original, resumed])
+        let pool = pool(factory)
+        _ = try await collect(pool, first())
+        var next = withResult(first())
+        next.messages[2].content = .array([.object(["type": .string("tool_result"), "tool_use_id": .string(call.id), "content": .array([
+            .object(["type": .string("text"), "text": .string("Synthetic notes.")]),
+            .object(["type": .string("fixture_file"), "source": .object(["type": .string("text"), "media_type": .string("text/plain"),
+                                                                          "data": .string("three items")])])])])])
+        let answer = try await collect(pool, next)
+        XCTAssertEqual(answer, [.text("Three items."), .finished(.endTurn)])
+        let callShelves = await original.callShelves, from = await resumed.resumedFrom, held = await resumed.resumedHeld
+        let replays = await resumed.replays
+        XCTAssertEqual(callShelves, 1)
+        XCTAssertEqual(from, "fixture-session-\(original.id.uuidString.prefix(8))")
+        XCTAssertEqual(held, 1, "The session holds the conversation before the call")
+        XCTAssertEqual(replays, [next])
+        XCTAssertFalse(RequestContent.liveResults(next))
+        _ = await pool.shutdown()
+    }
+
+    /// A next turn holding what cannot be typed (a block of any kind) does not go to the idle run: its
+    /// session goes on in a new run on the same account, where the turn goes in the transcript as it came.
+    func testATurnThatCannotBeTypedGoesOnFromTheRunsSession() async throws {
+        let original = ReplayWorker(steps: [.reply([.text("Three items."), .finished(.endTurn)])], keeps: true)
+        let resumed = ReplayWorker(steps: [.reply([.text("Read it."), .finished(.endTurn)])], keeps: true)
+        let factory = ReplayFactory([original, resumed])
+        let pool = pool(factory)
+        _ = try await collect(pool, first())
+        var next = first()
+        next.messages += [.init(role: "assistant", content: .array([.object(["type": .string("text"), "text": .string("Three items.")])])),
+                          .init(role: "user", content: .array([.object(["type": .string("text"), "text": .string("And this one?")]),
+                              .object(["type": .string("fixture_file"), "source": .object(["type": .string("text"),
+                                  "media_type": .string("text/plain"), "data": .string("a fourth item")])])]))]
+        XCTAssertFalse(ClaudePrompt.typeableTurn(next))
+        let answer = try await collect(pool, next)
+        XCTAssertEqual(answer, [.text("Read it."), .finished(.endTurn)])
+        let kept = await original.endShelves, from = await resumed.resumedFrom, held = await resumed.resumedHeld
+        let told = await resumed.regular, typedToOriginal = await original.regular.count
+        XCTAssertEqual(kept, 1); XCTAssertEqual(typedToOriginal, 1)
+        XCTAssertEqual(from, "fixture-session-\(original.id.uuidString.prefix(8))")
+        XCTAssertEqual(held, 2); XCTAssertEqual(told, [next])
+        _ = await pool.shutdown()
+    }
+
     /// A run whose reply failed never takes another turn, but its session does: the retry goes on from
     /// it in a new run on the same account, told what came after the run's last reply.
     func testAStoppedRunHandsItsSessionOnToTheRetry() async throws {

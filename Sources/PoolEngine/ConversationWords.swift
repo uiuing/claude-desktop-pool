@@ -39,7 +39,10 @@ enum ConversationWords {
                     add(.result, "\u{1}result #\(place) " + resultText(block["content"]), media: images)
                 case "image":
                     add(.image, "\u{1}image \(block["source"]?["data"]?.stringValue?.utf8.count ?? 0)")
-                default: continue // thinking and the service's own records are not the conversation's words
+                case "thinking", "redacted_thinking", nil: continue // the service's own record, not the conversation's words
+                default:
+                    // a block of any other kind the person sent: by its kind and a digest of it as sent
+                    add(.text, "\u{1}block \(block["type"]?.stringValue ?? "") " + digest(block))
                 }
             }
             return parts
@@ -245,7 +248,20 @@ enum ConversationWords {
     private static func resultText(_ content: JSONValue?) -> String {
         guard let content else { return "" }
         if let text = content.stringValue { return text }
-        return (content.arrayValue ?? []).compactMap { $0["type"]?.stringValue == "text" ? $0["text"]?.stringValue : nil }.joined(separator: "\n")
+        return (content.arrayValue ?? []).compactMap { part -> String? in
+            switch part["type"]?.stringValue {
+            case "text": return part["text"]?.stringValue
+            case "image": return nil // counted as the result's media
+            default: return "\u{1}part \(part["type"]?.stringValue ?? "") " + digest(part) // whatever else the tool returned
+            }
+        }.joined(separator: "\n")
+    }
+    /// A block as it was sent, cache marks aside, in a few hex digits.
+    private static func digest(_ block: JSONValue) -> String {
+        var value = block
+        if case .object(var fields) = block { fields.removeValue(forKey: "cache_control"); value = .object(fields) }
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        return String(SHA256.hash(data: (try? encoder.encode(value)) ?? Data()).map { String(format: "%02x", $0) }.joined().prefix(16))
     }
     private static func hex(_ hasher: SHA256) -> String {
         hasher.finalize().map { String(format: "%02x", $0) }.joined()

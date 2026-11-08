@@ -69,9 +69,14 @@ final class GatewayTests: XCTestCase {
         }
         var any = valid; any["tool_choice"] = .object(["type": .string("any")])
         XCTAssertEqual(try GatewayRequestValidation.decode(JSONValue.object(any).encoded()).toolChoice, "required")
+        // a block of any kind goes as it came, the service deciding on it; one with no kind at all is malformed
+        var untyped = valid
+        untyped["messages"] = .array([.object(["role": .string("user"), "content": .array([.object(["text": .string("No type.")])])])])
+        XCTAssertThrowsError(try GatewayRequestValidation.decode(JSONValue.object(untyped).encoded()))
         var image = valid
         image["messages"] = .array([.object(["role": .string("user"), "content": .array([.object(["type": .string("image")])])])])
-        XCTAssertThrowsError(try GatewayRequestValidation.decode(JSONValue.object(image).encoded()))
+        XCTAssertEqual(try GatewayRequestValidation.decode(JSONValue.object(image).encoded()).messages[0].content,
+                       .array([.object(["type": .string("image")])]))
     }
     func testDefaultReasoningAndToolSelectionAccepted() throws {
         var request = try JSONDecoder().decode(JSONValue.self, from: message()).objectValue!
@@ -92,16 +97,21 @@ final class GatewayTests: XCTestCase {
             let decoded = try GatewayRequestValidation.decode(request(source: source))
             XCTAssertEqual(decoded.messages[0].content.arrayValue?[0]["content"]?.arrayValue?[1]["source"], source)
         }
-        let rejected: [JSONValue] = [
+        // an image of any other source goes as the tool returned it: the service, not Pool, decides on it
+        let asSent: [JSONValue] = [
             .object(["type": .string("url"), "url": .string("https://untrusted.invalid/image.png")]),
             .object(["type": .string("base64"), "media_type": .string("image/svg+xml"), "data": .string(pixels)]),
             .object(["type": .string("base64"), "media_type": .string("image/png"), "data": .string("")]),
             .object(["type": .string("base64"), "media_type": .string("image/png"), "data": .string("not base64!")]),
             .object(["type": .string("base64"), "media_type": .string("image/png"), "data": .string(Data(repeating: 0, count: 4 * 1024 * 1024 + 1).base64EncodedString())])
         ]
-        for source in rejected { XCTAssertThrowsError(try GatewayRequestValidation.decode(request(source: source))) }
+        for source in asSent {
+            let decoded = try GatewayRequestValidation.decode(request(source: source))
+            XCTAssertEqual(decoded.messages[0].content.arrayValue?[0]["content"]?.arrayValue?[1]["source"], source)
+        }
     }
-    func testUserImageInputPreservesContentAndRejectsMismatchedFormats() throws {
+    /// The person's images are kept as they came, those Pool could not paste too: the service decides on them.
+    func testUserImageInputIsKeptAsItCame() throws {
         let pixels = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlSMAAAAASUVORK5CYII="
         let image = JSONValue.object(["type": .string("image"), "source": .object([
             "type": .string("base64"), "media_type": .string("image/png"), "data": .string(pixels)])])
@@ -111,12 +121,13 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(decoded.messages, request.messages)
         var mismatched = image["source"]!.objectValue!
         mismatched["media_type"] = .string("image/jpeg")
-        var rejected = request
-        rejected.messages[0].content = .array([.object(["type": .string("image"), "source": .object(mismatched)])])
-        XCTAssertThrowsError(try GatewayRequestValidation.decode(JSONEncoder().encode(rejected)))
-        rejected.messages[0].content = .array([.object(["type": .string("image"), "source": .object([
-            "type": .string("url"), "url": .string("https://untrusted.invalid/image.png")])])])
-        XCTAssertThrowsError(try GatewayRequestValidation.decode(JSONEncoder().encode(rejected)))
+        var other = request
+        for content in [JSONValue.array([.object(["type": .string("image"), "source": .object(mismatched)])]),
+                        .array([.object(["type": .string("image"), "source": .object([
+                            "type": .string("url"), "url": .string("https://untrusted.invalid/image.png")])])])] {
+            other.messages[0].content = content
+            XCTAssertEqual(try GatewayRequestValidation.decode(JSONEncoder().encode(other)).messages, other.messages)
+        }
     }
     func testConversationIdentityRejectsConflictsAndIgnoresPlainUserIDs() throws {
         var request = BridgeRequest(model: "claude-sonnet", messages: [.init(role: "user", content: .string("A fixture"))])

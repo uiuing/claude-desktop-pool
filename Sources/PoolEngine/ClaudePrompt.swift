@@ -4,8 +4,8 @@ import PoolCore
 
 /// How a conversation is told to the official client, by these mechanisms: the whole
 /// conversation as one labeled text, the turn after a reply a live or resumed session already has,
-/// past calls and results as bracketed lines closed by a note that such lines call nothing. Images stay
-/// image blocks in place. The client's instructions are never part of it: they follow the
+/// past calls and results as bracketed lines closed by a note that such lines call nothing. Images, and
+/// every other block the person or a tool sent whatever its kind, stay blocks in place, as they came. The client's instructions are never part of it: they follow the
 /// client's own system prompt (`--append-system-prompt-file`).
 enum ClaudePrompt {
     /// Messages per history block, so blocks end at the same messages in every telling (4228).
@@ -22,7 +22,10 @@ enum ClaudePrompt {
         case text(String)
         case image(JSONValue)
         case call(id: String, name: String, input: JSONValue)
+        /// A result's words, and the rest of what the tool returned (images and blocks of any kind) as it came.
         case result(id: String, text: String, images: [JSONValue], error: Bool)
+        /// A block the person sent that is neither words nor an image Claude Code can paste, as it came.
+        case block(JSONValue)
     }
     struct Message: Equatable {
         var role: String
@@ -45,7 +48,7 @@ enum ClaudePrompt {
             case "text":
                 guard let text = block["text"]?.stringValue else { throw BridgeFailure.invalidRequest("Invalid text block.") }
                 parts.append(.text(text))
-            case "image": parts.append(.image(try image(block)))
+            case "image": parts.append((try? image(block)).map(Part.image) ?? .block(asSent(block)))
             case "tool_use":
                 guard let id = block["id"]?.stringValue, let name = block["name"]?.stringValue else {
                     throw BridgeFailure.invalidRequest("Invalid historical tool call.")
@@ -59,17 +62,25 @@ enum ClaudePrompt {
                 for inner in content.arrayValue ?? [] {
                     switch inner["type"]?.stringValue {
                     case "text": if let text = inner["text"]?.stringValue { texts.append(text) }
-                    case "image": images.append(try image(inner))
-                    default: continue // what the client's result holds beyond words and images is its own
+                    case "image": images.append((try? image(inner)) ?? asSent(inner))
+                    case nil: continue
+                    default: images.append(asSent(inner)) // whatever else the tool returned, as it returned it
                     }
                 }
                 parts.append(.result(id: id, text: texts.joined(separator: "\n"), images: images, error: block["is_error"]?.boolValue ?? false))
-            case "thinking", "redacted_thinking":
+            case "thinking", "redacted_thinking", nil:
                 continue // the service's record of an earlier answer, not words of it
-            default: throw BridgeFailure.unsupported("This Claude connection accepts text, attached images and client tools.")
+            default: parts.append(.block(asSent(block))) // whatever the person sent, as it came
             }
         }
         return parts
+    }
+
+    /// A block as it came, without the client's cache mark.
+    private static func asSent(_ block: JSONValue) -> JSONValue {
+        guard case .object(var fields) = block else { return block }
+        fields.removeValue(forKey: "cache_control")
+        return .object(fields)
     }
 
     /// An image block as Claude Code keeps a pasted one: base64 with its media type.
@@ -150,11 +161,15 @@ enum ClaudePrompt {
 
     /// The pieces a prompt is pasted in: its words one after another, each image apart
     /// (tui.go userPieces, 836-884).
-    enum Piece: Equatable { case text(String), image(JSONValue) }
+    /// A block that is neither words nor an image goes as it came: it cannot be typed (`typeable`).
+    enum Piece: Equatable { case text(String), image(JSONValue), block(JSONValue) }
     static func pieces(_ blocks: [JSONValue]) -> [Piece] {
         var out: [Piece] = [], text = ""
         for block in blocks {
-            if block["type"]?.stringValue == "image" {
+            if block["type"]?.stringValue != "image", block["type"]?.stringValue != "text" {
+                if !text.isEmpty { text += "\n\n"; out.append(.text(text)); text = "" }
+                out.append(.block(block))
+            } else if block["type"]?.stringValue == "image" {
                 if !text.isEmpty { text += "\n\n"; out.append(.text(text)); text = "" }
                 out.append(.image(block))
             } else if let words = block["text"]?.stringValue, !words.isEmpty {
@@ -164,6 +179,28 @@ enum ClaudePrompt {
         }
         if !text.isEmpty || out.isEmpty { out.append(.text(text)) }
         return out
+    }
+
+    /// Whether the pieces can be typed into Claude Code as they are: words, and images it can paste. Anything
+    /// else, of whatever kind, goes in the session's own transcript instead, as it came (`OfficialSession`).
+    static func typeable(_ pieces: [Piece]) -> Bool {
+        pieces.allSatisfy { piece in
+            switch piece {
+            case .text: return true
+            case .image: return (try? validatePasted([piece])) != nil
+            case .block: return false
+            }
+        }
+    }
+    /// Whether a live session can be typed the request's turn: the messages after its last reply.
+    static func typeableTurn(_ request: BridgeRequest) -> Bool {
+        let since = (request.messages.lastIndex { $0.role == "assistant" }).map { $0 + 1 } ?? 0
+        return typeable(turn: Array(request.messages[since...]))
+    }
+    /// Whether the turn after the session's last reply can be typed into it (`typeable`).
+    static func typeable(turn messages: [BridgeMessage], name: (String) -> String = { $0 }) -> Bool {
+        guard let told = try? self.messages(messages) else { return false }
+        return typeable(pieces(turn(told, name: name)))
     }
 
     /// An image about to be pasted must decode within the supported size.
@@ -209,6 +246,7 @@ enum ClaudePrompt {
                 text += "\n[tool result id=\(id)\(error ? " error" : "")]\n\(words)"
                 open = id
                 for block in images { image(block, text: &text, blocks: &blocks) }
+            case .block(let block): image(block, text: &text, blocks: &blocks)
             }
         }
     }

@@ -500,13 +500,30 @@ final class OfficialSessionTests: XCTestCase {
         XCTAssertTrue(closed)
     }
 
-    func testImageFormatMismatchFailsBeforeLaunchingClaude() async throws {
+    /// A turn holding what cannot be typed (here an image Claude Code cannot paste; any block of any kind
+    /// alike) goes in the run's session as one user message, as it came, and only "[continue]" is typed.
+    func testATurnThatCannotBeTypedGoesInTheSessionAsItCame() async throws {
         let harness = try SessionHarness(); defer { harness.clean() }
         let session = harness.session()
         var source = try XCTUnwrap(try sessionFixtureImage(red: 255)["source"]?.objectValue); source["media_type"] = .string("image/jpeg")
-        let r = BridgeRequest(model: "claude-sonnet", messages: [.init(role: "user", content: .array([.object(["type": .string("image"), "source": .object(source)])]))])
-        do { _ = try await session.events(for: r); XCTFail("Mismatched image accepted") } catch {}
-        XCTAssertNil(harness.plan)
+        let document = JSONValue.object(["type": .string("document"), "source": .object(["type": .string("text"),
+            "media_type": .string("text/plain"), "data": .string("Synthetic note.")])])
+        let content: [JSONValue] = [.object(["type": .string("text"), "text": .string("Read these.")]),
+                                    .object(["type": .string("image"), "source": .object(source)]), document]
+        let r = BridgeRequest(model: "claude-sonnet", messages: [.init(role: "user", content: .array(content))])
+        let reply = Task { try await collectEvents(try await session.events(for: r)) }
+        try await waitFor { harness.sentCount == 1 }
+        let plan = try XCTUnwrap(harness.plan)
+        XCTAssertTrue(plan.arguments.contains("--resume"))
+        XCTAssertEqual(harness.typed, OfficialSession.continueWord)
+        let saved = try XCTUnwrap(harness.resumedTranscript)
+        let rows = saved.split(separator: 10).compactMap { try? JSONDecoder().decode(JSONValue.self, from: Data($0)) }
+        let told = try XCTUnwrap(rows.last?["message"]?["content"]?.arrayValue)
+        XCTAssertEqual(told.first?["type"], .string("text"))
+        XCTAssertEqual(Array(told.dropFirst()), Array(content.dropFirst()), "Each block goes as it came")
+        try harness.answer("Done.", usage: ["input_tokens": 3, "output_tokens": 1])
+        try harness.turnEnded()
+        _ = try await reply.value
     }
 
     func testQuotaAndModelComeFromTheStatusLineAfterModelActivity() async throws {

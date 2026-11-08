@@ -15,8 +15,10 @@ import PoolCore
 ///   it — and no longer after a `tool_removal`. ToolSearch's answer reaches the session as text
 ///   saying which tools are loaded.
 ///
-/// Nothing a client sends is refused for being more than the interactive client can apply: a block
-/// of a kind it does not know is left out, a server tool is not offered (web search is noted, so the
+/// Nothing a client sends is refused for being more than the interactive client can apply. What the
+/// person and their tools sent (a user message's blocks, a tool result's parts) is kept as it came,
+/// whatever its kind, and reaches the model as it is: Pool does not decide what content is. An answer
+/// keeps its words and calls; the rest of it is the service's record of that answer. A server tool is not offered (web search is noted, so the
 /// session searches with Claude Code's own; the advisor's instructions are said to be void), stop
 /// sequences and the like are not applied, `tool_choice` is kept for the session to be told, and a
 /// structured answer's schema is kept for the answer tool.
@@ -162,8 +164,11 @@ enum ClientRequestShape {
                                 switch part["type"]?.stringValue {
                                 case "tool_reference": if let name = toolName(part) { load(name); said.append(toolLoadedText(name)) }
                                 case "text": if let text = part["text"]?.stringValue { kept.append(.object(["type": .string("text"), "text": .string(text)])) }
-                                case "image": if let source = part["source"] { kept.append(.object(["type": .string("image"), "source": source])) }
-                                default: continue
+                                default:
+                                    // whatever else the tool returned, as it returned it
+                                    if var fields = part.objectValue, fields["type"]?.stringValue != nil {
+                                        fields.removeValue(forKey: "cache_control"); kept.append(.object(fields))
+                                    }
                                 }
                             }
                             if !said.isEmpty { kept.insert(.object(["type": .string("text"), "text": .string(said.joined(separator: "\n"))]), at: 0) }
@@ -174,14 +179,14 @@ enum ClientRequestShape {
                         // Citations an answer carried are the client's record of it, not new content.
                         guard let text = block["text"]?.stringValue else { continue }
                         blocks.append(.object(["type": .string("text"), "text": .string(voidAdvisor(text))]))
-                    case "image":
-                        guard let source = block["source"] else { continue }
-                        blocks.append(.object(["type": .string("image"), "source": source]))
                     case "tool_use":
                         guard let fields = block.objectValue else { continue }
                         blocks.append(.object(fields.filter { ["type", "id", "name", "input"].contains($0.key) }))
                     default:
-                        continue // a kind the interactive client has no use for, so it is left out
+                        // What the person sent is kept as it came, whatever its kind; what else an answer
+                        // holds (server tool records and the like) is the service's record of it.
+                        guard role == "user", var fields = block.objectValue, fields["type"]?.stringValue != nil else { continue }
+                        fields.removeValue(forKey: "cache_control"); blocks.append(.object(fields))
                     }
                 }
             } else { throw BridgeFailure.invalidRequest("Each message must have a role and content.") }

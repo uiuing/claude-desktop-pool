@@ -5,6 +5,33 @@ import PoolRuntime
 @testable import PoolEngine
 
 final class EngineHelpersTests: XCTestCase {
+    /// Results go to a waiting run through MCP as they are: words and images, an image sent beside them
+    /// with the last result. Anything else, of any kind, cannot: such results go in the run's session.
+    func testResultsAndImagesBesideThemGoThroughMCPAsTheyAre() throws {
+        let pixels = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlSMAAAAASUVORK5CYII="
+        let image = JSONValue.object(["type": .string("image"), "source": .object(["type": .string("base64"),
+            "media_type": .string("image/png"), "data": .string(pixels)])])
+        func result(_ id: String) -> JSONValue {
+            .object(["type": .string("tool_result"), "tool_use_id": .string(id), "content": .string("Synthetic output \(id).")])
+        }
+        func request(_ content: [JSONValue]) -> BridgeRequest {
+            BridgeRequest(model: "claude-sonnet", messages: [.init(role: "user", content: .string("Go.")),
+                .init(role: "assistant", content: .array([])), .init(role: "user", content: .array(content))])
+        }
+        let beside = try RequestContent.toolResults(request([result("a"), result("b"), .object(["type": .string("text"), "text": .string("Also this.")]), image]))
+        XCTAssertEqual(beside.map(\.0), ["a", "b"])
+        XCTAssertEqual(beside[0].1["content"]?.arrayValue?.count, 1)
+        XCTAssertEqual(beside[1].1["content"]?.arrayValue?.last, .object(["type": .string("image"), "data": .string(pixels), "mimeType": .string("image/png")]),
+                       "The image beside the results goes with the last")
+        let file = JSONValue.object(["type": .string("fixture_file"), "source": .object(["type": .string("text"), "data": .string("x")])])
+        XCTAssertFalse(RequestContent.liveResults(request([result("a"), file])), "Beside the results")
+        var inside = result("a"); inside = .object(inside.objectValue!.merging(["content": .array([file])]) { $1 })
+        XCTAssertFalse(RequestContent.liveResults(request([inside])), "Inside a result")
+        XCTAssertTrue(RequestContent.liveResults(request([.object(["type": .string("text"), "text": .string("No results.")]), file])),
+                      "A message without results is not the MCP helper's")
+        XCTAssertEqual(try RequestContent.resultIDs(request([inside, result("b")])), ["a", "b"])
+    }
+
     /// Each cache write is logged with why it happened, from what Pool did to the run.
     func testEachCacheWriteIsGivenItsCause() {
         func why(oneOff: Bool = false, replay: Bool = false, replies: Int = 1, resumed: Bool = false, first: Bool = false,
@@ -23,6 +50,17 @@ final class EngineHelpersTests: XCTestCase {
         let read = BridgeTool(name: "Read", inputSchema: .object(["type": .string("object")]))
         let write = BridgeTool(name: "Write", inputSchema: .object(["type": .string("object")]))
         XCTAssertEqual(PoolCoordinator.toolsDigest([read]), PoolCoordinator.toolsDigest([read]))
+        // The same tools give the same digest however their schemas' keys were ordered or encoded.
+        let names = (0..<12).map { "field_\($0)" }
+        func schema(_ order: [String]) -> JSONValue {
+            .object(["type": .string("object"), "properties": .object(Dictionary(uniqueKeysWithValues: order.map {
+                ($0, JSONValue.object(["type": .string("string"), "description": .string("Synthetic \($0)")])) }))])
+        }
+        let forward = BridgeTool(name: "Edit", description: "Synthetic edit", inputSchema: schema(names))
+        let backward = BridgeTool(name: "Edit", description: "Synthetic edit", inputSchema: schema(names.reversed()))
+        let digest = PoolCoordinator.toolsDigest([forward])
+        for _ in 0..<50 { XCTAssertEqual(PoolCoordinator.toolsDigest([forward]), digest) }
+        XCTAssertEqual(PoolCoordinator.toolsDigest([backward]), digest)
         XCTAssertNotEqual(PoolCoordinator.toolsDigest([read]), PoolCoordinator.toolsDigest([read, write]))
         XCTAssertEqual(PoolCoordinator.toolsDigest(nil), PoolCoordinator.toolsDigest([]))
     }

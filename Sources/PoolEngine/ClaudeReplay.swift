@@ -64,6 +64,38 @@ enum ClaudeReplay {
         return data
     }
 
+    /// Adds a user message to the end of a session, its content as it came, so Claude Code resumed on it
+    /// sends that content to the service unchanged, whatever its kind (Pool's own): only words and images
+    /// can be typed into it. The message follows the session's last row; a session with none starts with
+    /// it. Claude Code answers a session that ends on a user message with its own "No response requested."
+    /// before the next typed turn.
+    static func append(user content: [JSONValue], config: URL, work: URL, session: String, at date: Date) throws {
+        guard let directory = projectDirectories(config: config, work: work).last else { throw BridgeFailure.transport }
+        let file = directory.appendingPathComponent(session + ".jsonl")
+        let existing = (try? Data(contentsOf: file)) ?? Data()
+        var parent: String?
+        for line in existing.split(separator: UInt8(ascii: "\n")).reversed() {
+            guard let row = try? JSONDecoder().decode(JSONValue.self, from: Data(line)), let uuid = row["uuid"]?.stringValue,
+                  row["parentUuid"] != nil, row["isSidechain"]?.boolValue != true else { continue }
+            parent = uuid; break
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        var row = try ClaudePrompt.canonical(.object([
+            "parentUuid": parent.map(JSONValue.string) ?? .null, "isSidechain": .bool(false), "userType": .string("external"),
+            "cwd": .string(realPath(work.path)), "sessionId": .string(session), "type": .string("user"),
+            "message": .object(["role": .string("user"), "content": .array(content)]),
+            "uuid": .string(UUID().uuidString.lowercased()), "timestamp": .string(formatter.string(from: date))]))
+        row.append(10)
+        if existing.isEmpty { _ = try write(row, config: config, work: work, session: session); return }
+        var data = existing
+        if data.last != 10 { data.append(10) }
+        data.append(row)
+        try data.write(to: file, options: .atomic)
+        chmod(file.path, 0o600)
+    }
+
     /// Writes the saved session where the client looks: the real path's project folder.
     static func write(_ data: Data, config: URL, work: URL, session: String) throws -> URL {
         guard let directory = projectDirectories(config: config, work: work).last else { throw BridgeFailure.transport }

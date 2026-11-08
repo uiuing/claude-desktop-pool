@@ -421,13 +421,39 @@ public actor PrivacyBridge: BridgeBackend {
                 // every block: its protocol fields
                 // stay as they are, its other values are masked; never refused.
                 for key in fields.keys.sorted() where !Self.keptKey(key) {
-                    fields[key] = try maskData(fields[key]!, field: key, location: path + "/" + component(key), context: context,
-                                               preparation: preparation, counts: &counts)
+                    fields[key] = try maskBlockData(fields[key]!, field: key, location: path + "/" + component(key), context: context,
+                                                    preparation: preparation, counts: &counts)
                 }
             }
             result.append(.object(fields))
         }
         return .array(result)
+    }
+
+    /// A value inside a block of a kind redaction does not know, whatever its kind: words are masked, the
+    /// protocol fields of nested objects stay, and encoded bytes (`"type": "base64"` beside its `data`, as
+    /// a file or image source is written) are not text and pass as they are. A source of another type
+    /// (a document's `"type": "text"`) has its data masked as words.
+    private func maskBlockData(_ value: JSONValue, field: String? = nil, location: String, context: PrivacyConversation,
+                               preparation: PrivacyPreparation, counts: inout [PrivacyCategory: Int]) throws -> JSONValue {
+        switch value {
+        case .object(let fields):
+            var result = fields
+            let encoded = fields["type"]?.stringValue == "base64"
+            for key in fields.keys.sorted() {
+                if key == "data" ? encoded : Self.keptKey(key) { continue }
+                result[key] = try maskBlockData(fields[key]!, field: key, location: location + "/" + component(key), context: context,
+                                                preparation: preparation, counts: &counts)
+            }
+            return .object(result)
+        case .array(let values):
+            var result: [JSONValue] = []
+            for (index, value) in values.enumerated() {
+                result.append(try maskBlockData(value, field: field, location: location + "/\(index)", context: context, preparation: preparation, counts: &counts))
+            }
+            return .array(result)
+        default: return try maskData(value, field: field, location: location, context: context, preparation: preparation, counts: &counts)
+        }
     }
 
     private func maskData(_ value: JSONValue, field: String? = nil, location: String, context: PrivacyConversation, preparation: PrivacyPreparation,

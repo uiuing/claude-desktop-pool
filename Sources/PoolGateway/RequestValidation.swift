@@ -156,11 +156,8 @@ public enum GatewayRequestValidation {
                 throw BridgeFailure.invalidRequest("A text block is malformed.")
             }
         case "image":
-            guard role == "user", Set(value.keys).isSubset(of: ["type", "source", "cache_control"]),
-                  let source = value["source"]?.objectValue, Set(source.keys) == ["type", "media_type", "data"] else {
-                throw BridgeFailure.invalidRequest("An image block is malformed.")
-            }
-            _ = try ImagePayload(block: block)
+            // an image is the person's whatever its source: one that is not bounded base64 data goes as it came
+            guard role == "user" else { throw BridgeFailure.invalidRequest("An image block is malformed.") }
         case "tool_use":
             guard role == "assistant", Set(value.keys).isSubset(of: ["type", "id", "name", "input", "cache_control"]),
                   validID(value["id"]), let name = value["name"]?.stringValue, validName(name), value["input"]?.objectValue != nil else {
@@ -172,7 +169,10 @@ public enum GatewayRequestValidation {
                   let content = value["content"] else { throw BridgeFailure.invalidRequest("A tool result is malformed.") }
             try toolResultContent(content)
         default:
-            throw BridgeFailure.unsupported("This content type needs a supported client adapter.")
+            // A block the person sent, of any kind, goes as it came (ClientRequestShape)
+            guard role == "user", value["type"]?.stringValue?.isEmpty == false else {
+                throw BridgeFailure.unsupported("This content type needs a supported client adapter.")
+            }
         }
         try cacheHint(value["cache_control"])
     }
@@ -190,15 +190,9 @@ public enum GatewayRequestValidation {
         guard let blocks = content.arrayValue else { throw BridgeFailure.invalidRequest("A tool result needs content blocks.") }
         for block in blocks {
             if block["type"] == .string("text") { try textContent(.array([block])); continue }
-            guard let b = block.objectValue, b["type"] == .string("image"),
-                  Set(b.keys).isSubset(of: ["type", "source", "cache_control"]), let source = b["source"]?.objectValue,
-                  Set(source.keys) == ["type", "media_type", "data"], source["type"] == .string("base64"),
-                  let media = source["media_type"]?.stringValue, ["image/png", "image/jpeg", "image/webp", "image/gif"].contains(media),
-                  let encoded = source["data"]?.stringValue, encoded.utf8.count <= 5_592_408,
-                  let image = Data(base64Encoded: encoded), !image.isEmpty, image.count <= 4 * 1024 * 1024 else {
-                throw BridgeFailure.unsupported("Tool images must be bounded PNG, JPEG, WebP or GIF data. Remote image URLs are not fetched.")
-            }
-            try cacheHint(b["cache_control"])
+            // a part of any other kind goes as the tool returned it
+            guard block.objectValue?["type"]?.stringValue?.isEmpty == false else { throw BridgeFailure.invalidRequest("A tool result part is malformed.") }
+            continue
         }
     }
     /// Cache hints are the client's own and are removed (`normalized`); none is refused.
