@@ -4,6 +4,24 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-11-09
+
+### Changed
+
+- Restarting or updating Claude Pool with redaction on no longer makes open conversations write themselves to the cache again. Their redaction is kept across the restart without any original value: only digests, positions and lengths, in the app's private folder for 24 hours. Parallel tasks of one conversation each keep theirs.
+- Redaction no longer holds a request while it reads earlier text the local model had not read yet; that text is read once no request waits. Requests are read faster: the model uses up to four threads and reads one piece at a time.
+- This Mac's account name is redacted in Desktop's requests.
+- A subagent's turns and one-off asks, such as the auto mode classifier, keep their prompt cache for five minutes, as Claude Code does on a subscription, instead of an hour. Their writes are seldom read again and cost less kept briefly; a main conversation still keeps its cache for an hour.
+- The app log says why each reply wrote the prompt cache, and why a run's session could not go on when a turn is told whole.
+- A conversation still small on an account nearly used up, such as just after a compaction, moves at its next turn to an account with clearly more left. Moving writes the conversation's whole context on the new account, so it moves while that is cheap instead of growing there until the limit stops it and the move costs far more.
+
+### Fixed
+
+- A reply cut off after a tool's results were sent, because Desktop stopped it or lost the connection, no longer makes the conversation write itself to the cache again when Desktop sends those results once more: it goes on from the session cut before the call, on the same account.
+- A long decimal number, such as a time in a test report, is no longer redacted as a card or ID number.
+- A secret or password written before Chinese text no longer takes the following words with it, and a link is no longer redacted as a secret.
+- A short hex id, such as a commit or a log tag, is no longer redacted as an account or a secret unless a name such as `token=` comes before it.
+
 ## [0.1.7] - 2026-11-09
 
 ### Fixed
@@ -100,7 +118,8 @@ First public release.
 - Update checks against GitHub Releases with verified one-click install.
 - Option to hide email addresses throughout the app.
 
-[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.4...v0.1.5
