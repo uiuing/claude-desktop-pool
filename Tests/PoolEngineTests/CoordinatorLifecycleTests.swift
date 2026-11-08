@@ -333,7 +333,7 @@ final class CoordinatorLifecycleTests: XCTestCase {
     }
 }
 
-private final class LoggedLines: @unchecked Sendable {
+final class LoggedLines: @unchecked Sendable {
     private let lock = NSLock(); private var values: [String] = []
     func add(_ line: String) { lock.withLock { values.append(line) } }
     var all: [String] { lock.withLock { values } }

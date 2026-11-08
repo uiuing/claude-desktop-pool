@@ -5,6 +5,28 @@ import PoolRuntime
 @testable import PoolEngine
 
 final class EngineHelpersTests: XCTestCase {
+    /// Each cache write is logged with why it happened, from what Pool did to the run.
+    func testEachCacheWriteIsGivenItsCause() {
+        func why(oneOff: Bool = false, replay: Bool = false, replies: Int = 1, resumed: Bool = false, first: Bool = false,
+                 tools: Bool = false, read: Int = 90_000, written: Int = 800) -> String {
+            PoolCoordinator.writeCause(oneOff: oneOff, replay: replay, replies: replies, resumed: resumed, firstMessage: first,
+                                       toolsChanged: tools, read: read, written: written)
+        }
+        XCTAssertEqual(why(oneOff: true, replies: 0, read: 65_000, written: 50_000), "one_off")
+        XCTAssertEqual(why(replay: true, replies: 0, read: 24_000, written: 300_000), "replay")
+        XCTAssertEqual(why(replies: 0, first: true, read: 24_000, written: 9_000), "new")
+        XCTAssertEqual(why(replies: 0, resumed: true), "resumed")
+        XCTAssertEqual(why(replies: 0, read: 33_000, written: 250_000), "told_whole")
+        XCTAssertEqual(why(tools: true, read: 0, written: 82_000), "tools_changed")
+        XCTAssertEqual(why(read: 0, written: 82_000), "cold")
+        XCTAssertEqual(why(), "turn")
+        let read = BridgeTool(name: "Read", inputSchema: .object(["type": .string("object")]))
+        let write = BridgeTool(name: "Write", inputSchema: .object(["type": .string("object")]))
+        XCTAssertEqual(PoolCoordinator.toolsDigest([read]), PoolCoordinator.toolsDigest([read]))
+        XCTAssertNotEqual(PoolCoordinator.toolsDigest([read]), PoolCoordinator.toolsDigest([read, write]))
+        XCTAssertEqual(PoolCoordinator.toolsDigest(nil), PoolCoordinator.toolsDigest([]))
+    }
+
     func testHookSpoolsOnlyOwnedSessionFieldsAndNoDecision() throws {
         let fixture = try HelperFixture(); defer { fixture.clean() }
         let body = JSONValue.object(["session_id": .string(fixture.id.uuidString), "prompt_id": .string("prompt"),

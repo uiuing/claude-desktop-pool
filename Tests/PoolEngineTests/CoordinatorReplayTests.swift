@@ -432,6 +432,9 @@ final class CoordinatorReplayTests: XCTestCase {
 
     /// A stopped run whose conversation was edited before its last reply is ended as before.
     func testAStoppedRunKeepsNoSessionForAnEditedConversation() async throws {
+        let lines = LoggedLines()
+        Diagnostics.install { lines.add($0) }
+        defer { Diagnostics.install(nil) }
         let original = ReplayWorker(steps: [.reply([.text("Three items."), .finished(.endTurn)]), .failure([], .transport)], keeps: true)
         let fresh = ReplayWorker(steps: [.reply([.text("Two items."), .finished(.endTurn)])], keeps: true)
         let factory = ReplayFactory([original, fresh])
@@ -444,6 +447,9 @@ final class CoordinatorReplayTests: XCTestCase {
         _ = try await collect(pool, edited)
         let kept = await original.endShelves, closes = await original.closes, from = await fresh.resumedFrom
         XCTAssertEqual(kept, 0); XCTAssertEqual(closes, 1); XCTAssertNil(from)
+        // why the conversation was told whole, in the log
+        XCTAssertTrue(lines.all.contains { $0.contains("decision=hand_on_declined") && $0.contains("why=stopped") &&
+                                           $0.contains("reason=not_from_last_reply") }, lines.all.joined(separator: "\n"))
         _ = await pool.shutdown()
     }
 
@@ -527,6 +533,32 @@ final class CoordinatorReplayTests: XCTestCase {
         let whole = await resumed.resumedFrom, wholeCut = await resumed.resumedCut, discards = await original.discards
         XCTAssertEqual(whole, "fixture-session-\(original.id.uuidString.prefix(8))", "The session itself stayed shelved")
         XCTAssertNil(wholeCut); XCTAssertEqual(discards, 0)
+        _ = await pool.shutdown()
+    }
+
+    /// A reply cut off after the client sent its calls' results (the client left or stopped it) leaves its
+    /// run's session: the client sending those results again goes on from a copy cut before the call, on
+    /// the same account, so the service reads the conversation it cached rather than having it written again.
+    func testResultsSentAgainAfterACutOffReplyGoOnFromTheRunsSession() async throws {
+        let original = ReplayWorker(steps: [.reply([.text("Reading it."), .toolUse(call), .finished(.toolUse)]), .hold([.text("Thr")])],
+                                    keeps: true)
+        let fresh = ReplayWorker(steps: [.reply([.text("Three items."), .finished(.endTurn)])], keeps: true)
+        let factory = ReplayFactory([original, fresh])
+        let pool = pool(factory)
+        _ = try await collect(pool, first())
+        let results = withResult(first())
+        let stream = try await pool.events(for: results, conversationID: "claude-code-session")
+        let answering = Task { for try await _ in stream {} }
+        try await replayWait { await original.regular.count + original.replays.count == 2 }
+        await pool.cancel(conversationID: "claude-code-session")
+        _ = try? await answering.value
+        try await replayWait { await original.cancels >= 1 }
+
+        let events = try await collect(pool, results)
+        XCTAssertEqual(events, [.text("Three items."), .finished(.endTurn)])
+        let from = await fresh.resumedFrom, cut = await fresh.resumedCut, held = await fresh.resumedHeld
+        XCTAssertEqual(from, "fixture-session-\(original.id.uuidString.prefix(8))")
+        XCTAssertEqual(cut, [call.id]); XCTAssertEqual(held, 1, "The copy holds the conversation before the call")
         _ = await pool.shutdown()
     }
 

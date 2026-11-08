@@ -15,6 +15,6 @@ Claude Pool is a native macOS account pool and local bridge for Claude Desktop. 
 
 Xcode 26 (Swift 6 toolchain, macOS 26 SDK), Swift 5 language mode, deploying to macOS 14+. Foundation core and native SwiftUI shell, with a pinned official ONNX Runtime package for the local privacy model. `CPTY` is the small owned-process adapter. Preserve third-party licenses and notices in the distribution.
 
-Run `swift build`, `swift test` and `python3 scripts/check-localization.py`. Unit tests never call Claude or outside services; model their fixtures on Claude Code's real request and transcript shapes, not idealized ones. Fixtures use synthetic identities such as `example.com` or `.invalid` hosts. Render demo screenshots through `scripts/screenshots.sh` for UI changes and inspect them; app previews use `--demo`.
+Run `swift build`, `swift test --parallel` and `python3 scripts/check-localization.py`. Unit tests never call Claude or outside services; model their fixtures on Claude Code's real request and transcript shapes, not idealized ones. Fixtures use synthetic identities such as `example.com` or `.invalid` hosts. Render demo screenshots through `scripts/screenshots.sh` for UI changes and inspect them; app previews use `--demo`.
 
 UI text uses the localization catalogs in `Sources/PoolCore/Localizations`; every supported language is updated together. Keep copy short, unknown quota explicit and errors actionable. Use original artwork and system symbols. Runtime details stay out of ordinary user flows.

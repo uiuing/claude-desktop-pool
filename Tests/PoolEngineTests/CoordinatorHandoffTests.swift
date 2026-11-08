@@ -34,6 +34,41 @@ final class CoordinatorHandoffTests: XCTestCase {
         return events
     }
 
+    /// Moving a conversation writes its whole context on the new account. One still small on an account
+    /// nearly used up moves at its next turn to one with clearly more left; one that has grown stays,
+    /// as moving it would write far more, until its account's limit hands it on.
+    func testASmallConversationLeavesANearlyUsedUpAccountAndALargeOneStays() async throws {
+        let date = Date()
+        func quota(_ used: Double) -> [QuotaWindow] { [.init(id: "five_hour", usedPercent: used, observedAt: date, resetsAt: date.addingTimeInterval(3600))] }
+        var accounts = accounts()
+        accounts[0].windows = quota(20); accounts[1].windows = quota(45)
+        let small = HandoffWorker(steps: [.reply([.text("Synthetic reply."), .finished(.endTurn)])], cacheRead: 9_000)
+        let large = HandoffWorker(steps: [.reply([.text("Synthetic reply."), .finished(.endTurn)]),
+                                          .reply([.text("Synthetic follow-up."), .finished(.endTurn)])], cacheRead: 300_000)
+        let moved = HandoffWorker(steps: [.reply([.text("Synthetic follow-up."), .finished(.endTurn)])], cacheRead: 9_000)
+        let factory = HandoffFactory(queues: [accounts[0].id: [small, large], accounts[1].id: [moved]])
+        let coordinator = PoolCoordinator(accounts: accounts, now: { date }, factory: { account, _ in try await factory.make(account.id) })
+        _ = try await collect(coordinator, request(), id: "desktop-small#main")
+        _ = try await collect(coordinator, request(), id: "desktop-large#main")
+        accounts[0].windows = quota(88); accounts[1].windows = quota(30)
+        await coordinator.updateAccounts(accounts)
+        var next = request()
+        next.messages += [.init(role: "assistant", content: .string("Synthetic reply.")), .init(role: "user", content: .string("Go on."))]
+        _ = try await collect(coordinator, next, id: "desktop-small#main")
+        _ = try await collect(coordinator, next, id: "desktop-large#main")
+        let order = await factory.order
+        XCTAssertEqual(order, [accounts[0].id, accounts[0].id, accounts[1].id], "Only the small conversation moved")
+        let largeTurns = await large.regularRequests.count
+        XCTAssertEqual(largeTurns, 2, "The large conversation went on in its own run")
+        XCTAssertNil(PoolRouting.moveWhileSmall(accounts, model: "sonnet", currentID: accounts[0].id, contextTokens: nil))
+        XCTAssertNil(PoolRouting.moveWhileSmall(accounts, model: "sonnet", currentID: accounts[0].id, contextTokens: 300_000))
+        XCTAssertEqual(PoolRouting.moveWhileSmall(accounts, model: "sonnet", currentID: accounts[0].id, contextTokens: 9_000)?.id, accounts[1].id)
+        accounts[1].windows = quota(60)
+        XCTAssertNil(PoolRouting.moveWhileSmall(accounts, model: "sonnet", currentID: accounts[0].id, contextTokens: 9_000),
+                     "Not for an account with only a little more left")
+        _ = await coordinator.shutdown()
+    }
+
     /// A side request of a Desktop conversation (a title, asked with
     /// other tools under the same client session) goes to the account its conversation is on, while a new
     /// conversation still goes where routing puts it. One conversation uses one account.

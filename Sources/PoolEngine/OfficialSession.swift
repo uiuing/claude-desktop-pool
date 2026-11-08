@@ -351,6 +351,10 @@ public actor OfficialSession: SessionWorker {
         environment["CLAUDE_CODE_DISABLE_FILE_MENTIONS"] = "1"
         environment["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] = "1"
         environment["ENABLE_TOOL_SEARCH"] = "false"
+        // The cache lasts as Claude Code's own on a subscription: an hour for the main conversation,
+        // five minutes for everything outside it, a subagent's turns and one-off asks such as the
+        // auto mode classifier, whose writes are seldom read again and cost less kept briefly.
+        environment["CLAUDE_CODE_PROMPT_CACHE_TTL"] = Self.cacheTerm(request)
         // The reply's stream: the run's Claude Code loads Pool's tap. Only this run's child is
         // given it, and the script takes it out of what the client hands on. Without one the reply is told a whole message at a time.
         tap = ClaudeTap.make(run: directory, temporary: tapRoot)
@@ -413,7 +417,8 @@ public actor OfficialSession: SessionWorker {
         let child = try launch(plan).recorded(run: runTag, role: "session")
         transport = child; launchedAt = Date()
         Diagnostics.record("session.started", ["run": runTag, "model": model.cliAlias, "resumed": resumed ? "yes" : "no",
-                                               "history_messages": String(history), "transcript_bytes": String(bytes)])
+                                               "history_messages": String(history), "transcript_bytes": String(bytes),
+                                               "cache": plan.environment["CLAUDE_CODE_PROMPT_CACHE_TTL"] ?? "-"])
         processTask = Task { [weak self] in
             for await event in child.events { await self?.process(event) }
         }
@@ -1275,6 +1280,11 @@ public actor OfficialSession: SessionWorker {
         }
         if !endedPublished { endedPublished = true; observer?.yield(.ended); observer?.finish() }
         return true
+    }
+    /// How long the run's prompt cache lasts, as Claude Code keeps it on a subscription: "1h" for a
+    /// main conversation, "5m" for a subagent's turns and one-off asks.
+    static func cacheTerm(_ request: BridgeRequest) -> String {
+        request.subagent || PoolCoordinator.isOneOff(request) ? "5m" : "1h"
     }
     private func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
     private func clearOwnedDraft() async -> Bool {

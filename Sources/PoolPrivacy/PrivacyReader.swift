@@ -8,9 +8,10 @@ import PoolCore
 /// that it goes with what the model found by then and the rules for the rest. What
 /// the model reads is kept by its text's digest, for every conversation, so a later request finds it.
 /// Once a request stops waiting, only the chunk being read for it is finished; the rest is left.
-/// Of what was sent before without the model's reading, a request reads `backlogCap` at
-/// most, after what is new, so a long unread history is read a little a request instead of keeping the
-/// CPU busy for as long as requests come. A model
+/// Of what was sent before without the model's reading, a request leaves `backlogCap` at
+/// most to be read once no request waits, one chunk at a time, so a long unread history is read a
+/// little a request instead of keeping the CPU busy for as long as requests come, and no request
+/// waits for it: it went before, and what is found in it serves later requests. A model
 /// that fails is not asked again for a while (`retryAfter`), and the rules mask
 /// alone meanwhile: nothing is held back for it. Texts are read newest first, joined into chunks,
 /// a long one a piece at a time (`TextPieces`); of the requests waiting, the one
@@ -22,10 +23,11 @@ actor PrivacyReader {
     static let chunkSize = TextPieces.size
     /// A paragraph's end, so the model reads each joined text as one of its own.
     static let separator = "\n\n"
-    /// Chunks read at once, one per request; the detector's own two.
-    static let turns = 2
+    /// Chunks read at once: one. The model reads one window at a time however many are asked of it, so a
+    /// second chunk only slows the first; the threads it has go to that one.
+    static let turns = 1
     /// How much of what was sent unread before a
-    /// request reads, after what is new in it: one chunk.
+    /// request leaves to be read in the background: one chunk.
     static let backlogCap = chunkSize
 
     /// 30 s after a failure, doubled for each in a row, 10 minutes at most.
@@ -59,6 +61,9 @@ actor PrivacyReader {
     /// Counts failures, so only a chunk asked after the last one tells that the model reads again.
     private var epoch = 0
     private var partialNoted: ContinuousClock.Instant?
+    /// The backlog chunk being read, given up when a request comes: a window is a tenth of a second,
+    /// so the request waits that long for it at most, not the whole chunk.
+    private var backgroundRead: Task<Void, Never>?
 
     init(detector: any PrivacyEntityDetector, wait: Duration = PrivacyReader.defaultWait, turns: Int = PrivacyReader.turns,
          retryAfter: @escaping @Sendable (Int) -> Duration = { PrivacyReader.retryAfter($0) },
@@ -74,13 +79,14 @@ actor PrivacyReader {
         let plans = texts.map(plan), latePlans = late.map(plan)
         var result = Reading(read: plans.map(known), lookedUp: latePlans.map(known))
         guard !stopped, !heldBack else { return result }
-        var units = missing(plans)
+        let units = missing(plans)
         let taken = Set(units.map(\.digest))
-        var backlogRead = 0
-        for unit in missing(latePlans) where !taken.contains(unit.digest) && backlogRead < Self.backlogCap {
-            units.append(unit); backlogRead += unit.bytes
+        var backlog: [Unit] = [], backlogBytes = 0
+        for unit in missing(latePlans) where !taken.contains(unit.digest) && backlogBytes < Self.backlogCap {
+            backlog.append(unit); backlogBytes += unit.bytes
         }
-        guard !units.isEmpty, let job = enqueue(units, token: token) else { return result }
+        if !backlog.isEmpty { queueBacklog(backlog) }
+        guard !units.isEmpty, let job = enqueue(units, token: token) else { pump(); return result }
         if ContinuousClock.now < deadline, !Task.isCancelled { await wait(for: job, until: deadline) }
         stoppedWaiting(job)
         result.read = plans.map(known)
@@ -98,6 +104,7 @@ actor PrivacyReader {
     /// No more reading: the bridge is gone.
     func stop() {
         stopped = true
+        backgroundRead?.cancel()
         for job in jobs.values where job.live { wake(job.id) }
         jobs = jobs.filter { $0.value.live }
     }
@@ -197,6 +204,8 @@ actor PrivacyReader {
         var units: [Unit]
         /// A request still waits for it.
         var live: Bool
+        /// Read only while no request waits: what went before without the model's reading.
+        var background = false
         var inFlight = false
         var waiter: CheckedContinuation<Void, Never>?
         var timer: Task<Void, Never>?
@@ -211,7 +220,18 @@ actor PrivacyReader {
         sequence += 1
         let job = Job(id: sequence, token: token, units: units, live: true)
         jobs[job.id] = job
+        backgroundRead?.cancel()
         return job
+    }
+
+    /// What went unread before, read once no request waits; it takes the place of the backlog an
+    /// earlier request left, since each request names all of it again.
+    private func queueBacklog(_ units: [Unit]) {
+        for job in jobs.values where job.background && !job.inFlight { jobs[job.id] = nil }
+        sequence += 1
+        let job = Job(id: sequence, token: nil, units: units, live: false)
+        job.background = true
+        jobs[job.id] = job
     }
 
     private func wait(for job: Job, until deadline: ContinuousClock.Instant) async {
@@ -262,7 +282,14 @@ actor PrivacyReader {
             if let current = best, left > current.left || left == current.left && job.id > current.job.id { continue }
             best = (job, left)
         }
-        return best?.job
+        if let best { return best.job }
+        // Nothing waits: the backlog, one chunk at a time.
+        guard active == 0 else { return nil }
+        for job in jobs.values.sorted(by: { $0.id < $1.id }) where job.background && !job.inFlight {
+            prune(job)
+            if job.units.contains(where: { !reading.contains($0.digest) }) { return job }
+        }
+        return nil
     }
 
     private func pump() {
@@ -270,7 +297,8 @@ actor PrivacyReader {
         while active < turns, let job = nextJob() {
             let chunk = take(job)
             active += 1; job.inFlight = true
-            Task { await self.run(chunk) }
+            let task = Task { await self.run(chunk) }
+            if job.background { backgroundRead = task }
         }
     }
 
@@ -300,8 +328,13 @@ actor PrivacyReader {
     private func finish(_ chunk: Chunk, _ outcome: Result<[PrivacySpan], Error>) {
         active -= 1
         for part in chunk.parts { reading.remove(part.digest) }
+        let background = jobs[chunk.job]?.background == true
         jobs[chunk.job]?.inFlight = false
+        if background { backgroundRead = nil }
         switch outcome {
+        case .failure(let error) where background && (error is CancellationError || Task.isCancelled):
+            // Given up for a request: the backlog is read again once nothing waits.
+            break
         case .success(let spans) where Self.valid(spans, in: chunk.text as NSString):
             for part in chunk.parts {
                 // A span over into the text beside it is cut at the end.

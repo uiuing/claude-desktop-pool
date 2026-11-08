@@ -621,6 +621,22 @@ public enum PoolRouting {
         window.remaining(at: now)
     }
     /// Use only between user turns. Pending client tools must stay on the worker that issued them.
+    /// Moving a conversation to another account writes its whole context there once, so a move costs what
+    /// the conversation holds (Pool's own). One small enough now (`smallMoveTokens`, such as just after a
+    /// compaction) on an account nearly used up (`smallMoveBelow` percent left) goes at its next turn to an
+    /// account with clearly more left (`smallMoveGain` points more), instead of growing there until the
+    /// limit stops it and the move writes far more. Nil when it should stay.
+    public static let smallMoveTokens = 60_000
+    public static let smallMoveBelow = 20.0
+    public static let smallMoveGain = 40.0
+    public static func moveWhileSmall(_ accounts: [PoolAccount], model: String, currentID: UUID, contextTokens: Int?,
+                                      policy: RoutingPolicy = .init(), now: Date = Date()) -> PoolAccount? {
+        guard policy.isValid, policy.strategy == .mostHeadroom, let tokens = contextTokens, tokens > 0, tokens <= smallMoveTokens,
+              let current = accounts.first(where: { $0.id == currentID }),
+              let headroom = assessment(current, model: model, now: now).headroom, headroom < smallMoveBelow else { return nil }
+        return candidates(accounts, model: model, excluding: [currentID], now: now, policy: policy)
+            .first { (assessment($0, model: model, now: now).headroom ?? -1) >= headroom + smallMoveGain }
+    }
     public static func handoff(_ accounts: [PoolAccount], model: String, currentID: UUID,
                                policy: RoutingPolicy = .init(), now: Date = Date()) -> RoutingHandoff? {
         guard policy.isValid, let current = accounts.first(where: { $0.id == currentID }) else { return nil }

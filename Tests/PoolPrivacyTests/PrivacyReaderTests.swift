@@ -48,15 +48,23 @@ final class PrivacyReaderTests: XCTestCase {
         XCTAssertEqual(next.read.filter { $0 != nil }.count, 1, "What was finished is kept")
     }
 
-    /// Of what was sent before unread, a request reads backlogCap at most, after what is new in it.
-    func testABacklogIsReadALittleARequest() async throws {
-        let detector = GatedDetector(gated: false)
+    /// Of what was sent before unread, a request leaves backlogCap at most to be read once nothing
+    /// waits, and goes without waiting for it.
+    func testABacklogIsReadALittleARequestWithoutHoldingIt() async throws {
+        let detector = GatedDetector(gated: false, delay: .milliseconds(300))
         let reader = PrivacyReader(detector: detector, wait: .seconds(5))
         let late = (1...5).map { "echo history \($0) " + String(repeating: "e", count: 3_000) }
+        let began = ContinuousClock.now
         let reading = await reader.read(["foxtrot new turn"], lookUp: late, until: ContinuousClock.now.advanced(by: .seconds(5)))
         XCTAssertNotNil(reading.read[0])
-        let readLate = reading.lookedUp.filter { $0 != nil }.count
-        XCTAssertGreaterThan(readLate, 0)
+        XCTAssertTrue(reading.lookedUp.allSatisfy { $0 == nil }, "The request did not wait for the backlog")
+        XCTAssertLessThan(ContinuousClock.now - began, .milliseconds(560))
+        let first = await detector.texts.first
+        XCTAssertEqual(first, "foxtrot new turn")
+        try await privacyQueueEventually { let count = await detector.texts.count; return await reader.state == (0, 0) && count > 1 }
+        let next = await reader.read([], lookUp: late, until: ContinuousClock.now)
+        let readLate = next.lookedUp.filter { $0 != nil }.count
+        XCTAssertGreaterThan(readLate, 0, "Read in the background")
         XCTAssertLessThan(readLate, late.count, "The rest of the backlog is left for later requests")
     }
 
@@ -93,4 +101,42 @@ private actor GatedDetector: PrivacyEntityDetector {
         return []
     }
     func release() { gated = false; gate?.resume(); gate = nil }
+}
+
+extension PrivacyReaderTests {
+    /// A request does not wait for the backlog chunk being read when it comes: that read is given up,
+    /// not taken for a failed model, and read again once nothing waits.
+    func testARequestGivesUpTheBacklogReadAndTheModelIsNotFailed() async throws {
+        let detector = SlowBacklogDetector()
+        let failures = FailureCount()
+        let reader = PrivacyReader(detector: detector, wait: .seconds(10), onModel: { if $0 != nil { failures.add() } })
+        let late = ["echo history " + String(repeating: "e", count: 3_000)]
+        _ = await reader.read([], lookUp: late, until: ContinuousClock.now)
+        try await privacyQueueEventually { await detector.started == 1 }
+        let began = ContinuousClock.now
+        let reading = await reader.read(["golf new turn"], until: ContinuousClock.now.advanced(by: .seconds(10)))
+        XCTAssertNotNil(reading.read[0])
+        XCTAssertLessThan(ContinuousClock.now - began, .seconds(2), "The request did not wait out the backlog read")
+        XCTAssertEqual(failures.count, 0, "A read given up is not a failed model")
+        try await privacyQueueEventually { await detector.finished == 1 }
+        let again = await reader.read([], lookUp: late, until: ContinuousClock.now)
+        XCTAssertNotNil(again.lookedUp[0], "The backlog was read again once nothing waited")
+    }
+}
+
+private actor SlowBacklogDetector: PrivacyEntityDetector {
+    private(set) var started = 0, finished = 0
+    func detect(in text: String) async throws -> [PrivacySpan] {
+        guard text.hasPrefix("echo") else { return [] }
+        started += 1
+        try await Task.sleep(for: started == 1 ? .seconds(30) : .milliseconds(10))
+        finished += 1
+        return []
+    }
+}
+
+private final class FailureCount: @unchecked Sendable {
+    private let lock = NSLock(); private var value = 0
+    func add() { lock.withLock { value += 1 } }
+    var count: Int { lock.withLock { value } }
 }

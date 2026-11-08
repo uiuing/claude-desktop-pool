@@ -21,9 +21,11 @@ Xcode 26 or later; the tests use the macOS 26 SDK. The app itself runs on macOS 
 
 ```bash
 swift build
-swift test
+swift test --parallel
 python3 scripts/check-localization.py
 ```
+
+`--parallel` runs the tests on every core, about three times faster than one at a time; it prints only failures. While working on one part, run its tests alone, for example `swift test --filter PoolPrivacyTests`.
 
 To try the app without accounts or network access:
 
@@ -38,7 +40,7 @@ The demo mode shows synthetic data only and starts no Claude process.
 
 | Change | Run |
 | --- | --- |
-| Any code | `swift build`, `swift test` |
+| Any code | `swift build`, `swift test --parallel` |
 | UI text | `python3 scripts/check-localization.py` |
 | UI layout | `zsh scripts/screenshots.sh`, then look at the images in `.build/screenshots` in light and dark mode |
 | Packaging or helpers | `zsh scripts/build.sh --universal`, `python3 scripts/check-package.py`, `python3 scripts/check-packaged-bridge.py` |

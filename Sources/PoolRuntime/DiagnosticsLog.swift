@@ -9,6 +9,8 @@ import PoolCore
 public final class DiagnosticsLog: @unchecked Sendable {
     public static let limit = 10 << 20
     public let directory: URL
+    /// The size the log is moved aside at: `limit`, smaller in tests.
+    let maxSize: Int
     public var file: URL { directory.appendingPathComponent("pool.log") }
     private var old: URL { directory.appendingPathComponent("pool.old.log") }
     private let lock = NSLock()
@@ -18,7 +20,8 @@ public final class DiagnosticsLog: @unchecked Sendable {
         let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f
     }()
 
-    public init(directory: URL) { self.directory = directory }
+    public convenience init(directory: URL) { self.init(directory: directory, maxSize: Self.limit) }
+    init(directory: URL, maxSize: Int) { self.directory = directory; self.maxSize = maxSize }
 
     /// `~/Library/Logs/Claude Pool`, where Console.app also finds it.
     public static func standardDirectory() throws -> URL {
@@ -39,7 +42,7 @@ public final class DiagnosticsLog: @unchecked Sendable {
         let text = formatter.string(from: Date()) + " " + Self.scrub(line) + "\n"
         lock.withLock {
             let data = Data(text.utf8)
-            if size + data.count > Self.limit { try? rotate() }
+            if size + data.count > maxSize { try? rotate() }
             else if handle == nil { try? openFile() }
             guard let handle else { return }
             do { try handle.write(contentsOf: data); size += data.count } catch { self.handle = nil }

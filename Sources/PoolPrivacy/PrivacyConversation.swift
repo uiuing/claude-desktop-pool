@@ -11,6 +11,13 @@ struct MaskedText {
     var fresh = true
     /// Went as received: `text` is left empty in the cache, since the request brings it again.
     var unchanged = false
+    /// What a restart keeps of it: the digest of what went, and where in it each stand-in stands
+    /// (UTF-16 offsets), so the same text masks to the same words again without its values kept.
+    var sha = ""
+    var at: [Int] = []
+    var tokens: [String] = []
+    /// Its stand-ins could be told apart from its words, so it can be kept across a restart.
+    var keepable = true
     var count: Int { categories.values.reduce(0, +) }
 }
 struct MaskedNumber {
@@ -59,7 +66,7 @@ final class PrivacyConversation {
         var original: String
         var category: PrivacyCategory
     }
-    private let key = SymmetricKey(size: .bits256)
+    private let key: SymmetricKey
     private var byValue: [String: String] = [:]
     private var counters: [PrivacyCategory: Int] = [:]
     /// Words shaped like a stand-in in what the conversation has said, which no value may go as.
@@ -90,6 +97,10 @@ final class PrivacyConversation {
     var allowedNumbers: [UInt64: Double] = [:]
     /// A key of the conversation's first exchange as its client wrote it, once it has one.
     var opening: String?
+    /// This Mac's account names, masked wherever they stand as a word: in a folder's name
+    /// (`-Users-name-project`), a listing's owner column, a prompt. Short ones too, which `minKnown`
+    /// would leave.
+    var machineUsers: [String] = []
     /// The content-free tag of the conversation this context serves: its client session's, or for a
     /// fork or a new client session of a conversation, the one it was forked from.
     let conversationTag: String?
@@ -97,8 +108,198 @@ final class PrivacyConversation {
     /// can tell a conversation's side requests and forks from other conversations.
     let backendID: String
     init(session: String? = nil, conversationTag: String? = nil) {
+        key = SymmetricKey(size: .bits256)
         self.conversationTag = conversationTag ?? session.map { Diagnostics.tag($0) }
         backendID = "privacy:" + UUID().uuidString + (self.conversationTag.map { "@" + $0 } ?? "")
+    }
+
+    // MARK: Across a restart
+
+    /// What a restart keeps of a conversation: no value it masked, and nothing keyed by one. Each text
+    /// it sent is kept by its place as the digest of what went and where each stand-in stood, with how long
+    /// the value behind each stand-in is. After the restart the client sends the history again, values
+    /// and all: where a text at its place, cut at those lengths and given those stand-ins, is what went,
+    /// the values are read back from it, and it goes as it went. A text that is not is masked afresh.
+    /// A place may have held several texts: the parallel tasks of one conversation share its context, each
+    /// with its own words at the same place, so each place keeps up to `placeMost` of them.
+    struct Saved: Codable {
+        var tag: String?
+        var backendID: String
+        /// Each stand-in's kind and the UTF-16 length of the value behind it.
+        var standIns: [String: SavedStandIn]
+        var numbers: [SavedNumberStandIn]
+        var counters: [String: Int]
+        var reserved: [String]
+        var texts: [String: [SavedText]]
+        var numberPlaces: [String: SavedNumber]
+        var lastUsed: Date
+        var pending: [String]
+        var aliases: [String]
+    }
+    struct SavedStandIn: Codable { var category: PrivacyCategory; var length: Int }
+    struct SavedNumberStandIn: Codable { var standIn: UInt64; var category: PrivacyCategory; var length: Int }
+    struct SavedText: Codable {
+        var sha: String
+        var at: [Int]
+        var tokens: [String]
+        var unchanged: Bool
+        var unread: Bool
+        var categories: [String: Int]
+    }
+    struct SavedNumber: Codable { var value: Double; var category: PrivacyCategory? }
+
+    /// Each sent text's and number's place, by cache key, for what a restart keeps.
+    private var places: [String: String] = [:]
+    private var numberPlaces: [String: String] = [:]
+    /// Kept from before the restart, by place, until the client sends the text there again.
+    private var restored: [String: [SavedText]] = [:]
+    /// Texts kept at one place across a restart, the latest sent first.
+    static let placeMost = 8
+    private var restoredNumbers: [String: SavedNumber] = [:]
+    /// Stand-ins from before the restart whose values no text sent again has told yet: none is given
+    /// to a new value.
+    private var unbound: [String: SavedStandIn] = [:]
+    private var unboundNumbers: [UInt64: SavedNumberStandIn] = [:]
+
+    var saved: Saved {
+        var standIns: [String: SavedStandIn] = unbound, numberStandIns = unboundNumbers
+        for (token, value) in values { standIns[token] = .init(category: value.category, length: (value.original as NSString).length) }
+        for (standIn, value) in numbers {
+            numberStandIns[standIn] = .init(standIn: standIn, category: value.category, length: (Self.numberText(value.original) as NSString).length)
+        }
+        let numberTokens = Set(numberStandIns.keys.map { Self.numberText(Double(bitPattern: $0)) })
+        var texts: [String: [SavedText]] = [:]
+        // What is held now first, newest sent first; then what came from before the restart and was not sent again.
+        let order = Dictionary(uniqueKeysWithValues: heldKeys.enumerated().map { ($1, $0) })
+        let held = cache.filter { sentCacheKeys.contains($0.key) && $0.value.keepable && !$0.value.sha.isEmpty }
+            .sorted { (order[$0.key] ?? -1) > (order[$1.key] ?? -1) }
+        for (key, masked) in held {
+            guard let place = places[key],
+                  masked.tokens.allSatisfy({ standIns[$0] != nil || numberTokens.contains($0) }) else { continue }
+            texts[place, default: []].append(SavedText(sha: masked.sha, at: masked.at, tokens: masked.tokens, unchanged: masked.unchanged,
+                                     unread: sentUnread.contains(key),
+                                     categories: Dictionary(uniqueKeysWithValues: masked.categories.map { ($0.key.rawValue, $0.value) })))
+        }
+        for (place, kept) in restored { texts[place, default: []] += kept }
+        for (place, list) in texts {
+            var seen = Set<String>()
+            texts[place] = Array(list.filter { seen.insert($0.sha).inserted }.prefix(Self.placeMost))
+        }
+        var places = restoredNumbers
+        for (key, masked) in numberCache where sentNumberKeys.contains(key) {
+            if let place = numberPlaces[key] { places[place] = SavedNumber(value: masked.value, category: masked.category) }
+        }
+        return Saved(tag: conversationTag, backendID: backendID, standIns: standIns, numbers: Array(numberStandIns.values),
+                     counters: Dictionary(uniqueKeysWithValues: counters.map { ($0.key.rawValue, $0.value) }),
+                     reserved: reservedWords.sorted(), texts: texts, numberPlaces: places, lastUsed: lastUsed,
+                     pending: pending.sorted(), aliases: aliases.filter { !$0.hasPrefix("request:") }.sorted())
+    }
+
+    /// A conversation as `saved` kept it, with a key of its own: nothing kept is keyed.
+    init(saved: Saved) {
+        key = SymmetricKey(size: .bits256)
+        conversationTag = saved.tag; backendID = saved.backendID
+        unbound = saved.standIns
+        for number in saved.numbers { unboundNumbers[number.standIn] = number }
+        for (name, count) in saved.counters { if let category = PrivacyCategory(rawValue: name) { counters[category] = count } }
+        reservedWords = Set(saved.reserved).union(saved.standIns.keys)
+        restored = saved.texts; restoredNumbers = saved.numberPlaces
+        lastUsed = saved.lastUsed; pending = Set(saved.pending); aliases = Set(saved.aliases)
+    }
+
+    static func sha(_ text: String) -> String { SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined() }
+    private static func place(_ location: String, _ field: String?) -> String {
+        location + "\u{0}" + (field.flatMap(PrivacyRules.fieldCategory)?.rawValue ?? "")
+    }
+
+    /// The text kept at `place` from before a restart, when `text` is what went there: cut at the kept
+    /// stand-ins' places and lengths, given them, it reads as what went. Its values are then known again,
+    /// and it goes as it went. Each text kept there is tried; the one taken is no longer kept, the others
+    /// stay for the tasks they were sent for. False, and nothing learnt, otherwise.
+    private func adopt(_ text: String, place: String, key: String) -> Bool {
+        guard let kept = restored[place] else { return false }
+        for (index, saved) in kept.enumerated() where adopt(text, saved, place: place, key: key) {
+            restored[place]?.remove(at: index)
+            if restored[place]?.isEmpty == true { restored[place] = nil }
+            return true
+        }
+        return false
+    }
+    private func adopt(_ text: String, _ saved: SavedText, place: String, key: String) -> Bool {
+        guard saved.at.count == saved.tokens.count else { return false }
+        let ns = text as NSString
+        var output = "", cursor = 0, shift = 0, told: [String: String] = [:]
+        for (offset, token) in zip(saved.at, saved.tokens) {
+            let tokenLength = (token as NSString).length
+            guard let length = lengthOf(token), length > 0 else { return false }
+            let start = offset + shift
+            guard start >= cursor, start + length <= ns.length else { return false }
+            output += ns.substring(with: NSRange(location: cursor, length: start - cursor)) + token
+            let original = ns.substring(with: NSRange(location: start, length: length))
+            if let earlier = told[token], earlier != original { return false }
+            told[token] = original
+            cursor = start + length; shift += length - tokenLength
+        }
+        output += ns.substring(from: cursor)
+        guard Self.sha(output) == saved.sha, told.allSatisfy({ fits($0.key, $0.value) }) else { return false }
+        for (token, original) in told { bind(token, original) }
+        var categories: [PrivacyCategory: Int] = [:]
+        for (name, count) in saved.categories { if let category = PrivacyCategory(rawValue: name) { categories[category] = count } }
+        let numeric = Set(told.keys.compactMap { token in values[token] == nil ? Double(token)?.bitPattern : nil })
+        var kept = MaskedText(text: saved.unchanged ? "" : output, categories: categories,
+                              placeholders: Set(told.keys.filter { values[$0] != nil }), numbers: numeric, fresh: false, unchanged: saved.unchanged)
+        kept.sha = saved.sha; kept.at = saved.at; kept.tokens = saved.tokens
+        guard (try? remember(kept, for: key)) != nil else { return false }
+        places[key] = place; sentCacheKeys.insert(key)
+        if saved.unread { sentUnread.insert(key) }
+        return true
+    }
+    private func lengthOf(_ token: String) -> Int? {
+        if let value = values[token] { return (value.original as NSString).length }
+        if let kept = unbound[token] { return kept.length }
+        guard let number = Double(token) else { return nil }
+        if let value = numbers[number.bitPattern] { return (Self.numberText(value.original) as NSString).length }
+        return unboundNumbers[number.bitPattern]?.length
+    }
+    /// `original` can be what `token` stands for: the value it stands for already, or one not given
+    /// another stand-in.
+    private func fits(_ token: String, _ original: String) -> Bool {
+        if let value = values[token] { return value.original == original }
+        if unbound[token] != nil {
+            let other = byValue[digest("value\u{0}" + original)]
+            return other == nil || other == token
+        }
+        guard let standIn = Double(token)?.bitPattern else { return false }
+        if let value = numbers[standIn] { return Self.numberText(value.original) == original }
+        guard unboundNumbers[standIn] != nil, let number = Double(original), Self.numberText(number) == original else { return false }
+        return numberByOriginal[number.bitPattern] == nil || numberByOriginal[number.bitPattern]?.bitPattern == standIn
+    }
+    private func bind(_ token: String, _ original: String) {
+        if let kept = unbound.removeValue(forKey: token) {
+            values[token] = Value(original: original, category: kept.category)
+            byValue[digest("value\u{0}" + original)] = token
+            bytes += original.utf8.count
+        } else if let standIn = Double(token)?.bitPattern, let kept = unboundNumbers.removeValue(forKey: standIn), let number = Double(original) {
+            numbers[standIn] = (number, kept.category)
+            numberByOriginal[number.bitPattern] = Double(bitPattern: standIn)
+            originalNumbers.insert(number.bitPattern)
+        }
+    }
+    /// The number kept at `location` from before a restart, when `number` is what went there.
+    private func adoptNumber(_ number: Double, location: String, key: String) -> MaskedNumber? {
+        guard let saved = restoredNumbers.removeValue(forKey: location) else { return nil }
+        if let category = saved.category {
+            let standIn = saved.value.bitPattern, original = Self.numberText(number)
+            if let value = numbers[standIn] { guard value.original == number else { return nil } }
+            else {
+                guard unboundNumbers[standIn] != nil, numberByOriginal[number.bitPattern] == nil else { return nil }
+                unboundNumbers[standIn] = .init(standIn: standIn, category: category, length: (original as NSString).length)
+                bind(Self.numberText(saved.value), original)
+            }
+        } else if saved.value != number { return nil }
+        let result = MaskedNumber(value: saved.value, category: saved.category, fresh: false)
+        numberCache[key] = result; sentNumberKeys.insert(key); numberPlaces[key] = location
+        return result
     }
 
     func digest(_ text: String) -> String {
@@ -118,6 +319,7 @@ final class PrivacyConversation {
     func reading(_ text: String, field: String?, location: String) -> Reading {
         guard !text.isEmpty, text.utf8.count <= 8 * 1024 * 1024 else { return .none }
         let key = textKey(text, field: field, location: location)
+        if !sentCacheKeys.contains(key), !restored.isEmpty { _ = adopt(text, place: Self.place(location, field), key: key) }
         guard cache[key] != nil, sentCacheKeys.contains(key) else { return .read }
         return sentUnread.contains(key) ? .lookUp : .none
     }
@@ -125,6 +327,7 @@ final class PrivacyConversation {
     func readingNumber(_ number: Double, location: String) -> String? {
         let key = digest(location + "\u{0}\(number.bitPattern)")
         if numberCache[key] != nil, sentNumberKeys.contains(key) { return nil }
+        if restoredNumbers[location] != nil { return nil }
         guard number.isFinite, numberByOriginal[number.bitPattern] == nil, numbers[number.bitPattern] == nil else { return nil }
         return Self.numberText(number)
     }
@@ -147,6 +350,8 @@ final class PrivacyConversation {
         let hint = field.flatMap(PrivacyRules.fieldCategory)
         let cacheKey = textKey(text, field: field, location: location)
         preparation?.textKeys.insert(cacheKey)
+        let place = Self.place(location, field)
+        if !sentCacheKeys.contains(cacheKey), !restored.isEmpty { _ = adopt(text, place: place, key: cacheKey) }
         let modelKey = explicit == nil && preparation != nil ? findsKey(text) : ""
         let model = explicit ?? preparation?.finds[modelKey]
         if var prior = cache[cacheKey], sentCacheKeys.contains(cacheKey) {
@@ -179,6 +384,15 @@ final class PrivacyConversation {
                 remainder = NSRange(location: NSMaxRange(range), length: ns.length - NSMaxRange(range))
             }
         }
+        for name in machineUsers {
+            var remainder = NSRange(location: 0, length: ns.length)
+            while remainder.length > 0 {
+                let range = ns.range(of: name, options: .literal, range: remainder)
+                if range.location == NSNotFound { break }
+                if Self.standsAlone(.username, range: range, in: ns) { found.append(.init(start: range.location, end: NSMaxRange(range), category: .username)) }
+                remainder = NSRange(location: NSMaxRange(range), length: ns.length - NSMaxRange(range))
+            }
+        }
         // Nothing inside a placeholder already there.
         if text.contains("{{") {
             let shapes = Self.placeholderShape.matches(in: text, range: NSRange(location: 0, length: ns.length)).map(\.range)
@@ -191,16 +405,21 @@ final class PrivacyConversation {
         }
         let spans = try merged(found, in: text)
         var output = "", cursor = 0, counts: [PrivacyCategory: Int] = [:], placeholders: Set<String> = []
+        var offset = 0, at: [Int] = [], tokens: [String] = []
         for span in spans {
             output += ns.substring(with: NSRange(location: cursor, length: span.start - cursor))
+            offset += span.start - cursor
             let original = ns.substring(with: NSRange(location: span.start, length: span.end - span.start))
             let token = placeholder(original, category: span.category)
+            at.append(offset); tokens.append(token); offset += (token as NSString).length
             output += token; placeholders.insert(token)
             counts[values[token]!.category, default: 0] += 1
             cursor = span.end
         }
         output += ns.substring(from: cursor)
-        let result = MaskedText(text: output, categories: counts, placeholders: placeholders)
+        var result = MaskedText(text: output, categories: counts, placeholders: placeholders)
+        result.sha = Self.sha(output); result.at = at; result.tokens = tokens
+        places[cacheKey] = place
         var kept = result
         if output == text { kept.text = ""; kept.unchanged = true }
         try remember(kept, for: cacheKey)
@@ -220,10 +439,17 @@ final class PrivacyConversation {
             categories[numbers[number]!.category, default: 0] += Self.numberOccurrences(Double(bitPattern: number), in: masked)
         }
         let hint = field.flatMap(PrivacyRules.fieldCategory)
-        try remember(MaskedText(text: masked == restored ? "" : masked, categories: categories, placeholders: placeholders, numbers: numeric,
-                                unchanged: masked == restored),
-                     for: digest(location + "\u{0}" + (hint?.rawValue ?? "") + "\u{0}" + restored))
-        sentCacheKeys.insert(digest(location + "\u{0}" + (hint?.rawValue ?? "") + "\u{0}" + restored))
+        var kept = MaskedText(text: masked == restored ? "" : masked, categories: categories, placeholders: placeholders, numbers: numeric,
+                              unchanged: masked == restored)
+        // Where the reply's stand-ins were put back, found again as its restorer put them back: kept across
+        // a restart only when that gives the words the client got.
+        var again = PrivacyTextRestorer(values: allowed, numericTokens: Set(numbers.keys.map { Self.numberText(Double(bitPattern: $0)) }))
+        if let told = try? again.append(masked, final: true), told == restored {
+            kept.sha = Self.sha(masked); kept.at = again.occurrences.map(\.offset); kept.tokens = again.occurrences.map(\.token)
+        } else { kept.keepable = false }
+        let key = digest(location + "\u{0}" + (hint?.rawValue ?? "") + "\u{0}" + restored)
+        try remember(kept, for: key)
+        sentCacheKeys.insert(key); places[key] = Self.place(location, field)
     }
 
     /// `number` masked as `mask` masks a text: by its field's kind, else by what the rules and the model's
@@ -233,6 +459,8 @@ final class PrivacyConversation {
         let cacheKey = digest(location + "\u{0}\(number.bitPattern)")
         preparation?.numberKeys.insert(cacheKey)
         if var prior = numberCache[cacheKey], sentNumberKeys.contains(cacheKey) { prior.fresh = false; return prior }
+        if !restoredNumbers.isEmpty, let adopted = adoptNumber(number, location: location, key: cacheKey) { return adopted }
+        numberPlaces[cacheKey] = location
         if numberCache.count >= 20_000 && numberCache[cacheKey] == nil {
             // full: what was masked and never sent goes first, as `remember` lets text go
             for key in numberCache.keys where !sentNumberKeys.contains(key) { numberCache.removeValue(forKey: key) }
@@ -260,7 +488,7 @@ final class PrivacyConversation {
             let hashed = digest("number\u{0}\(number.bitPattern)\u{0}\(attempt)")
             let magnitude = lower + UInt64(hashed.prefix(16), radix: 16)! % (upper - lower + 1)
             let replacement = Double(magnitude) * (number < 0 ? -1 : 1)
-            if !originalNumbers.contains(replacement.bitPattern), numbers[replacement.bitPattern] == nil {
+            if !originalNumbers.contains(replacement.bitPattern), numbers[replacement.bitPattern] == nil, unboundNumbers[replacement.bitPattern] == nil {
                 numberByOriginal[number.bitPattern] = replacement
                 numbers[replacement.bitPattern] = (number, category)
                 let result = MaskedNumber(value: replacement, category: category); numberCache[cacheKey] = result; return result
@@ -356,7 +584,7 @@ final class PrivacyConversation {
         var number = counters[category, default: 0], token = ""
         repeat {
             number += 1; token = PrivacyStandIn.text(for: category, number: number)
-        } while values[token] != nil || reservedWords.contains(token)
+        } while values[token] != nil || unbound[token] != nil || reservedWords.contains(token)
         counters[category] = number
         // never refused for how many values the conversation holds: its replies need each one put back
         values[token] = Value(original: original, category: category); byValue[identity] = token
@@ -422,6 +650,7 @@ final class PrivacyConversation {
         case .email: fits = value.contains("@")
         case .phone: fits = numberLike(value) && value.utf16.filter(digits.contains).count >= 7
         case .address: fits = value.contains(where: \.isLetter)
+        case .account: fits = PrivacyRules.modelAccount(value, at: a, in: text)
         default: fits = true
         }
         return fits ? PrivacySpan(start: a, end: b, category: span.category, score: span.score) : nil
@@ -483,6 +712,9 @@ struct PrivacyTextRestorer {
     private var pending = ""
     private var preceding: Character?
     private(set) var count = 0
+    /// Where in what came in each stand-in was put back (UTF-16 offsets), and which.
+    private(set) var occurrences: [(offset: Int, token: String)] = []
+    private var consumed = 0
     init(values: [String: String], numericTokens: Set<String> = []) {
         self.values = values; self.numericTokens = numericTokens; refresh()
     }
@@ -527,21 +759,26 @@ struct PrivacyTextRestorer {
             let head = pending[..<found.range.lowerBound]
             output += head
             if let last = head.last { preceding = last }
+            consumed += head.utf16.count
             // what comes next may make it a longer word
             if found.range.upperBound == pending.endIndex && !final && !found.token.hasPrefix("{{") {
                 pending = String(pending[found.range.lowerBound...]); return output
             }
             // a stand-in this request did not send is the model's own words, passed on as it is
-            if let original = values[found.token] { output += original; count += 1 } else { output += found.token }
+            if let original = values[found.token] {
+                output += original; count += 1; occurrences.append((consumed, found.token))
+            } else { output += found.token }
+            consumed += found.token.utf16.count
             preceding = found.token.last
             pending = String(pending[found.range.upperBound...])
         }
-        if final { output += pending; preceding = pending.last ?? preceding; pending = ""; return output }
+        if final { output += pending; consumed += pending.utf16.count; preceding = pending.last ?? preceding; pending = ""; return output }
         var held = 0
         for size in stride(from: min(longest, pending.count), to: 0, by: -1) where prefixes.contains(String(pending.suffix(size))) {
             held = size; break
         }
         output += pending.dropLast(held)
+        consumed += pending.dropLast(held).utf16.count
         preceding = pending.dropLast(held).last ?? preceding
         pending = String(pending.suffix(held))
         return output

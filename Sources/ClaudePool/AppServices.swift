@@ -1038,6 +1038,10 @@ final class AppServices {
         let server = try GatewayServer(port: dependencies.gatewayPort ?? library.preferences.port, token: try token(), backend: protection,
             models: PoolModel.listing(library.reportedModels ?? []),
             onCheck: { [weak self] check in Task { @MainActor in self?.model.desktopCheck = .init(at: check.at, failure: check.failure) } })
+        // Redacted conversations go on masked as they went before the restart, so they keep their sessions.
+        if let saved = try? workspace.read(workspace.root.appendingPathComponent(Self.privacyContextsFile), limit: 64 << 20) {
+            await protection.restoreContexts(saved)
+        }
         await protection.setEnabled(redaction)
         listeningPort = try await server.start()
         privacyBridge = protection
@@ -1430,6 +1434,8 @@ final class AppServices {
     }
     /// Content-free tags of recent conversations and the account each is on.
     static let conversationAccountsFile = "conversation-accounts.json"
+    /// Recent conversations' redaction: the values each masked and what it sent, private to the app.
+    static let privacyContextsFile = "privacy-contexts.lzfse"
     private func checkAfterFailedRead(_ id: UUID) {
         let now = Date()
         guard dependencies.checkAccountsAutomatically, now.timeIntervalSince(failedReadChecks[id] ?? .distantPast) >= 3600,
@@ -1573,6 +1579,11 @@ final class AppServices {
         // After the sessions end, so the shelf they were kept on is saved with the conversations' accounts.
         if let pool, let workspace, let saved = await pool.rememberedAccounts() {
             try? workspace.write(saved, to: workspace.root.appendingPathComponent(Self.conversationAccountsFile))
+        }
+        if let workspace, let privacyBridge {
+            let file = workspace.root.appendingPathComponent(Self.privacyContextsFile)
+            if let saved = await privacyBridge.savedContexts() { try? workspace.write(saved, to: file, limit: 64 << 20) }
+            else { try? workspace.remove(file) }
         }
         guard observersClosed, sessionsEnded else {
             if wasRunning { try? await quota?.start() }

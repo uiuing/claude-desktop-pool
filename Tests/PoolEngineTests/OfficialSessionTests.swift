@@ -39,7 +39,8 @@ final class OfficialSessionTests: XCTestCase {
         XCTAssertEqual(settings["disableDeepLinkRegistration"]?.stringValue, "disable")
         XCTAssertNotNil(settings["statusLine"])
         for (key, expected) in ["ENABLE_CLAUDEAI_MCP_SERVERS": "0", "DISABLE_AUTO_COMPACT": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-                                "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1", "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS": "1", "CLAUDE_CODE_PROMPT_CACHE_TTL": "1h"] {
+                                "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1", "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS": "1",
+                                "CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"] {
             XCTAssertEqual(plan.environment[key], expected, key)
         }
         for key in ["CLAUDE_CODE_SKIP_PROMPT_HISTORY", "CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS", "ANTHROPIC_API_KEY", "CLAUDECODE"] {
@@ -51,6 +52,23 @@ final class OfficialSessionTests: XCTestCase {
         XCTAssertEqual(harness.exitCount, 1)
         XCTAssertTrue(harness.allInputs.suffix(6).elementsEqual(["/", "e", "x", "i", "t", "\r"]), "/exit is typed a character at a time, then Return")
         XCTAssertFalse(FileManager.default.fileExists(atPath: transcript.path), "The run's session file goes with it")
+    }
+
+    /// The cache lasts as Claude Code's own on a subscription: an hour for a main conversation, five
+    /// minutes for a subagent's turns and one-off asks such as the auto mode classifier.
+    func testCacheTermFollowsClaudeCodesOwn() {
+        let tool = BridgeTool(name: "Read", inputSchema: object)
+        let main = request("Read the synthetic note.", tools: [tool])
+        XCTAssertEqual(OfficialSession.cacheTerm(main), "1h")
+        var subagent = main; subagent.subagent = true
+        XCTAssertEqual(OfficialSession.cacheTerm(subagent), "5m")
+        // the classifier's shape: no tools, the transcript in user messages, no earlier reply
+        var classifier = request("synthetic transcript")
+        classifier.messages.append(.init(role: "user", content: .string("synthetic action to classify")))
+        XCTAssertEqual(OfficialSession.cacheTerm(classifier), "5m")
+        var answered = request("Hello")
+        answered.messages += [.init(role: "assistant", content: .string("Hi")), .init(role: "user", content: .string("Go on"))]
+        XCTAssertEqual(OfficialSession.cacheTerm(answered), "1h", "A conversation without tools that goes on is a main conversation")
     }
 
     func testATurnWithoutUsageFinishesWithZeroUsageAndMessagesAreSummed() async throws {

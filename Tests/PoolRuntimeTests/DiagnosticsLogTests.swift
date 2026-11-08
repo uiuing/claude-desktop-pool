@@ -29,15 +29,16 @@ final class DiagnosticsLogTests: XCTestCase {
     }
 
     func testFullLogMovesAsideSoAtMostTwoFilesExist() throws {
-        let log = DiagnosticsLog(directory: try folder())
+        // The rotation at a small size: the same code as at 10 MiB, without writing 10 MiB.
+        let log = DiagnosticsLog(directory: try folder(), maxSize: 64 << 10)
         try log.install(version: "0.1.0")
         defer { Diagnostics.install(nil) }
         let padding = String(repeating: "x", count: 150)
-        for i in 0..<(DiagnosticsLog.limit / 180 + 50) { Diagnostics.record("fill", ["i": String(i), "pad": padding]) }
+        for i in 0..<(log.maxSize / 180 + 50) { Diagnostics.record("fill", ["i": String(i), "pad": padding]) }
         let old = log.directory.appendingPathComponent("pool.old.log")
         XCTAssertTrue(FileManager.default.fileExists(atPath: old.path))
         let current = try FileManager.default.attributesOfItem(atPath: log.file.path)[.size] as? Int ?? 0
-        XCTAssertLessThanOrEqual(current, DiagnosticsLog.limit)
+        XCTAssertLessThanOrEqual(current, log.maxSize)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: log.directory.path).sorted(), ["pool.log", "pool.old.log"])
     }
 }

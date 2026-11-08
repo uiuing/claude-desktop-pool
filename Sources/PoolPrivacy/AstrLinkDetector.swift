@@ -188,7 +188,7 @@ public actor AstrLinkDetector: PrivacyModelManaging {
             while start < tokens.count {
                 try Task.checkCancellation()
                 guard ContinuousClock.now < deadline else { throw PrivacyFailure.modelFailed }
-                let end = min(tokens.count, start + 510)
+                let end = min(tokens.count, start + Self.window)
                 let ids = [Int64(0)] + tokens[start..<end].map { Int64($0.id) } + [Int64(2)]
                 let logits = try model.logits(ids)
                 try Task.checkCancellation()
@@ -203,7 +203,7 @@ public actor AstrLinkDetector: PrivacyModelManaging {
                     labels[index] = winner - row.startIndex; scores[index] = 1 / sum; margins[index] = margin
                 }
                 if end == tokens.count { break }
-                start += 382
+                start += Self.window - Self.overlap
                 await Task.yield()
             }
             try Task.checkCancellation()
@@ -287,6 +287,13 @@ public actor AstrLinkDetector: PrivacyModelManaging {
         }
     }
 
+    /// Tokens the model reads at once, and how many of them the next window reads again: each token is
+    /// labelled from the window it is furthest inside, so a name cut by one window's end has at least
+    /// `overlap / 2` tokens around it in the other.
+    static let window = 510
+    static let overlap = 96
+    static func threads(cores: Int) -> Int { max(1, min(4, cores / 2)) }
+
     static func spans(tokens: [AstrLinkTokenizer.Token], labels: [Int], scores: [Double]) -> [PrivacySpan] {
         let kinds: [PrivacyCategory] = [.email, .phone, .account, .bankCard, .ip, .url, .secret, .address, .date, .person]
         var result: [PrivacySpan] = [], current: PrivacySpan?
@@ -318,7 +325,9 @@ private final class AstrLinkSession: AstrLinkInference {
         self.tokenizer = try AstrLinkTokenizer(data: tokenizer)
         environment = try ORTEnv(loggingLevel: .fatal)
         let options = try ORTSessionOptions()
-        try options.setIntraOpNumThreads(Int32(max(1, min(2, ProcessInfo.processInfo.activeProcessorCount / 2))))
+        // Four threads read a window in about half the time two do; more add little. Half the cores at
+        // most, so the Claude sessions beside it keep theirs.
+        try options.setIntraOpNumThreads(Int32(AstrLinkDetector.threads(cores: ProcessInfo.processInfo.activeProcessorCount)))
         try options.setLogSeverityLevel(.fatal)
         try options.addConfigEntry(withKey: "session.intra_op.allow_spinning", value: "0")
         try options.setGraphOptimizationLevel(.all)

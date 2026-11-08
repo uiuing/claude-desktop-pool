@@ -64,6 +64,9 @@ public struct BridgeRequest: Codable, Equatable, Sendable {
     /// The client offered Anthropic's web search: the session searches with Claude Code's own WebSearch,
     /// as the subscription does.
     public var webSearch = false
+    /// The request comes from one of the client's subagents (`x-claude-code-agent-id`). Set by the gateway,
+    /// never decoded from a client.
+    public var subagent = false
     enum CodingKeys: String, CodingKey {
         case model, messages, system, tools, stream, metadata; case maxTokens = "max_tokens"
     }

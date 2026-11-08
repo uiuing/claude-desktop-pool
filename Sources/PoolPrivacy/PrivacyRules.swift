@@ -62,14 +62,14 @@ enum PrivacyRules {
         Rule(.secret, on: ["authorization", "cookie"], #"(?i)(?:^|["'\s])(?:authorization|proxy-authorization|cookie|set-cookie)\\?["']?[ \t]*:[ \t]*\\?["']?([^\r\n"'\\]{8,})"#, group: 1, accepts: headerValue),
         // one pass for a secret's name and its value as JSON in a string, in quotes, in single quotes or bare
         Rule(.secret, on: credentialMarkers, byLine: true, credentialName
-             + #"(?:\\"([^"\\\r\n]{1,512})|"((?:\\.|[^"\\\r\n]){1,512})"|'((?:\\.|[^'\\\r\n]){1,512})'|([^\s"',;}{\\]+))"#,
+             + #"(?:\\"([^"\\\r\n]{1,512})|"((?:\\.|[^"\\\r\n]){1,512})"|'((?:\\.|[^'\\\r\n]){1,512})'|([^\s"',;}{\\\x{80}-\x{10FFFF}]+))"#,
              group: anyValue, at: credential),
-        Rule(.password, on: ["\u{5BC6}\u{7801}", "\u{5BC6}\u{78BC}", "\u{53E3}\u{4EE4}", "\u{5BC6}\u{94A5}", "\u{5BC6}\u{9470}"], #"(?:\u5BC6\u7801|\u5BC6\u78BC|\u53E3\u4EE4|\u5BC6\u94A5|\u5BC6\u9470)[ \t]*((?:[:=\uFF1A]|\u662F|\u4E3A|\u70BA)[ \t]*)?["']?([^\s"',;}{\u3002\uFF0C]+)"#, group: 2, at: namedInWords),
+        Rule(.password, on: ["\u{5BC6}\u{7801}", "\u{5BC6}\u{78BC}", "\u{53E3}\u{4EE4}", "\u{5BC6}\u{94A5}", "\u{5BC6}\u{9470}"], #"(?:\u5BC6\u7801|\u5BC6\u78BC|\u53E3\u4EE4|\u5BC6\u94A5|\u5BC6\u9470)[ \t]*((?:[:=\uFF1A]|\u662F|\u4E3A|\u70BA)[ \t]*)?["']?([^\s"',;}{\x{80}-\x{10FFFF}]+)"#, group: 2, at: namedInWords),
         Rule(.password, on: ["://"], #"[A-Za-z][A-Za-z0-9+.-]*://[^\s:@/?#"'<>]*:([^\s@/?#"'<>]{3,})@"#, group: 1, accepts: notVariable),
         Rule(.email, on: ["@"], #"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,63}(?![A-Za-z0-9_-])"#, accepts: realEmail),
-        Rule(.identityCard, on: [digit], #"(?<![A-Za-z0-9])[1-9][0-9]{5}(?:18|19|20)[0-9]{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12][0-9]|3[01])[0-9]{3}[0-9Xx](?![A-Za-z0-9])"#, accepts: chineseID),
+        Rule(.identityCard, on: [digit], #"(?<![A-Za-z0-9])(?<![0-9][.,])[1-9][0-9]{5}(?:18|19|20)[0-9]{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12][0-9]|3[01])[0-9]{3}[0-9Xx](?![A-Za-z0-9])(?![.,][0-9])"#, accepts: chineseID),
         // not a run of digits inside a UUID, a hash or a longer word
-        Rule(.bankCard, on: [digit], #"(?<![A-Za-z0-9_-])[3-6][0-9](?:[ -]?[0-9]){11,17}(?![A-Za-z0-9_-])"#, accepts: luhn),
+        Rule(.bankCard, on: [digit], #"(?<![A-Za-z0-9_-])(?<![0-9][.,])[3-6][0-9](?:[ -]?[0-9]){11,17}(?![A-Za-z0-9_-])(?![.,][0-9])"#, accepts: luhn),
         Rule(.ssn, on: ["-"], #"(?<![0-9])[0-9]{3}-[0-9]{2}-[0-9]{4}(?![0-9])"#, accepts: ssn),
         Rule(.ssn, on: ["ssn", "social"], #"(?i)\b(?:ssn|social security(?: number)?)[ \t]*[:=#]?[ \t]*([0-9]{9})(?![0-9])"#, group: 1, accepts: ssn),
         Rule(.passport, on: ["passport", "\u{62A4}\u{7167}", "\u{8B77}\u{7167}"], #"(?:(?i:\bpassport(?:[ \t]*(?:no\.?|number|num|#))?)|\u62A4\u7167(?:\u53F7\u7801|\u53F7)?|\u8B77\u7167(?:\u865F\u78BC|\u865F)?)["']?[ \t]*(?:[:=#\uFF1A][ \t]*)?(?:(?i:is|was)[ \t]+)?["']?([A-Z0-9]{6,9})(?![A-Z0-9])"#, group: 1, accepts: passportOK),
@@ -243,7 +243,8 @@ enum PrivacyRules {
     /// A length or count after the word ("key is 32 \u4F4D", bits, bytes, times, durations) says nothing secret.
     private static func namedInWords(_ hit: Hit) -> Bool {
         let value = hit.value
-        guard notVariable(value), value.count >= 4 else { return false }
+        // a link given after the word is where a key is got, not the key
+        guard notVariable(value), value.count >= 4, !value.contains("://") else { return false }
         if matches(hit.restOfLine, #"^[ \t]*(?:\u4F4D|\u6BD4\u7279|\u5B57\u8282|\u4E2A|\u6B21|\u79D2|\u6BEB\u79D2|\u5206\u949F|\u5C0F\u65F6|\u5929|\u5E74|bit|byte|ms)"#) { return false }
         return hit.group(1) != nil || (value.allSatisfy(\.isASCII) && has(value, asciiDigit))
     }
@@ -252,9 +253,30 @@ enum PrivacyRules {
     /// and names in code are one only where they are given to a secret's name.
     static func modelSecret(_ value: String, at start: Int, in text: NSString) -> Bool {
         guard value.utf8.count >= 8, notVariable(value), !pointsElsewhere(value) else { return false }
+        let named = matches(before(start, in: text), secretNamed)
+        if shortHex(value) { return named }
         guard wordsOnly(value) || (identifier(value) && !has(value, asciiDigit)) else { return true }
-        let before = text.substring(with: NSRange(location: max(0, start - 64), length: min(64, start)))
-        return matches(before, #"(?i)(?:secret|token|key|pass|pwd|credential|\u5BC6\u7801|\u5BC6\u78BC|\u5BC6\u94A5|\u4EE4\u724C)[A-Za-z0-9_.-]*["'`]?[ \t]*(?:=|:|\uFF1A|\bis|\bwas|\u662F|\u4E3A|\u70BA)[ \t]*["'`]?$"#)
+        return named
+    }
+    /// Given to a secret's name just before: `token=`, `key: "`, or the Chinese for "the key is".
+    private static let secretNamed = #"(?i)(?:secret|token|key|pass|pwd|credential|\u5BC6\u7801|\u5BC6\u78BC|\u5BC6\u94A5|\u4EE4\u724C)[A-Za-z0-9_.-]*["'`]?[ \t]*(?:=|:|\uFF1A|\bis|\bwas|\u662F|\u4E3A|\u70BA)[ \t]*["'`]?$"#
+    /// Given to an account's name just before: `account: `, `acct_no=`, or the Chinese for "account:".
+    private static let accountNamed = #"(?i)(?:account|acct|user(?:name)?|login|\u8D26\u53F7|\u5E33\u865F|\u6237\u53F7|\u8D26\u6237)[A-Za-z0-9_.-]*["'`]?[ \t]*(?:=|:|\uFF1A|\bis|\u662F|\u4E3A|\u70BA)[ \t]*["'`]?$"#
+    private static func before(_ start: Int, in text: NSString) -> String {
+        text.substring(with: NSRange(location: max(0, start - 64), length: min(64, start)))
+    }
+    /// Hex digits only, 16 at most, letters and digits both: a commit, a run's or an account's tag in a
+    /// log, an id cut short. The model takes such for an account or a secret where nothing names it so.
+    /// Digits alone are left to the model: they are how account numbers are written.
+    static func shortHex(_ value: String) -> Bool {
+        value.count <= 16 && value.allSatisfy(\.isHexDigit) && value.contains(where: \.isNumber) && value.contains(where: \.isLetter)
+    }
+    /// A value the local model called an account: a short run of hex digits is one only where it is
+    /// given to an account's or a secret's name.
+    static func modelAccount(_ value: String, at start: Int, in text: NSString) -> Bool {
+        guard shortHex(value) else { return true }
+        let context = before(start, in: text)
+        return matches(context, accountNamed) || matches(context, secretNamed)
     }
 
     /// What a field of this kind holds, by its name.
@@ -295,6 +317,12 @@ enum PrivacyRules {
         "fedora", "azureuser", "opc", "core", "vagrant", "docker", "str", "string", "int", "bool", "any", "none", "null", "nil", "true", "false",
         "undefined", "hi", "hello", "hey", "yes", "no", "ok", "okay", "thanks", "continue", "go", "stop", "help", "test",
         "done", "why", "what", "how", "sure", "please", "retry", "next", "again", "good", "fix", "required", "optional", "unknown", "anonymous", "current"]
+    /// A Mac's own account name worth masking wherever it stands as a word: three characters or more,
+    /// written as account names are, and not a name every machine has or a common word.
+    static func machineUser(_ value: String) -> Bool {
+        value.count >= 3 && value.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "_.-".contains($0)) }
+            && homeUser(value) && !notUsers.contains(value.lowercased())
+    }
     private static func homeUser(_ value: String) -> Bool { !value.hasPrefix(".") && !notNames.contains(value.lowercased()) }
     private static func userOK(_ value: String) -> Bool {
         let plain = value.lowercased()

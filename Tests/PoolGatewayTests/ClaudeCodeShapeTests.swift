@@ -128,6 +128,20 @@ final class ClaudeCodeShapeTests: XCTestCase {
         XCTAssertTrue(ids[0].hasPrefix("fixture-session#"))
     }
 
+    /// Claude Code names a subagent's requests with `x-claude-code-agent-id`; the main conversation's carry none.
+    func testRouterMarksASubagentsRequests() throws {
+        let router = try GatewayRouter(port: 18473, token: String(repeating: "ab", count: 32))
+        let headers = ["host": "127.0.0.1:18473", "authorization": "Bearer " + String(repeating: "ab", count: 32),
+                       "content-type": "application/json"]
+        var marked: [Bool] = []
+        for extra in [[:], ["x-claude-code-agent-id": "a1b2c3d4e5f60718"], ["x-claude-code-agent-id": ""]] {
+            guard case .messages(let request, _, _) = try router.route(.init(method: "POST", path: "/v1/messages",
+                    headers: headers.merging(extra) { $1 }, body: body(turn))) else { return XCTFail("A Claude Code request was not served") }
+            marked.append(request.subagent)
+        }
+        XCTAssertEqual(marked, [false, true, false])
+    }
+
     func testRequestsWithoutToolSearchAreUnchanged() throws {
         let plain = #"""
         [{"name":"Bash","description":"Run a command","input_schema":{"type":"object"}},

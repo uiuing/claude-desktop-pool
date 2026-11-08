@@ -45,6 +45,17 @@ final class PrivacyRulesTests: XCTestCase {
         XCTAssertFalse(PrivacyRules.spans(in: "4111111111111112").contains { $0.category == .bankCard })
     }
 
+    /// A long decimal fraction, such as a test report's time, is a number, not a card or an ID; a card
+    /// at the end of a sentence still is.
+    func testDecimalFractionsAreNotCardsOrIDs() {
+        for text in ["time=\"374.4111111111111111\"", "took 12.4111111111111111 seconds", "1,4111111111111111",
+                     "4111111111111111.25", "0.110105199001011232"] {
+            XCTAssertFalse(PrivacyRules.spans(in: text).contains { $0.category == .bankCard || $0.category == .identityCard }, text)
+        }
+        XCTAssertTrue(PrivacyRules.spans(in: "Card 4111111111111111.").contains { $0.category == .bankCard })
+        XCTAssertTrue(PrivacyRules.spans(in: "ID 110105199001011232, then").contains { $0.category == .identityCard })
+    }
+
     func testNamedCredentialsAndQuotedValuesAreWholeSecrets() async throws {
         let context = PrivacyConversation(), detector = FixtureDetector()
         for field in ["access_key", "client_key", "DB_PASS", "SERVICE_X_KEY", "pin_code"] {
@@ -207,5 +218,46 @@ actor FixtureDetector: PrivacyEntityDetector {
             }
             return spans
         }
+    }
+}
+
+extension PrivacyRulesTests {
+    private func found(_ text: String, _ categories: Set<PrivacyCategory>) -> [String] {
+        let ns = text as NSString
+        return PrivacyRules.spans(in: text).filter { categories.contains($0.category) }
+            .map { ns.substring(with: NSRange(location: $0.start, length: $0.end - $0.start)) }
+    }
+
+    /// A bare value ends where the words around it go on in another script: a quote or a sentence
+    /// written right after it is not part of it.
+    func testBareSecretEndsAtTheTextAfterIt() {
+        let secrets: Set<PrivacyCategory> = [.secret, .password, .apiKey, .token]
+        XCTAssertEqual(found("secret_key=a1b2c3d4e5f6a7b8\u{201D}与\u{201C}Synthetic.Library 匹配", secrets), ["a1b2c3d4e5f6a7b8"])
+        XCTAssertEqual(found("secret_key=a1b2c3d4e5f6a7b8\u{FFFD}\u{FFFD}", secrets), ["a1b2c3d4e5f6a7b8"])
+        XCTAssertEqual(found("\u{5BC6}\u{7801}\u{FF1A}Abc12345\u{FF0C}请保管好", secrets), ["Abc12345"])
+    }
+
+    /// A link after the word for a key is where the key is got, not the key.
+    func testLinkAfterKeyWordIsNotAPassword() {
+        XCTAssertEqual(found("\u{5BC6}\u{94A5}\u{FF1A}https://console.example.com/keys/new", [.password, .secret]), [])
+        XCTAssertEqual(found("\u{5BC6}\u{94A5}\u{FF1A}Kx93mPq27", [.password]), ["Kx93mPq27"])
+    }
+}
+
+extension PrivacyRulesTests {
+    /// A short run of hex digits the model calls an account or a secret, a log's tag or a commit, is one
+    /// only where a name gives it so; digits alone, as account numbers are written, stay the model's.
+    func testShortHexIdsAreAccountsOrSecretsOnlyWhereNamed() {
+        func taken(_ text: String, _ value: String, _ category: PrivacyCategory) -> Bool {
+            let ns = text as NSString, range = ns.range(of: value)
+            return PrivacyConversation.modelSpan(.init(start: range.location, end: NSMaxRange(range), category: category, score: 0.9), in: ns) != nil
+        }
+        XCTAssertTrue(taken("event=coordinator.pick account=3fa9c21b kept=yes", "3fa9c21b", .account), "Named by account=")
+        XCTAssertTrue(taken("account: 3fa9c21b", "3fa9c21b", .account))
+        XCTAssertFalse(taken("run=3fa9c21b from=idle to=ended", "3fa9c21b", .account))
+        XCTAssertFalse(taken("commit 9e1c2b7d4a6f0835 fixed the log", "9e1c2b7d4a6f0835", .secret))
+        XCTAssertTrue(taken("token=9e1c2b7d4a6f0835", "9e1c2b7d4a6f0835", .secret))
+        XCTAssertTrue(taken("pay to 6222020200112233", "6222020200112233", .account), "Digits alone stay the model's")
+        XCTAssertTrue(taken("ref 9e1c2b7d4a6f0835aa77", "9e1c2b7d4a6f0835aa77", .secret), "Longer runs stay the model's")
     }
 }

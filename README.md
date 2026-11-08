@@ -95,7 +95,7 @@ Requires Xcode 26 or later. The app itself runs on macOS 14 and later.
 git clone https://github.com/uiuing/claude-desktop-pool.git
 cd claude-desktop-pool
 swift build
-swift test
+swift test --parallel
 zsh scripts/build.sh
 open "dist/Claude Pool.app" --args --demo
 ```

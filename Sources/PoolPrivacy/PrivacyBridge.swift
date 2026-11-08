@@ -14,17 +14,21 @@ public actor PrivacyBridge: BridgeBackend {
     private var processing = 0
     private var enabled = true
     private let reader: PrivacyReader
+    /// This Mac's account names, masked in every conversation wherever they stand as a word.
+    private let machineUsers: [String]
+    /// The account name of the person running Pool, when it is one worth masking.
+    public static var currentMachineUsers: [String] { [NSUserName()].filter(PrivacyRules.machineUser) }
 
     public init(backend: any BridgeBackend, detector: any PrivacyEntityDetector,
                 onUpdate: @escaping @Sendable (PrivacyUpdate) -> Void = { _ in }) {
-        self.init(backend: backend, detector: detector, wait: PrivacyReader.defaultWait, onUpdate: onUpdate)
+        self.init(backend: backend, detector: detector, wait: PrivacyReader.defaultWait, machineUsers: Self.currentMachineUsers, onUpdate: onUpdate)
     }
     /// `wait`: how long a request waits for the local model; `retryAfter`: how
     /// long a failed model rests before it is asked again.
     init(backend: any BridgeBackend, detector: any PrivacyEntityDetector, wait: Duration,
-         retryAfter: @escaping @Sendable (Int) -> Duration = { PrivacyReader.retryAfter($0) },
+         retryAfter: @escaping @Sendable (Int) -> Duration = { PrivacyReader.retryAfter($0) }, machineUsers: [String] = [],
          onUpdate: @escaping @Sendable (PrivacyUpdate) -> Void = { _ in }) {
-        self.backend = backend; self.detector = detector; self.onUpdate = onUpdate
+        self.backend = backend; self.detector = detector; self.onUpdate = onUpdate; self.machineUsers = machineUsers
         reader = PrivacyReader(detector: detector, wait: wait, retryAfter: retryAfter, onModel: { onUpdate(.model($0)) })
     }
     deinit {
@@ -32,6 +36,45 @@ public actor PrivacyBridge: BridgeBackend {
         Task { await reader.stop() }
     }
     public func statistics() -> PrivacyStatistics { totals }
+
+    /// How long a conversation's redaction is kept across a restart after its last request.
+    static let keptFor: TimeInterval = 24 * 3600
+    private struct Saved: Codable { var contexts: [PrivacyConversation.Saved] }
+
+    /// The redaction of recent conversations, so after a restart their history is masked as it went
+    /// and they go on from their sessions and prompt cache: compressed, `limit` bytes at most, the
+    /// conversations used longest ago left out first. It holds no value masked and nothing keyed by one
+    /// (`PrivacyConversation.Saved`); it goes only to the app's private folder. Nil with none to keep.
+    public func savedContexts(limit: Int = 48 << 20, now: Date = Date()) -> Data? {
+        var kept = contexts.values.filter { now.timeIntervalSince($0.lastUsed) < Self.keptFor && !$0.cancelled }
+            .sorted { $0.lastUsed > $1.lastUsed }.map(\.saved)
+        while !kept.isEmpty {
+            if let json = try? JSONEncoder().encode(Saved(contexts: kept)),
+               let packed = try? (json as NSData).compressed(using: .lzfse) as Data, packed.count <= limit {
+                Diagnostics.record("privacy.saved", ["conversations": String(kept.count), "bytes": String(packed.count)])
+                return packed
+            }
+            kept.removeLast(max(1, kept.count / 4))
+        }
+        return nil
+    }
+
+    /// Takes back what `savedContexts` kept, before the first request: conversations last used within
+    /// `keptFor`. Anything that does not read back is left out.
+    public func restoreContexts(_ data: Data, now: Date = Date()) {
+        guard contexts.isEmpty, let json = try? (data as NSData).decompressed(using: .lzfse) as Data,
+              let saved = try? JSONDecoder().decode(Saved.self, from: json) else {
+            Diagnostics.record("privacy.restored", ["conversations": "0", "outcome": "unreadable"]); return
+        }
+        for kept in saved.contexts where now.timeIntervalSince(kept.lastUsed) < Self.keptFor && contexts.count < 32 {
+            let context = PrivacyConversation(saved: kept)
+            context.machineUsers = machineUsers
+            let id = UUID(); contexts[id] = context
+            for alias in context.aliases where aliases[alias] == nil { aliases[alias] = id }
+            for call in context.pending where toolOwners[call] == nil { toolOwners[call] = id }
+        }
+        Diagnostics.record("privacy.restored", ["conversations": String(contexts.count), "outcome": "ok"])
+    }
     /// Off, requests go to the pool as Desktop sent them. Conversations redacted before keep their own
     /// runs; the first request after a switch, either way, is served in a new run with its whole history.
     public func setEnabled(_ value: Bool) {
@@ -182,7 +225,9 @@ public actor PrivacyBridge: BridgeBackend {
     }
 
     /// The protected conversation a request belongs to. Tool results go to the context that restored
-    /// their calls while it still has them; when it is gone (evicted, forgotten) or another conversation
+    /// their calls while it still has them, and the context served this conversation before: parallel
+    /// tasks of one conversation share its alias, each in a context of its own, and each task's results
+    /// go back to its own. When the context is gone (evicted, forgotten) or another conversation
     /// holds the alias, the request is matched as any other: by alias, then by its history, else a new
     /// context masks the whole history afresh and the pool replays it in a new run, never a refusal.
     /// A request for a context still answering waits briefly for it, then
@@ -191,8 +236,8 @@ public actor PrivacyBridge: BridgeBackend {
         var renewed: String?
         if !results.isEmpty {
             let owners = Set(results.compactMap { toolOwners[$0] })
-            if owners.count == 1, results.allSatisfy({ toolOwners[$0] != nil }), let id = owners.first,
-               contexts[id] != nil, aliases[alias] == nil || aliases[alias] == id {
+            if owners.count == 1, results.allSatisfy({ toolOwners[$0] != nil }), let id = owners.first, let owner = contexts[id],
+               aliases[alias] == nil || aliases[alias] == id || owner.aliases.contains(alias) {
                 if await settled(id) { return id }
                 renewed = "answered_elsewhere"
             } else {
@@ -230,7 +275,9 @@ public actor PrivacyBridge: BridgeBackend {
             Diagnostics.record("privacy.route", ["decision": "opening_matched", "conversation": Diagnostics.tag(alias),
                                                  "joins": forkedFrom ?? "-"])
         }
-        let id = UUID(); contexts[id] = PrivacyConversation(session: session, conversationTag: forkedFrom); return id
+        let context = PrivacyConversation(session: session, conversationTag: forkedFrom)
+        context.machineUsers = machineUsers
+        let id = UUID(); contexts[id] = context; return id
     }
     /// A key of a conversation's first exchange as its client wrote it, cache marks left out, as they
     /// move from turn to turn. Nil before a reply, so two conversations that open alike stay apart.

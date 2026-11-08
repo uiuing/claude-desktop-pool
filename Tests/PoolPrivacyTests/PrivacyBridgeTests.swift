@@ -852,3 +852,220 @@ private func privacyAssistant(_ events: [BridgeEvent]) -> JSONValue {
     if !text.isEmpty { content.append(.object(["type": .string("text"), "text": .string(text)])) }
     return .array(content)
 }
+
+extension PrivacyBridgeTests {
+    /// After a restart a conversation's history goes masked as it went, even where the model would now
+    /// find more than it had read in time, so the pool can go on from its session; the call it was
+    /// waiting on is answered in the same context, under the same conversation id.
+    func testRestartKeepsHistoryMaskedAsItWentAndCallsOnTheirContext() async throws {
+        let detector = FixtureDetector(words: ["Synthetic Person": .person])
+        let first = PrivacyBackendFixture()
+        // The model has no time: the first turn goes with the rules alone.
+        let before = PrivacyBridge(backend: first, detector: detector, wait: .zero)
+        let tools = [BridgeTool(name: "lookup", inputSchema: .object(["type": .string("object")]))]
+        var request = BridgeRequest(model: "claude-sonnet", messages: [.init(role: "user", content: .string(
+            "Synthetic Person keeps notes in /Users/synthetic-owner/notes"))], tools: tools)
+        let alias = "session-restart#shape"
+        let opening = Task { try await collectPrivacy(try await before.events(for: request, conversationID: alias)) }
+        try await privacyEventually { await first.requests.count == 1 }
+        let sent = await first.requests[0], identity = await first.identities[0]
+        let home = try privacyNamed(sent.messages[0].content.stringValue!)
+        let call = BridgeToolCall(id: "toolu_restart_call", name: "lookup", input: .object(["path": .string("/Users/\(home)/notes")]))
+        await first.finish(0, [.toolUse(call), .finished(.toolUse)])
+        let events = try await opening.value
+        let saved = await before.savedContexts()
+        let data = try XCTUnwrap(saved)
+        let kept = String(decoding: try XCTUnwrap((data as NSData).decompressed(using: .lzfse) as Data), as: UTF8.self)
+        for original in ["synthetic-owner", "Synthetic Person", "notes"] { XCTAssertFalse(kept.contains(original), "No value or word is kept: \(original)") }
+
+        let second = PrivacyBackendFixture()
+        let after = PrivacyBridge(backend: second, detector: detector)
+        await after.restoreContexts(data)
+        request.messages += [.init(role: "assistant", content: privacyAssistant(events)), .init(role: "user", content: .array([.object([
+            "type": .string("tool_result"), "tool_use_id": .string(call.id), "content": .string("Found for Synthetic Person")])]))]
+        let next = Task { try await collectPrivacy(try await after.events(for: request, conversationID: alias)) }
+        try await privacyEventually { await second.requests.count == 1 }
+        let resent = await second.requests[0], resentIdentity = await second.identities[0]
+        XCTAssertEqual(resentIdentity, identity, "The pool sees the same conversation")
+        XCTAssertEqual(resent.messages[0], sent.messages[0], "History goes as it went before the restart")
+        XCTAssertEqual(resent.messages[1].content.arrayValue?[0]["input"]?["path"], .string("/Users/\(home)/notes"))
+        XCTAssertFalse(resent.messages[2].content.arrayValue![0]["content"]!.stringValue!.contains("Synthetic Person"),
+                       "New text is read by the model")
+        await second.finish(0, [.text("Done"), .finished(.endTurn)])
+        _ = try await next.value
+    }
+
+    func testSavedContextsLeaveOutConversationsPastTheirTime() async throws {
+        let backend = PrivacyBackendFixture(), bridge = PrivacyBridge(backend: backend, detector: FixtureDetector())
+        let reply = Task { try await collectPrivacy(try await bridge.events(for: self.textRequest("Notes in /Users/synthetic-owner/a"), conversationID: "old#shape")) }
+        try await privacyEventually { await backend.requests.count == 1 }
+        await backend.finish(0, [.text("Done"), .finished(.endTurn)]); _ = try await reply.value
+        let later = Date().addingTimeInterval(PrivacyBridge.keptFor + 60)
+        let none = await bridge.savedContexts(now: later)
+        XCTAssertNil(none)
+        let saved = await bridge.savedContexts()
+        let data = try XCTUnwrap(saved)
+        let restored = PrivacyBridge(backend: PrivacyBackendFixture(), detector: FixtureDetector())
+        await restored.restoreContexts(data, now: later)
+        await restored.restoreContexts(Data("not saved contexts".utf8))
+    }
+}
+
+private func privacyNamed(_ text: String) throws -> String {
+    let start = try XCTUnwrap(text.range(of: "/Users/")), rest = text[start.upperBound...]
+    let name = String(rest.prefix { $0 != "/" })
+    XCTAssertTrue(name.hasPrefix("user-"), "The home folder's owner is masked")
+    return name
+}
+
+extension PrivacyBridgeTests {
+    /// This Mac's account name is masked wherever it stands as a word, as the same stand-in as its home
+    /// folder: in a listing's owner column and in a folder named after a path; never inside a longer word.
+    func testMachineUserIsMaskedWhereverItStandsAsAWord() async throws {
+        let backend = PrivacyBackendFixture()
+        let bridge = PrivacyBridge(backend: backend, detector: FixtureDetector(), wait: .seconds(5), machineUsers: ["synthowner"])
+        let text = "cd /Users/synthowner/app\n-rw-r--r--  1 synthowner  staff  12 notes\n~/.claude/projects/-Users-synthowner-app/\nsynthowners stay"
+        let reply = Task { try await collectPrivacy(try await bridge.events(for: self.textRequest(text), conversationID: "machine#shape")) }
+        try await privacyEventually { await backend.requests.count == 1 }
+        let sent = await backend.requests[0].messages[0].content.stringValue!
+        XCTAssertFalse(sent.contains("synthowner "), sent)
+        XCTAssertFalse(sent.contains("-synthowner-"), sent)
+        XCTAssertTrue(sent.contains("synthowners stay"), "Not inside a longer word")
+        let standIn = try privacyNamed(sent)
+        XCTAssertTrue(sent.contains("1 \(standIn)  staff"))
+        XCTAssertTrue(sent.contains("-Users-\(standIn)-app"))
+        await backend.finish(0, [.text("Listed for \(standIn)"), .finished(.endTurn)])
+        let told = try await reply.value.privacyText
+        XCTAssertEqual(told, "Listed for synthowner")
+    }
+
+    func testOnlyAccountNamesWorthMaskingAreTakenAsMachineUsers() {
+        XCTAssertTrue(PrivacyRules.machineUser("synthowner"))
+        XCTAssertTrue(PrivacyRules.machineUser("abc"))
+        for name in ["ab", "root", "admin", "shared", "Guest", "test", "名字", "two words"] { XCTAssertFalse(PrivacyRules.machineUser(name), name) }
+    }
+}
+
+extension PrivacyBridgeTests {
+    /// A number masked by its field's kind goes as it went after a restart, and a history changed
+    /// meanwhile is masked afresh rather than taken for what went.
+    func testRestartKeepsMaskedNumbersAndMasksAChangedHistoryAfresh() async throws {
+        let first = PrivacyBackendFixture(), before = PrivacyBridge(backend: first, detector: FixtureDetector(), wait: .seconds(5))
+        let call = JSONValue.object(["type": .string("tool_use"), "id": .string("toolu_number"), "name": .string("dial"),
+                                     "input": .object(["phone": .number(13_800_138_000)])])
+        var request = BridgeRequest(model: "claude-sonnet", messages: [
+            .init(role: "user", content: .string("Call the office, notes in /Users/synthetic-owner/a")),
+            .init(role: "assistant", content: .array([call])),
+            .init(role: "user", content: .array([.object(["type": .string("tool_result"), "tool_use_id": .string("toolu_number"), "content": .string("ok")])]))])
+        let alias = "session-number#shape"
+        let opening = Task { try await collectPrivacy(try await before.events(for: request, conversationID: alias)) }
+        try await privacyEventually { await first.requests.count == 1 }
+        let sent = await first.requests[0]
+        XCTAssertNotEqual(sent.messages[1].content.arrayValue?[0]["input"]?["phone"], .number(13_800_138_000))
+        await first.finish(0, [.text("Called"), .finished(.endTurn)])
+        let events = try await opening.value
+        let saved = await before.savedContexts()
+        let data = try XCTUnwrap(saved)
+        let kept = String(decoding: try XCTUnwrap((data as NSData).decompressed(using: .lzfse) as Data), as: UTF8.self)
+        XCTAssertFalse(kept.contains("13800138000"), "The number masked is not kept")
+
+        request.messages += [.init(role: "assistant", content: privacyAssistant(events)), .init(role: "user", content: .string("Again"))]
+        let second = PrivacyBackendFixture(), after = PrivacyBridge(backend: second, detector: FixtureDetector())
+        await after.restoreContexts(data)
+        let next = Task { try await collectPrivacy(try await after.events(for: request, conversationID: alias)) }
+        try await privacyEventually { await second.requests.count == 1 }
+        let resent = await second.requests[0]
+        XCTAssertEqual(Array(resent.messages.prefix(3)), sent.messages, "History goes as it went")
+        await second.finish(0, [.text("Called again"), .finished(.endTurn)])
+        _ = try await next.value
+
+        var changed = request
+        changed.messages[0] = .init(role: "user", content: .string("Call the office, notes in /Users/synthetic-owner/b"))
+        let third = PrivacyBackendFixture(), again = PrivacyBridge(backend: third, detector: FixtureDetector())
+        await again.restoreContexts(data)
+        let other = Task { try await collectPrivacy(try await again.events(for: changed, conversationID: alias)) }
+        try await privacyEventually { await third.requests.count == 1 }
+        let fresh = await third.requests[0].messages[0].content.stringValue!
+        XCTAssertFalse(fresh.contains("synthetic-owner"), "Masked afresh")
+        XCTAssertTrue(fresh.hasSuffix("/b"))
+        await third.finish(0, [.text("Done"), .finished(.endTurn)])
+        _ = try await other.value
+    }
+}
+
+extension PrivacyBridgeTests {
+    /// Parallel tasks of one conversation share its id, each in a context of its own: a task's tool
+    /// result goes back to the context that made its call, though the id last served the other task, so
+    /// its history is not masked afresh and the pool keeps its run.
+    func testParallelTasksOfOneConversationEachKeepTheirContext() async throws {
+        let backend = PrivacyBackendFixture(), bridge = PrivacyBridge(backend: backend, detector: FixtureDetector(), wait: .seconds(5))
+        let tools = [BridgeTool(name: "lookup", inputSchema: .object(["type": .string("object")]))]
+        let alias = "session-parallel#shape"
+        let taskA = textRequest("Task A: read /Users/synthetic-owner/a", tools: tools), taskB = textRequest("Task B: read /Users/synthetic-owner/b", tools: tools)
+        let a = Task { try await collectPrivacy(try await bridge.events(for: taskA, conversationID: alias)) }
+        try await privacyEventually { await backend.requests.count == 1 }
+        // A is still answering: B gets a context of its own.
+        let b = Task { try await collectPrivacy(try await bridge.events(for: taskB, conversationID: alias)) }
+        try await privacyEventually { await backend.requests.count == 2 }
+        let identities = await backend.identities
+        XCTAssertNotEqual(identities[0], identities[1])
+        let callA = BridgeToolCall(id: "toolu_task_a", name: "lookup", input: .object([:]))
+        let callB = BridgeToolCall(id: "toolu_task_b", name: "lookup", input: .object([:]))
+        await backend.finish(1, [.toolUse(callB), .finished(.toolUse)])
+        await backend.finish(0, [.toolUse(callA), .finished(.toolUse)])
+        let eventsA = try await a.value, eventsB = try await b.value
+        func answered(_ request: BridgeRequest, _ events: [BridgeEvent], _ call: BridgeToolCall) -> BridgeRequest {
+            var next = request
+            next.messages += [.init(role: "assistant", content: privacyAssistant(events)), .init(role: "user", content: .array([.object([
+                "type": .string("tool_result"), "tool_use_id": .string(call.id), "content": .string("ok")])]))]
+            return next
+        }
+        // B was served last under the id; A's result still goes to A's context, and B's to B's.
+        let nextA = Task { try await collectPrivacy(try await bridge.events(for: answered(taskA, eventsA, callA), conversationID: alias)) }
+        try await privacyEventually { await backend.requests.count == 3 }
+        let nextB = Task { try await collectPrivacy(try await bridge.events(for: answered(taskB, eventsB, callB), conversationID: alias)) }
+        try await privacyEventually { await backend.requests.count == 4 }
+        let after = await backend.identities, sent = await backend.requests
+        XCTAssertEqual(after[2], identities[0], "A's result goes to A's context")
+        XCTAssertEqual(after[3], identities[1], "B's result goes to B's context")
+        XCTAssertEqual(sent[2].messages[0], sent[0].messages[0], "A's history goes as it went")
+        XCTAssertEqual(sent[3].messages[0], sent[1].messages[0], "B's history goes as it went")
+        await backend.finish(2, [.text("A done"), .finished(.endTurn)])
+        await backend.finish(3, [.text("B done"), .finished(.endTurn)])
+        _ = try await nextA.value; _ = try await nextB.value
+    }
+}
+
+extension PrivacyBridgeTests {
+    /// Two tasks of one conversation served in turn by its context, each with its own words at the same
+    /// place: after a restart each task's history goes as it went, not only the one saved last.
+    func testRestartKeepsEveryTasksTextAtAPlace() async throws {
+        let first = PrivacyBackendFixture(), before = PrivacyBridge(backend: first, detector: FixtureDetector(), wait: .seconds(5))
+        let alias = "session-tasks#shape"
+        let taskA = textRequest("Task A: read /Users/synthetic-owner/a"), taskB = textRequest("Task B: list /Users/synthetic-owner/b")
+        var events: [[BridgeEvent]] = []
+        for (index, request) in [taskA, taskB].enumerated() {
+            let reply = Task { try await collectPrivacy(try await before.events(for: request, conversationID: alias)) }
+            try await privacyEventually { await first.requests.count == index + 1 }
+            await first.finish(index, [.text("Done \(index)"), .finished(.endTurn)])
+            events.append(try await reply.value)
+        }
+        let identities = await first.identities, sent = await first.requests
+        XCTAssertEqual(identities[0], identities[1], "One context served both tasks")
+        let saved = await before.savedContexts()
+        let data = try XCTUnwrap(saved)
+
+        let second = PrivacyBackendFixture(), after = PrivacyBridge(backend: second, detector: FixtureDetector())
+        await after.restoreContexts(data)
+        for (index, request) in [taskA, taskB].enumerated() {
+            var next = request
+            next.messages += [.init(role: "assistant", content: privacyAssistant(events[index])), .init(role: "user", content: .string("Go on"))]
+            let reply = Task { try await collectPrivacy(try await after.events(for: next, conversationID: alias)) }
+            try await privacyEventually { await second.requests.count == index + 1 }
+            let resent = await second.requests[index]
+            XCTAssertEqual(resent.messages[0], sent[index].messages[0], "Task \(index)'s history goes as it went")
+            await second.finish(index, [.text("Again"), .finished(.endTurn)])
+            _ = try await reply.value
+        }
+    }
+}

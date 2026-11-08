@@ -10,7 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: swift build
-      - run: swift test
+      - run: swift test --parallel
       - run: python3 scripts/check-localization.py
       - run: zsh scripts/build.sh --universal
       - run: python3 scripts/check-package.py
