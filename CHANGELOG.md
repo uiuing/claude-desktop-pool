@@ -8,7 +8,7 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ### Fixed
 
-- Whatever Desktop sends now reaches Claude as it came, whatever its kind. Files such as PDFs and documents, in a message or in what a tool returned, used to be left out without a word, so Claude never saw them.
+- Whatever Desktop sends now reaches Claude as it came, whatever its kind. A block other than text or an image, such as a PDF embedded in a message or in what a tool returned, used to be left out without a word. Files attached in Desktop were not affected: they arrive as paths, and Claude opens them with its tools.
 - An image or file sent while a tool runs no longer fails the request and makes the conversation write itself to the cache again. An image goes with the tool's result; anything else goes on from the conversation's session on the same account.
 - Redaction leaves a file's encoded bytes as they are and redacts the words in it.
 - The app log no longer reports a reply's tools as changed when they were the same.
