@@ -4,6 +4,12 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-10
+
+### Changed
+
+- The model limit beside the 5-hour and weekly ones in the menu bar ("F72%") is written in the menu bar's ordinary type instead of a larger bold one.
+
 ## [0.2.1] - 2026-11-10
 
 ### Fixed
