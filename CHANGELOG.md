@@ -4,6 +4,17 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-11-10
+
+### Fixed
+
+- When an account reaches its limit, its other requests still waiting for an answer to begin move to another account within about 20 seconds, instead of waiting minutes on an account that will not answer before its reset. A request already being answered is left to finish.
+- An account that reached its limit stays shown as limited until it recovers. It was briefly marked ready again, so new work could still be sent to it.
+- A conversation running many tasks at once (sub-agents) spreads them across accounts by how much each has left and how much work each already carries. They were all placed on one account, which ran out within minutes, and then the whole batch moved to the next one.
+- When Claude declines a request, Desktop is told so, as Claude itself would tell it. It was told of an error, and asked again several times.
+- A conversation is shown on the account it is answering from now. After a move it could still be shown on the account it left.
+- Pool spends less CPU checking each running request for a usage-credits notice, which added up when many requests ran at once.
+
 ## [0.2.2] - 2026-11-10
 
 ### Changed
