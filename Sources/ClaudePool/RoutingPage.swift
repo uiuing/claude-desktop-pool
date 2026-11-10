@@ -104,13 +104,18 @@ struct RoutingPage: View {
         case .unavailable: return model.stateTitle(account.effectiveState(at: model.now))
         }
     }
+    /// The conversation a decision placed, while it is still open.
+    private func conversationName(_ decision: RouteDecision) -> String? {
+        guard let id = decision.sessionID, let conversation = model.conversations.first(where: { $0.sessionIDs.contains(id) }) else { return nil }
+        return model.t("Conversation {0}", "\(conversation.number)")
+    }
     private func decisionRow(_ decision: RouteDecision) -> some View {
         HStack(alignment: .top, spacing: 9) {
             Circle().fill(decision.reason == .failover || decision.reason == .quotaExhausted ? PoolPalette.amber : PoolPalette.accent.opacity(0.65))
                 .frame(width: 5, height: 5).padding(.top, 4).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 Text(model.routeReason(decision.reason)).font(.system(size: 11, weight: .medium))
-                Text([decision.accountID.map { model.accountName($0) }, decision.model].compactMap { $0 }.joined(separator: " · "))
+                Text([conversationName(decision), decision.accountID.map { model.accountName($0) }, decision.model].compactMap { $0 }.joined(separator: " · "))
                     .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 3)

@@ -19,8 +19,9 @@ struct RoutingFlowView: View {
 
     var body: some View {
         let conversations = model.conversations
-        let lanes = Self.lanes(conversations)
-        let hidden = Set(conversations.map(\.accountID)).count - lanes.filter { $0.conversations > 0 }.count
+        let use = model.accountUse
+        let lanes = Self.lanes(use)
+        let hidden = use.count - lanes.filter { $0.conversations > 0 }.count
         let working = conversations.contains { isAnswering($0) }
         PoolCard {
             VStack(alignment: .leading, spacing: 12) {
@@ -39,10 +40,11 @@ struct RoutingFlowView: View {
         .animation(reduceMotion ? nil : PoolMotion.list, value: conversations)
     }
 
-    /// Accounts with conversations, answering ones first, then by how many.
-    static func lanes(_ conversations: [PoolConversation]) -> [Lane] {
-        let lanes = Dictionary(grouping: conversations, by: \.accountID).map { id, list in
-            Lane(accountID: id, conversations: list.count, working: list.contains(where: \.isWorking))
+    /// Accounts with a conversation's run on them (sub-agents on another account included),
+    /// answering ones first, then by how many.
+    static func lanes(_ use: [UUID: AccountUse]) -> [Lane] {
+        let lanes = use.map { id, use in
+            Lane(accountID: id, conversations: use.conversations, working: use.working)
         }.sorted { a, b in
             if a.working != b.working { return a.working }
             if a.conversations != b.conversations { return a.conversations > b.conversations }
@@ -116,11 +118,10 @@ struct RoutingFlowView: View {
                 Text(lane.map { model.accountName($0.accountID) } ?? model.t("No conversations"))
                     .font(.system(size: 10, weight: .medium)).foregroundStyle(color).fixedSize(horizontal: false, vertical: true)
                 if let lane {
-                    HStack(spacing: 6) {
-                        AccountUseBadges(model: model, use: lane.conversations > 0 ? AccountUse(conversations: lane.conversations, working: lane.working) : nil)
-                        if let account = model.snapshot.accounts.first(where: { $0.id == lane.accountID }), let brief = model.accountBrief(account) {
-                            Text(brief).font(.system(size: 9)).foregroundStyle(.secondary).monospacedDigit().fixedSize()
-                        }
+                    AccountUseBadges(model: model, use: lane.conversations > 0 ? AccountUse(conversations: lane.conversations, working: lane.working) : nil)
+                    if let account = model.snapshot.accounts.first(where: { $0.id == lane.accountID }), let brief = model.accountBrief(account) {
+                        Text(brief).font(.system(size: 9)).foregroundStyle(.secondary).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
+                            .help(model.accountQuotaSummary(account))
                     }
                 }
             }
@@ -187,7 +188,9 @@ struct RoutingFlowView: View {
                 Image(systemName: "arrow.triangle.swap").font(.system(size: 9)).foregroundStyle(PoolPalette.amber)
                     .help(model.routeReason(decision.reason))
             }
-            Text(model.accountName(conversation.accountID)).font(.system(size: 10)).foregroundStyle(.secondary)
+            Text(model.accountName(conversation.accountID) + (conversation.accountIDs.count > 1 ? " +\(conversation.accountIDs.count - 1)" : ""))
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+                .help(conversation.accountIDs.map { model.accountName($0) }.joined(separator: ", "))
                 .fixedSize(horizontal: false, vertical: true)
                 .id(conversation.accountID)
                 .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .opacity))

@@ -553,6 +553,7 @@
   "A conversation on this account is answering.": "这个账号上有对话正在回答。",
   "Its conversations are waiting for your next message.": "这个账号上的对话在等你下一句。",
   "A conversation Desktop starts now goes to this account.": "Desktop 现在新开的对话会用这个账号。",
+  "Parallel task: placed where there is most room": "并行任务：分到余量最多的账号",
   "Stayed on its account": "留在原账号",
   "{0}/{1} accounts usable": "{0}/{1} 个账号可用",
   "Conversation {0}": "对话 {0}",

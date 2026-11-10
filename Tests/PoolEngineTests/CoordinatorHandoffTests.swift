@@ -123,7 +123,9 @@ final class CoordinatorHandoffTests: XCTestCase {
         let task = HandoffWorker(steps: [.reply([.text("Synthetic task done."), .finished(.endTurn)])])
         let title = { HandoffWorker(steps: [.reply([.text("Synthetic title"), .finished(.endTurn)])]) }
         let factory = HandoffFactory(queues: [accounts[0].id: [busy, title()], accounts[1].id: [task, title()]])
-        let coordinator = PoolCoordinator(accounts: accounts, now: { date }, factory: { account, _ in try await factory.make(account.id) })
+        let routes = PlacementLog()
+        let coordinator = PoolCoordinator(accounts: accounts, now: { date }, factory: { account, _ in try await factory.make(account.id) },
+                                          onUpdate: { if case .route(let decision) = $0 { routes.add(decision) } })
         let first = Task { try await self.collect(coordinator, self.request(), id: "desktop-1#agent-a") }
         try await handoffWait { await busy.regularRequests.count == 1 }
         let second = try await collect(coordinator, request(), id: "desktop-1#agent-b")
@@ -133,6 +135,10 @@ final class CoordinatorHandoffTests: XCTestCase {
         let order = await factory.order
         XCTAssertEqual(Array(order.prefix(2)), [accounts[0].id, accounts[1].id], "The second task does not join its busy sibling")
         XCTAssertEqual(order.count, 3, "The title is served on an account the conversation is on")
+        // each placement says why it went where it went: the side-by-side task as parallel work,
+        // the title as staying on the conversation's account
+        let reasons = routes.all.filter { $0.sessionID != nil }.map(\.reason)
+        XCTAssertEqual(Array(reasons.prefix(3)), [.headroom, .parallelWork, .sessionAffinity])
         first.cancel()
         _ = await coordinator.shutdown()
     }
@@ -562,4 +568,11 @@ private final class HandoffUpdates: @unchecked Sendable {
 private func handoffWait(_ condition: @escaping @Sendable () async -> Bool) async throws {
     for _ in 0..<200 { if await condition() { return }; try await Task.sleep(nanoseconds: 10_000_000) }
     XCTFail("Timed out waiting.")
+}
+
+private final class PlacementLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var decisions: [RouteDecision] = []
+    func add(_ decision: RouteDecision) { lock.lock(); decisions.append(decision); lock.unlock() }
+    var all: [RouteDecision] { lock.lock(); defer { lock.unlock() }; return decisions }
 }

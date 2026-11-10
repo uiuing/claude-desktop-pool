@@ -553,6 +553,7 @@
   "A conversation on this account is answering.": "このアカウントの会話が回答中です。",
   "Its conversations are waiting for your next message.": "このアカウントの会話は、次のメッセージを待っています。",
   "A conversation Desktop starts now goes to this account.": "Desktop が今始める会話は、このアカウントに割り当てられます。",
+  "Parallel task: placed where there is most room": "並行タスク：余裕が最も大きいアカウントへ",
   "Stayed on its account": "元のアカウントに留まりました",
   "{0}/{1} accounts usable": "{0}/{1} 件のアカウントが利用可能",
   "Conversation {0}": "会話 {0}",

@@ -904,7 +904,7 @@ public actor PoolCoordinator: BridgeBackend {
             if Task.isCancelled || cancelledGenerations.contains(generation) { throw BridgeFailure.cancelled }
             throw blocked() ? BridgeFailure.paused : BridgeFailure.unavailable
         }
-        let reason: RoutingReason = reasonOverride ?? (rejectedAccount ? .failover : routingPolicy.strategy == .ordered ? .accountOrder :
+        let reason: RoutingReason = reasonOverride ?? (rejectedAccount ? .failover : parallel ? .parallelWork : lead == account.id ? .sessionAffinity : routingPolicy.strategy == .ordered ? .accountOrder :
             (PoolRouting.assessment(verifiedAccount, model: model.cliAlias).headroom == nil ? .unknownQuota : .headroom))
         route(id: worker.id, model: model.id, reason: reason)
         return worker.id

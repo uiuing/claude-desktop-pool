@@ -461,6 +461,8 @@ public enum RoutingReason: String, Codable, Sendable {
     case sessionAffinity, toolContinuation, accountOrder, headroom, unknownQuota
     case accountLimited, accountUnavailable, paused, cancelled, noAvailableAccount, requestRejected
     case lowQuota, quotaExhausted, failover, capacityReached, modelUnavailable
+    /// A task run beside its conversation's busy one, placed where the pool has the most room.
+    case parallelWork
 }
 
 /// Account identity and prompt contents are resolved by the local UI, never written into a route record.

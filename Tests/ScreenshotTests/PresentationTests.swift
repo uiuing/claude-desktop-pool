@@ -378,9 +378,30 @@ final class PresentationTests: XCTestCase {
         XCTAssertEqual(model.conversations.count, 1)
         XCTAssertEqual(model.conversations[0].accountID, new)
         XCTAssertEqual(model.conversations[0].state, .running)
+        // its sub-agent still answering on the old account shows there too: nothing runs out of sight
+        XCTAssertEqual(Set(model.conversations[0].accountIDs), [old, new])
+        XCTAssertEqual(model.accountUse[old], AccountUse(conversations: 1, working: true))
+        XCTAssertEqual(model.accountUse[new], AccountUse(conversations: 1, working: true))
+        XCTAssertEqual(Set(RoutingFlowView.lanes(model.accountUse).map(\.accountID)), [old, new])
         // every run refused and none answering yet: the newest refusal says where it stands
         model.snapshot.sessions = [run(old, .attention, 0), run(new, .attention, 2)]
         XCTAssertEqual(model.conversations[0].accountID, new)
+    }
+
+    /// The route view writes an account's limits as everywhere else: the 5-hour and weekly ones,
+    /// then its tightest model limit. It once wrote the model limit alone ("F 72%").
+    func testAccountBriefShowsEveryLimitNotOnlyTheModelOne() {
+        let model = PoolAppModel.demoModel()
+        var account = model.snapshot.accounts[0]
+        let date = model.now
+        account.windows = [.init(id: "five_hour", usedPercent: 60, observedAt: date, resetsAt: date.addingTimeInterval(3600)),
+                           .init(id: "seven_day", usedPercent: 39, observedAt: date, resetsAt: date.addingTimeInterval(86400)),
+                           .init(id: QuotaWindow.overageIncludedID, usedPercent: 28, observedAt: date, resetsAt: date.addingTimeInterval(86400), scope: .models(["fable"]))]
+        XCTAssertEqual(model.accountBrief(account), "5h 40% · 7d 61% · F 72%")
+        account.windows.removeLast()
+        XCTAssertEqual(model.accountBrief(account), "5h 40% · 7d 61%")
+        account.windows.removeFirst()
+        XCTAssertEqual(model.accountBrief(account), "5h — · 7d 61%", "An unread limit is shown as unread, not left out")
     }
 
     func testRouteLanesShowEveryAccountInUse() {
@@ -388,10 +409,10 @@ final class PresentationTests: XCTestCase {
         func conversation(_ n: Int, _ account: UUID, _ state: SessionState) -> PoolConversation {
             .init(id: "c\(n)", number: n, accountID: account, model: "Opus", state: state, startedAt: Date(), sessionIDs: [UUID()])
         }
-        let lanes = RoutingFlowView.lanes([conversation(1, ids[0], .idle), conversation(2, ids[1], .running), conversation(3, ids[0], .idle)])
+        let lanes = RoutingFlowView.lanes([ids[0]: AccountUse(conversations: 2, working: false), ids[1]: AccountUse(conversations: 1, working: true)])
         XCTAssertEqual(lanes.map(\.accountID), [ids[1], ids[0]], "Answering first, then by conversations")
         XCTAssertEqual(lanes.map(\.conversations), [1, 2])
-        let many = (0..<5).map { conversation($0 + 1, ids[$0], .idle) }
+        let many = Dictionary(uniqueKeysWithValues: ids.map { ($0, AccountUse(conversations: 1, working: false)) })
         XCTAssertEqual(RoutingFlowView.lanes(many).count, RoutingFlowView.laneLimit)
     }
 

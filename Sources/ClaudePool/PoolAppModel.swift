@@ -182,6 +182,8 @@ struct PoolConversation: Identifiable, Equatable {
     var state: SessionState
     var startedAt: Date
     var sessionIDs: [UUID]
+    /// Every account the conversation has a run on: its sub-agents may be on several.
+    var accountIDs: [UUID] = []
     var isWorking: Bool { ![.idle, .ended].contains(state) }
 }
 struct AccountUse: Equatable {
@@ -399,25 +401,30 @@ final class PoolAppModel {
                 ?? runs.filter { $0.state == .attention }.max { $0.startedAt < $1.startedAt }
             return PoolConversation(id: latest.conversation ?? latest.id.uuidString, number: 0, accountID: (working ?? latest).accountID,
                                     model: (working ?? latest).model, state: working?.state ?? latest.state,
-                                    startedAt: runs.map(\.startedAt).min()!, sessionIDs: runs.map(\.id))
+                                    startedAt: runs.map(\.startedAt).min()!, sessionIDs: runs.map(\.id),
+                                    accountIDs: Array(Set(runs.map(\.accountID))).sorted { $0.uuidString < $1.uuidString })
         }.sorted { $0.startedAt < $1.startedAt }.enumerated().map { index, conversation in
             var numbered = conversation; numbered.number = index + 1; return numbered
         }
     }
-    /// How many conversations are on each account, and whether one of them is answering.
+    /// How many conversations have a run on each account, and whether one there is answering. A
+    /// conversation whose sub-agents run on several accounts is shown on each of them: no account
+    /// does work the person cannot see.
     var accountUse: [UUID: AccountUse] {
-        var use: [UUID: AccountUse] = [:]
-        for conversation in conversations {
-            use[conversation.accountID, default: .init()].conversations += 1
-            if conversation.isWorking { use[conversation.accountID, default: .init()].working = true }
+        var keys: [UUID: Set<String>] = [:], working: Set<UUID> = []
+        for run in snapshot.sessions where run.state != .ended && !run.isOneOff {
+            keys[run.accountID, default: []].insert(run.conversation ?? run.id.uuidString)
+            if ![.idle, .attention].contains(run.state) { working.insert(run.accountID) }
         }
-        return use
+        return keys.mapValues { _ in AccountUse() }.reduce(into: [:]) { use, item in
+            use[item.key] = AccountUse(conversations: keys[item.key]!.count, working: working.contains(item.key))
+        }
     }
     /// "2 accounts · 3 conversations", or that there are none.
     var useSummaryText: String {
         let conversations = conversations
         guard !conversations.isEmpty else { return t("No conversations") }
-        let accounts = Set(conversations.map(\.accountID)).count
+        let accounts = accountUse.count
         return t("In use: {0} · {1}", accounts == 1 ? t("1 account") : t("{0} accounts", "\(accounts)"), conversationCountText(conversations.count))
     }
     func conversationCountText(_ count: Int) -> String { count == 1 ? t("1 conversation") : t("{0} conversations", "\(count)") }
@@ -759,9 +766,16 @@ final class PoolAppModel {
         return back.map { t("{0} used up · back {1}", name, clockTime($0)) } ?? t("{0} used up", name)
     }
     /// "F 72%": the account's tightest model limit, for lists of accounts.
+    /// "5h 40% · 7d 61% · F 72%": what is left of the limits every model shares, then of the
+    /// tightest model limit, written the way the rings name them; an unread one as "—", never left out.
     func accountBrief(_ account: PoolAccount) -> String? {
-        guard let tight = tightestModelLimit(account), let left = tight.remaining, let name = tight.window.modelName else { return nil }
-        return "\(name.prefix(1)) \(Int(left.rounded()))%"
+        var parts = ["five_hour", "seven_day"].map { id in
+            limitShortName(id) + " " + (remaining(account, window: id).map { "\(Int($0.rounded()))%" } ?? "—")
+        }
+        if let tight = tightestModelLimit(account), let name = tight.window.modelName {
+            parts.append("\(name.prefix(1)) " + (tight.remaining.map { "\(Int($0.rounded()))%" } ?? "—"))
+        }
+        return parts.joined(separator: " · ")
     }
     /// Spoken and hover text of an account's limits together.
     func accountQuotaSummary(_ account: PoolAccount) -> String {
@@ -811,6 +825,7 @@ final class PoolAppModel {
         case .failover: return t("Backup account selected")
         case .capacityReached: return t("Session capacity reached")
         case .modelUnavailable: return t("Model unavailable for this account")
+        case .parallelWork: return t("Parallel task: placed where there is most room")
         }
     }
     func timeText(_ date: Date) -> String {
