@@ -4,6 +4,12 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-11-10
+
+### Fixed
+
+- A model's own weekly limit (such as Fable's) no longer disappears after a usage refresh. A refresh could read the usage screen before its last row was drawn, and the reading replaced the limits the account had. A refresh now waits until the screen stops changing, and a limit one refresh misses is kept until a second refresh in a row misses it too.
+
 ## [0.2.4] - 2026-11-10
 
 ### Fixed
