@@ -128,7 +128,9 @@ final class AppServicesTests: XCTestCase {
 
     private func eventually(_ description: String, file: StaticString = #filePath, line: UInt = #line,
                             _ condition: @escaping @MainActor () async -> Bool) async {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(4))
+        // Returns as soon as the condition holds; the bound only has to outlast a busy CI machine
+        // running every suite at once, where a quota read's first steps took longer than 4 s.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
         while ContinuousClock.now < deadline {
             if await condition() { return }
             try? await Task.sleep(for: .milliseconds(10))
