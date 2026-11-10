@@ -110,6 +110,33 @@ final class CoordinatorHandoffTests: XCTestCase {
         _ = await coordinator.shutdown()
     }
 
+    /// A conversation running tasks side by side (Claude Code's sub-agents arrive under the
+    /// conversation's tag, each a session of its own): a new task goes where the pool has room, not
+    /// onto the account its sibling is busy on, so one account never carries the whole batch and runs
+    /// out with all of it at once. A title of the conversation still keeps to an account the conversation is on.
+    func testParallelTasksOfOneConversationSpreadAndItsTitleStays() async throws {
+        let date = Date()
+        func quota(_ used: Double) -> [QuotaWindow] { [.init(id: "five_hour", usedPercent: used, observedAt: date, resetsAt: date.addingTimeInterval(3600))] }
+        var accounts = accounts()
+        accounts[0].windows = quota(30); accounts[1].windows = quota(30)
+        let busy = HandoffWorker(steps: [.hold([])])
+        let task = HandoffWorker(steps: [.reply([.text("Synthetic task done."), .finished(.endTurn)])])
+        let title = { HandoffWorker(steps: [.reply([.text("Synthetic title"), .finished(.endTurn)])]) }
+        let factory = HandoffFactory(queues: [accounts[0].id: [busy, title()], accounts[1].id: [task, title()]])
+        let coordinator = PoolCoordinator(accounts: accounts, now: { date }, factory: { account, _ in try await factory.make(account.id) })
+        let first = Task { try await self.collect(coordinator, self.request(), id: "desktop-1#agent-a") }
+        try await handoffWait { await busy.regularRequests.count == 1 }
+        let second = try await collect(coordinator, request(), id: "desktop-1#agent-b")
+        XCTAssertEqual(second, [.text("Synthetic task done."), .finished(.endTurn)])
+        let ask = BridgeRequest(model: "claude-sonnet", messages: [.init(role: "user", content: .string("Title this synthetic conversation."))])
+        _ = try await collect(coordinator, ask, id: "desktop-1#title")
+        let order = await factory.order
+        XCTAssertEqual(Array(order.prefix(2)), [accounts[0].id, accounts[1].id], "The second task does not join its busy sibling")
+        XCTAssertEqual(order.count, 3, "The title is served on an account the conversation is on")
+        first.cancel()
+        _ = await coordinator.shutdown()
+    }
+
     /// Pool's warmAccounts: an account that served a conversation of the model within the hour holds
     /// Claude Code's own opening in its cache, whatever the client's instructions, and a new conversation
     /// of that model leans toward it by what a first turn was measured to read. Another model's is not
@@ -247,6 +274,36 @@ final class CoordinatorHandoffTests: XCTestCase {
         XCTAssertEqual(typed.first, .text("Typed."))
         do { _ = try await collect(coordinator, request()); XCTFail("A later typing failure was answered.") }
         catch { XCTAssertEqual(error as? BridgeFailure, .compatibility) }
+        _ = await coordinator.shutdown()
+    }
+
+    /// Claude refused one run at the 5-hour limit, as Claude Code writes it (`usage_limit_reached`, 429,
+    /// `rateLimitType: five_hour`): the account's other run still waiting on its reply hears of it and
+    /// ends that reply, instead of waiting on an account that will not answer before its reset. The
+    /// account is told on as limited, never as the ready it was a moment before.
+    func testALimitOnOneRunReachesTheAccountsOtherWaitingRuns() async throws {
+        var accounts = accounts(); accounts[1].state = .disabled
+        let waiting = HandoffWorker(steps: [.hold([])])
+        let refused = HandoffWorker(steps: [.failure([], limit)])
+        let factory = HandoffFactory(queues: [accounts[0].id: [waiting, refused]])
+        let updates = HandoffUpdates()
+        let coordinator = PoolCoordinator(accounts: accounts, factory: { account, _ in try await factory.make(account.id) },
+                                          onUpdate: { updates.record($0) })
+        let other = Task { try await self.collect(coordinator, self.request(), id: "fixture-waiting") }
+        try await handoffWait { await waiting.regularRequests.count == 1 }
+        // with no other account to move to, each ends at the limit or as no account left
+        func movedOnOrLimited(_ error: Error) -> Bool {
+            if case BridgeFailure.quotaLimited = error { return true }
+            return error as? BridgeFailure == .unavailable
+        }
+        do { _ = try await collect(coordinator, request(), id: "fixture-refused"); XCTFail("Expected the limit.") }
+        catch { XCTAssertTrue(movedOnOrLimited(error), "\(error)") }
+        do { _ = try await other.value; XCTFail("The waiting run's reply should end.") }
+        catch { XCTAssertTrue(movedOnOrLimited(error), "\(error)") }
+        let told = await waiting.limitedCalls
+        XCTAssertEqual(told.count, 1)
+        XCTAssertFalse(updates.accountStates.isEmpty)
+        XCTAssertTrue(updates.accountStates.allSatisfy { $0 == .limited }, "\(updates.accountStates)")
         _ = await coordinator.shutdown()
     }
 
@@ -455,6 +512,18 @@ private actor HandoffWorker: SessionWorker {
     func sendInput(_ data: Data) {}
     func cancel() { held?.finish(throwing: cancelError); held = nil }
     func close() -> Bool { closeCount += 1; held?.finish(throwing: .cancelled as BridgeFailure); held = nil; return true }
+    private(set) var limitedCalls: [BridgeFailure] = []
+    func accountLimited(_ failure: BridgeFailure, until: Date) {
+        limitedCalls.append(failure); held?.finish(throwing: failure); held = nil
+    }
+}
+private final class HandoffUpdates: @unchecked Sendable {
+    private let lock = NSLock()
+    private var states: [AccountState] = []
+    func record(_ update: EngineUpdate) {
+        if case .accountState(_, let state, _) = update { lock.withLock { states.append(state) } }
+    }
+    var accountStates: [AccountState] { lock.withLock { states } }
 }
 
 private func handoffWait(_ condition: @escaping @Sendable () async -> Bool) async throws {

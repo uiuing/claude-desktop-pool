@@ -392,7 +392,11 @@ final class PoolAppModel {
         let groups = Dictionary(grouping: live) { $0.conversation ?? $0.id.uuidString }
         return groups.values.map { runs -> PoolConversation in
             let latest = runs.max { $0.startedAt < $1.startedAt }!
-            let working = runs.first { ![.idle, .ended].contains($0.state) }
+            // the newest run still answering: an earlier one refused and moved on (attention) or listed
+            // first must not keep the conversation on the account it left
+            let answering = runs.filter { ![.idle, .ended, .attention].contains($0.state) }
+            let working = answering.max { $0.startedAt < $1.startedAt }
+                ?? runs.filter { $0.state == .attention }.max { $0.startedAt < $1.startedAt }
             return PoolConversation(id: latest.conversation ?? latest.id.uuidString, number: 0, accountID: (working ?? latest).accountID,
                                     model: (working ?? latest).model, state: working?.state ?? latest.state,
                                     startedAt: runs.map(\.startedAt).min()!, sessionIDs: runs.map(\.id))

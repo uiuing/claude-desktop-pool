@@ -815,7 +815,16 @@ public actor PoolCoordinator: BridgeBackend {
         var selection: (PoolAccount, any SessionWorker)?
         var rejectedAccount = false
         let conversation = active[generation].flatMap { Self.conversationTag($0.alias) }
-        let lead = conversation.flatMap { leadAccount(of: $0) } ?? (Self.isOneOff(request) ? nil : openingAccount(of: request))
+        // A conversation running tasks side by side (Claude Code's sub-agents, each a session of its own
+        // under the conversation's tag) shares no cache between them: a new one, or one moved off a
+        // limited account, goes where the pool has the most room, never onto its siblings' account,
+        // which would then carry the whole load and run out with all of them at once. A side ask
+        // (a title, a summary) and the conversation's own next turn still keep to its account.
+        let parallel = !Self.isOneOff(request) && conversation.map { tag in
+            bindings.values.contains { $0.session.conversation == tag && $0.busy }
+        } == true
+        let lead = parallel ? nil
+            : conversation.flatMap { leadAccount(of: $0) } ?? (Self.isOneOff(request) ? nil : openingAccount(of: request))
         // A new conversation leans toward an account whose cache already holds its instructions and tools.
         let bonus = lead == nil && only == nil ? warmBonus(request) : [:]
         while selection == nil {
@@ -853,7 +862,7 @@ public actor PoolCoordinator: BridgeBackend {
                  })]
             }
             Diagnostics.record("coordinator.pick", ["account": Diagnostics.id(account.id), "conversation": conversation ?? "-",
-                "kept": lead.map { $0 == account.id ? "yes" : "no:" + Diagnostics.id($0) } ?? "none", "only": only.map(Diagnostics.id) ?? "-",
+                "kept": lead.map { $0 == account.id ? "yes" : "no:" + Diagnostics.id($0) } ?? (parallel ? "parallel" : "none"), "only": only.map(Diagnostics.id) ?? "-",
                 "excluded": String(excluded.count), "candidates": scored.joined(separator: ","),
                 "warm": bonus.isEmpty ? "-" : bonus.sorted { $0.key.uuidString < $1.key.uuidString }
                     .map { Diagnostics.id($0.key) + ":+" + String(Int($0.value.rounded())) }.joined(separator: ",")])
@@ -1053,6 +1062,9 @@ public actor PoolCoordinator: BridgeBackend {
                     let accepted = sameIdentity(binding) ? applyLimits(evidence, accountID: binding.session.accountID) : []
                     route(id: id, model: model.id, reason: .accountLimited)
                     provenAccountFailure = !accepted.isEmpty
+                    if let until = accepted.filter(\.isGlobal).map(\.recoversAt).max() {
+                        tellAccountLimited(binding.session.accountID, except: id, failure: .quotaLimited(windows), until: until)
+                    }
                 case BridgeFailure.modelUnavailable:
                     route(id: id, model: model.id, reason: .modelUnavailable)
                     provenAccountFailure = true
@@ -1063,6 +1075,9 @@ public actor PoolCoordinator: BridgeBackend {
                 case BridgeFailure.rateLimited(let recovery):
                     route(id: id, model: model.id, reason: .accountLimited)
                     if sameIdentity(binding) { limit(binding.session.accountID, until: recovery) }
+                    if sameIdentity(binding), let recovery, recovery > now() {
+                        tellAccountLimited(binding.session.accountID, except: id, failure: .rateLimited(recovery), until: recovery)
+                    }
                     // A generic 429 without a confirmed recovery is not quota evidence.
                     provenAccountFailure = recovery.map { $0 > now() } ?? false
                 default: break
@@ -1124,10 +1139,23 @@ public actor PoolCoordinator: BridgeBackend {
         return true
     }
 
+    /// The account's other runs still waiting on a reply hear of the refusal: each ends a reply that
+    /// has gone quiet with it, so its request moves on instead of waiting out the reset.
+    private func tellAccountLimited(_ accountID: UUID, except: UUID, failure: BridgeFailure, until: Date) {
+        let others = bindings.filter { $0.key != except && $0.value.session.accountID == accountID && $0.value.busy && !$0.value.stopped }
+        guard !others.isEmpty else { return }
+        Diagnostics.record("coordinator.account_limited", ["account": Diagnostics.id(accountID), "runs": String(others.count),
+            "until_s": String(Int(until.timeIntervalSince(now())))])
+        for (_, other) in others {
+            let worker = other.worker
+            Task { await worker.accountLimited(failure, until: until) }
+        }
+    }
     private func limit(_ accountID: UUID, until reset: Date?) {
         guard let index = accounts.firstIndex(where: { $0.id == accountID }) else { return }
         if let reset {
             accounts[index].cooldownUntil = reset
+            holdLimited(index)
             onUpdate(.accountState(scope: AccountScope(accounts[index]), state: accounts[index].state, cooldownUntil: reset))
         } else {
             // A refusal without a confirmed limit is neither quota nor a reset. The account rests
@@ -1149,6 +1177,7 @@ public actor PoolCoordinator: BridgeBackend {
         if !accepted.isEmpty { onUpdate(.quota(scope: AccountScope(accounts[index]), windows: accepted)) }
         if let reset = accepted.filter({ $0.isGlobal || $0.scope == .other }).compactMap(\.resetsAt).filter({ $0 > now() }).max() {
             accounts[index].cooldownUntil = max(reset, accounts[index].cooldownUntil ?? reset)
+            holdLimited(index)
             onUpdate(.accountState(scope: AccountScope(accounts[index]), state: accounts[index].state, cooldownUntil: accounts[index].cooldownUntil))
         }
         for window in accepted where window.holdsRefusal(at: now()) {
@@ -1156,6 +1185,12 @@ public actor PoolCoordinator: BridgeBackend {
                 "held_s": String(Int(window.refusedUntil!.timeIntervalSince(now())))])
         }
         return accepted
+    }
+    /// A cooldown Claude stated still ahead holds a ready account limited: the state told on with
+    /// it is this one, so the app never writes a stale `ready` back over the limit it just recorded.
+    private func holdLimited(_ index: Int) {
+        guard accounts[index].state == .ready, let until = accounts[index].cooldownUntil, until > now() else { return }
+        accounts[index].state = .limited
     }
     private func mergeWindows(_ windows: [QuotaWindow], accountIndex: Int) -> [QuotaWindow] {
         accounts[accountIndex].absorb(windows, at: now())

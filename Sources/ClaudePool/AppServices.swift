@@ -1118,6 +1118,8 @@ final class AppServices {
             do { try await mutate { next in
                 scope.applyObservation(to: &next.accounts) { account in
                     account.state = state; account.cooldownUntil = cooldown
+                    // a cooldown still ahead holds the account limited, whatever state came with it
+                    if state == .ready, let cooldown, cooldown > Date() { account.state = .limited }
                 }
             } } catch { report(error) }
         case .limitUnconfirmed(let scope):

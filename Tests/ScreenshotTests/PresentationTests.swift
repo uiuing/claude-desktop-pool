@@ -363,6 +363,26 @@ final class PresentationTests: XCTestCase {
         XCTAssertTrue(model.currentSessionAccounts.isEmpty)
     }
 
+    /// A conversation running many requests at once (a task's sub-agents) is on the account its newest
+    /// answering run is on: one refused at its limit and moved on, or merely listed first, never keeps it
+    /// on the account it left.
+    func testAConversationMovedOnByALimitIsShownOnItsNewAccount() {
+        let model = PoolAppModel.demoModel()
+        let (old, new) = (model.snapshot.accounts[0].id, model.snapshot.accounts[1].id)
+        let start = model.now.addingTimeInterval(-600)
+        func run(_ account: UUID, _ state: SessionState, _ minutes: Double) -> PoolSession {
+            .init(accountID: account, name: "run", model: "claude-opus", state: state,
+                  startedAt: start.addingTimeInterval(minutes * 60), conversation: "fixture-tasks")
+        }
+        model.snapshot.sessions = [run(old, .attention, 0), run(old, .running, 1), run(new, .running, 5), run(old, .idle, 6)]
+        XCTAssertEqual(model.conversations.count, 1)
+        XCTAssertEqual(model.conversations[0].accountID, new)
+        XCTAssertEqual(model.conversations[0].state, .running)
+        // every run refused and none answering yet: the newest refusal says where it stands
+        model.snapshot.sessions = [run(old, .attention, 0), run(new, .attention, 2)]
+        XCTAssertEqual(model.conversations[0].accountID, new)
+    }
+
     func testRouteLanesShowEveryAccountInUse() {
         let ids = (0..<5).map { _ in UUID() }
         func conversation(_ n: Int, _ account: UUID, _ state: SessionState) -> PoolConversation {

@@ -288,10 +288,12 @@ final class SessionHarness: @unchecked Sendable {
         try row(["type": .string("assistant"), "message": .object(body)])
     }
     func turnEnded() throws { try row(["type": .string("system"), "subtype": .string("turn_duration"), "durationMs": .number(1200)]) }
-    func apiError(status: Int?, text: String, info: JSONValue? = nil) throws {
-        var fields: [String: JSONValue] = ["type": .string("assistant"), "isApiErrorMessage": .bool(true),
-            "message": .object(["id": .string("x"), "model": .string("<synthetic>"),
-                                "content": .array([.object(["type": .string("text"), "text": .string(text)])])])]
+    func apiError(status: Int?, text: String, info: JSONValue? = nil, stop: String? = nil, apiError: String? = nil) throws {
+        var message: [String: JSONValue] = ["id": .string("x"), "model": .string("<synthetic>"),
+                                            "content": .array([.object(["type": .string("text"), "text": .string(text)])])]
+        if let stop { message["stop_reason"] = .string(stop) }
+        var fields: [String: JSONValue] = ["type": .string("assistant"), "isApiErrorMessage": .bool(true), "message": .object(message)]
+        if let apiError { fields["apiError"] = .string(apiError) }
         if let status { fields["apiErrorStatus"] = .number(Double(status)) }
         if let info { fields["apiErrorParams"] = .object(["rate_limit_info": info]) }
         try row(fields)

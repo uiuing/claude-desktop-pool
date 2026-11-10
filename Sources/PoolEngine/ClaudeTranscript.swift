@@ -24,6 +24,9 @@ struct ClaudeTranscript {
         case assistant(message: String, blocks: [Block], usage: BridgeUsage?, stop: String?)
         /// The client's own error for the turn: a `<synthetic>` message.
         case apiError(status: Int?, text: String, rateLimits: JSONValue?)
+        /// Claude refused the request, which Claude Code writes as an error row of its own (a
+        /// `refusal` stop, or a request its safety checks blocked): an answer, never one to ask again.
+        case refused
         /// The turn's end.
         case turnEnded
     }
@@ -45,6 +48,8 @@ struct ClaudeTranscript {
             let text = blocks.filter { $0["type"]?.stringValue == "text" }.compactMap { $0["text"]?.stringValue }.joined()
             if message["model"]?.stringValue == "<synthetic>" {
                 guard value["isApiErrorMessage"]?.boolValue == true else { return nil }
+                if message["stop_reason"]?.stringValue == "refusal"
+                    || ["dlp_request_denied", "safety_monitor_blocked"].contains(value["apiError"]?.stringValue ?? "") { return .refused }
                 let status = value["apiErrorStatus"]?.doubleValue.flatMap { $0.isFinite && $0 >= 0 && $0 < 1000 ? Int($0) : nil }
                 let info = value["apiErrorParams"]?["rate_limit_info"]
                 return .apiError(status: status, text: text, rateLimits: info == .null ? nil : info)

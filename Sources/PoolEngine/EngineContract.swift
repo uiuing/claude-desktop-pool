@@ -85,6 +85,11 @@ public protocol SessionWorker: Sendable {
     /// Before its first request: the run goes on from a shelved session of its account (unshelve), and
     /// is then told only what came since the conversation's last reply. False when it cannot.
     func resume(from saved: ShelvedSession) async -> Bool
+    /// Claude refused another run on this account at a limit every model shares (`failure`, a
+    /// `quotaLimited` or `rateLimited` with its recovery). A reply this run still waits on, quiet
+    /// for a while, ends with the same failure, so the request moves to another account instead of
+    /// waiting on one that will not answer before its reset.
+    func accountLimited(_ failure: BridgeFailure, until: Date) async
 }
 public extension SessionWorker {
     var accountSnapshot: PoolAccount? { nil }
@@ -96,6 +101,7 @@ public extension SessionWorker {
     func shelveCalls() async -> ShelvedSession? { nil }
     func shelveEnding() async -> ShelvedSession? { nil }
     func resume(from saved: ShelvedSession) async -> Bool { false }
+    func accountLimited(_ failure: BridgeFailure, until: Date) async {}
 }
 
 public struct SessionLaunch: Sendable {

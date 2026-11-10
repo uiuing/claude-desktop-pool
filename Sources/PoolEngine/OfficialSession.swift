@@ -102,6 +102,8 @@ public actor OfficialSession: SessionWorker {
     private var turnFailed = false
     /// The model families whose reply was seen running on usage credits, each told once.
     private var creditsSpent: Set<String> = []
+    /// The screen's output revision the last look for a usage-credits notice found none at.
+    private var creditsLookedAt: Int?
 
     /// The turn's reply, told from the stream, the transcript and the helper's calls.
     private var reply: ClaudeReply
@@ -114,6 +116,11 @@ public actor OfficialSession: SessionWorker {
     /// A reply open this long with nothing from the client at all (no hook, stream event or
     /// transcript row) is logged as stalled, with its steps. Only logged: nothing is ended for it.
     static let stallAfter: TimeInterval = 90
+    /// Another run on this account was refused at a limit every model shares, until its reset: a
+    /// reply this run waits on that has heard nothing for `limitedQuiet` ends with that refusal, so
+    /// it moves to another account. A reply still streaming goes on.
+    private var siblingLimit: (failure: BridgeFailure, until: Date)?
+    static let limitedQuiet: TimeInterval = 20
     /// Stream events read and not yet told: they wait while a message typed in is not yet taken.
     private var streamQueue: [JSONValue] = []
     /// Transcript rows read and not yet handled: the first waits while its message's stream may
@@ -794,7 +801,7 @@ public actor OfficialSession: SessionWorker {
     /// goes on or a row waits for one (tapPoll).
     private func poll() -> UInt64 {
         guard !ended, let directory else { return 40_000_000 }
-        let events = ((try? FileManager.default.contentsOfDirectory(at: directory.appendingPathComponent("events"), includingPropertiesForKeys: nil)) ?? [])
+        let events = ((try? FileManager.default.contentsOfDirectory(at: directory.appendingPathComponent("events", isDirectory: true), includingPropertiesForKeys: nil)) ?? [])
             .filter { $0.pathExtension == "json" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
         for path in events.prefix(2048) {
             if let event = try? EngineSpool.read(path) {
@@ -827,6 +834,7 @@ public actor OfficialSession: SessionWorker {
         reply.listening = canTell
         apply(reply.tick(now: Date()))
         watchForStall()
+        if let limit = siblingLimit, failForSiblingLimit(limit) { return 40_000_000 }
         if let deadline, deadline < Date(), response != nil {
             failed("reply_timeout")
             observer?.yield(.attention)
@@ -854,6 +862,24 @@ public actor OfficialSession: SessionWorker {
             "calls_waiting": String(waiting.count), "outstanding": String(outstanding.count), "held": String(heldResults.count),
             "tap": tapReported ?? "-", "idle": officialIdle ? "yes" : "no"])
         Diagnostics.dump("session", subject: ("run", runTag), why: "stalled", trace: trace, now: now)
+    }
+    public func accountLimited(_ failure: BridgeFailure, until: Date) async {
+        guard until > Date() else { return }
+        if let held = siblingLimit, held.until >= until { return }
+        siblingLimit = (failure, until)
+        trace.note("account_limited")
+        _ = failForSiblingLimit(siblingLimit!)
+    }
+    /// Ends the open reply with the account's refusal once it has been quiet for `limitedQuiet`;
+    /// whether it did.
+    private func failForSiblingLimit(_ limit: (failure: BridgeFailure, until: Date)) -> Bool {
+        let now = Date()
+        guard limit.until > now else { siblingLimit = nil; return false }
+        guard response != nil, !invalidated, now.timeIntervalSince(trace.lastActivity) >= Self.limitedQuiet else { return false }
+        Diagnostics.record("session.account_limited", ["run": runTag, "quiet_s": String(Int(now.timeIntervalSince(trace.lastActivity)))])
+        invalidated = true; failed("account_limited"); observer?.yield(.attention)
+        fail(limit.failure)
+        return true
     }
     /// How often a run with no reply open looks: a resting run has nothing it waits for, and a reply opening
     /// starts the looks again at once (`startPolling`). This keeps idle runs from waking
@@ -885,7 +911,7 @@ public actor OfficialSession: SessionWorker {
                 switch row {
                 case .assistant(let message, _, _, _) where !message.isEmpty && tap.waits(for: message):
                     if tap.going(bare: true) && holding() { hold = true } else { tap.drop(message) }
-                case .turnEnded, .apiError:
+                case .turnEnded, .apiError, .refused:
                     if tap.going(bare: false) {
                         if holding() { hold = true } else { streamQueue += tap.endAll(); ending = true }
                     }
@@ -952,6 +978,7 @@ public actor OfficialSession: SessionWorker {
         case .queueHandedOn: trace.note("row.queue_handed_on")
         case .assistant(_, let blocks, _, let stop): trace.note("row.assistant:\(blocks.count):" + (stop ?? "-"))
         case .apiError(let status, _, _): trace.note("row.api_error:" + (status.map(String.init) ?? "-"))
+        case .refused: trace.note("row.refused")
         case .turnEnded: trace.note("row.turn_ended")
         }
         switch row {
@@ -975,6 +1002,17 @@ public actor OfficialSession: SessionWorker {
             // read even with no reply open: a message left out, or calls in it, shape the next
             reply.listening = canTell
             apply(reply.message(message, blocks: blocks, usage: usage, stop: stop, now: Date()))
+        case .refused:
+            // a refusal is Claude's answer: told as one, so the client neither asks again nor moves it
+            officialIdle = true
+            removeAttachmentFiles()
+            reply.listening = canTell
+            apply(reply.settle())
+            endTurn()
+            guard response != nil, !awaitingAccept, outstanding.isEmpty else { observer?.yield(.idle); return }
+            Diagnostics.record("session.refused", ["run": runTag])
+            finish(.refusal)
+            observer?.yield(.idle)
         case .apiError(let status, let text, let rateLimits):
             officialIdle = true; turnFailed = true; invalidated = true
             removeAttachmentFiles()
@@ -1201,7 +1239,9 @@ public actor OfficialSession: SessionWorker {
     /// request ends as a refusal at the model's weekly limit, which the pool holds on this account for that
     /// model alone. A reply already running on usage credits goes on, and the window is held for later requests.
     private func usageCreditsFailure() -> BridgeFailure? {
-        guard let finding = UsageCreditsScreen.look(at: screen.visibleText) else { return nil }
+        // the screen is looked at again only once the client has written to it since
+        guard outputRevision != creditsLookedAt else { return nil }
+        guard let finding = UsageCreditsScreen.look(at: screen.visibleText) else { creditsLookedAt = outputRevision; return nil }
         let own = model.cliAlias.lowercased()
         let fallback = QuotaWindow.modelFamilies.contains(own) ? own : QuotaWindow.slug(own)
         let now = Date()

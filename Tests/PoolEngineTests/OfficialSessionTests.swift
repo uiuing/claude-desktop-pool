@@ -197,6 +197,25 @@ final class OfficialSessionTests: XCTestCase {
         }
     }
 
+    /// Claude Code writes Claude's refusal as an error row of its own, with no status: the refusal's
+    /// stop, or a request its safety checks blocked. It is told as a refusal, an answer the client keeps,
+    /// never as a 502 it would ask again (to the next account) and again.
+    func testARefusalRowIsARefusalNotAnErrorToAskAgain() async throws {
+        let rows: [(stop: String?, apiError: String?)] = [("refusal", nil), (nil, "safety_monitor_blocked"), (nil, "dlp_request_denied")]
+        for (stop, apiError) in rows {
+            let harness = try SessionHarness(); defer { harness.clean() }
+            let session = harness.session()
+            let reply = Task { try await collectEvents(try await session.events(for: self.request("Ask"))) }
+            try await waitFor { harness.sentCount == 1 }
+            try harness.apiError(status: nil, text: "Claude Code is unable to respond to this request.", stop: stop, apiError: apiError)
+            try harness.turnEnded()
+            let events = try await reply.value
+            XCTAssertTrue(events.contains(.finished(.refusal)), "\(stop ?? apiError ?? "-"): \(events)")
+            harness.exited()
+            _ = await session.close()
+        }
+    }
+
     func testAKnownExhaustedWindowMakesALimitRowAQuotaLimit() async throws {
         let harness = try SessionHarness(); defer { harness.clean() }
         let session = harness.session()
