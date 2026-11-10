@@ -4,6 +4,16 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-10
+
+### Fixed
+
+- Images you paste in Desktop, and other files under Claude Code's own folders, can be opened again when redaction is on. Claude Code names these folders after your project's path, so your account name sits between hyphens there (`-Users-<name>-Documents-…`). Pool masked it there but never put it back, so Claude was told such a file does not exist.
+
+### Changed
+
+- The app log follows each message you send while tools run: when it is queued in Claude Code, and when it reaches the model. Only lengths and timings are kept.
+
 ## [0.2.0] - 2026-11-10
 
 ### Added
