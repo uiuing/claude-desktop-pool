@@ -4,6 +4,21 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-11-10
+
+### Fixed
+
+- Pool no longer quits unexpectedly while it refreshes several accounts' usage at once. Two refreshes of one account could overlap, and the second found its work already taken.
+- Requests no longer hang when a tool call runs longer than two minutes. Claude Code moved such calls to the background and ended its turn, so the tool's result, sent back by Desktop, had nowhere to go. Tool calls now run until they finish, as they do when Desktop talks to Claude directly.
+- The routing view shows each account's 5-hour, weekly and model limits together. It showed only the model limit.
+
+### Changed
+
+- A conversation running on several accounts at once is shown on each of them, and its row names them all ("account +2").
+- Recent decisions name the conversation each one placed, and say when a task was placed beside its conversation's busy one, on the account with the most room.
+- Refreshes of one account asked for close together are one read: a refresh asked for while one is under way, or within a minute of the last reading, uses that reading. Your own refresh reads again unless Pool read the account seconds ago. Timed reads keep their own pace.
+- Pool uses less CPU while many requests run: it looks at a request that has nothing new less often, and returns to full pace as soon as something arrives. The windows also update only when something they show has changed.
+
 ## [0.2.3] - 2026-11-10
 
 ### Fixed
