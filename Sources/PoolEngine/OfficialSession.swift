@@ -133,6 +133,9 @@ public actor OfficialSession: SessionWorker {
     /// rest wait behind it.
     private var rows: [ClaudeTranscript.Row] = []
     private var holdUntil: Date?
+    /// The events folder's stamp after its last listing left it empty, and how many looks in a row read nothing.
+    private var emptyFolderStamp: timespec?
+    private var quietLooks = 0
     /// The calls the client was told and has not answered.
     private var outstanding: Set<String> = []
     /// The calls Claude Code made through the helper and waits on.
@@ -415,7 +418,7 @@ public actor OfficialSession: SessionWorker {
     /// a run resting between turns looks at once instead of after its idle pause.
     private func startPolling() {
         guard !ended, !nativeSessionEnded else { return }
-        pollTask?.cancel()
+        pollTask?.cancel(); quietLooks = 0
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let interval = await self?.poll() else { return }
@@ -807,8 +810,14 @@ public actor OfficialSession: SessionWorker {
     /// goes on or a row waits for one (tapPoll).
     private func poll() -> UInt64 {
         guard !ended, let directory else { return 40_000_000 }
-        let events = ((try? FileManager.default.contentsOfDirectory(at: directory.appendingPathComponent("events", isDirectory: true), includingPropertiesForKeys: nil)) ?? [])
+        let folder = directory.appendingPathComponent("events", isDirectory: true)
+        // The folder changes only when the helper or a hook writes to it: an unchanged one is not listed again.
+        var folderInfo = stat()
+        let stamp = lstat(folder.path, &folderInfo) == 0 ? folderInfo.st_mtimespec : nil
+        let listed = stamp.map { stamp in emptyFolderStamp.map { $0.tv_sec != stamp.tv_sec || $0.tv_nsec != stamp.tv_nsec } ?? true } ?? true
+        let events = !listed ? [] : ((try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [])
             .filter { $0.pathExtension == "json" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        var heard = !events.isEmpty
         for path in events.prefix(2048) {
             if let event = try? EngineSpool.read(path) {
                 DevRecord.record(.session, "spool.event", ["run": runTag]) { ["file": .string(path.lastPathComponent), "event": event] }
@@ -817,8 +826,12 @@ public actor OfficialSession: SessionWorker {
             try? FileManager.default.removeItem(at: path)
             if nativeSessionEnded || ended { return 40_000_000 }
         }
+        // Only a listing that found nothing keeps its stamp, taken before it: a file written since
+        // changes the stamp, and one taken now changes it too, so the next look lists again.
+        if listed { emptyFolderStamp = events.isEmpty ? stamp : nil }
         if var tap {
             let streamed = tap.read()
+            if !streamed.isEmpty { heard = true }
             if !streamed.isEmpty { DevRecord.record(.session, "tap.events", ["run": runTag]) { ["events": .array(streamed)] } }
             streamQueue += streamed
             self.tap = tap
@@ -828,7 +841,9 @@ public actor OfficialSession: SessionWorker {
             }
         }
         if var transcript {
-            rows += transcript.read()
+            let read = transcript.read()
+            if !read.isEmpty { heard = true }
+            rows += read
             self.transcript = transcript
         }
         drain()
@@ -848,9 +863,20 @@ public actor OfficialSession: SessionWorker {
             fail(BridgeFailure.transport)
             try? transport?.interrupt()
         }
-        if tap?.going(bare: false) == true || holdUntil != nil { return 10_000_000 }
-        return response != nil || awaitingAccept ? 40_000_000 : Self.restingLook
+        let pace: UInt64 = tap?.going(bare: false) == true || holdUntil != nil ? 10_000_000
+            : response != nil || awaitingAccept ? 40_000_000 : Self.restingLook
+        return Self.easedLook(pace, quiet: &quietLooks, heard: heard)
     }
+    /// The next look's wait: `pace` right after something was read, then twice as long for each
+    /// look that read nothing, up to `quietLook` (or `pace` when that is longer). Dozens of runs
+    /// each looking a hundred times a second while their client thinks cost the Mac more than
+    /// the channel is worth; something read brings the pace straight back.
+    static func easedLook(_ pace: UInt64, quiet: inout Int, heard: Bool) -> UInt64 {
+        if heard { quiet = 0; return pace }
+        quiet = min(quiet + 1, 8)
+        return max(pace, min(pace << UInt64(quiet), quietLook))
+    }
+    static let quietLook: UInt64 = 160_000_000
     /// A reply that has heard nothing from its client for `stallAfter` is logged once, with what
     /// it waits on and its steps; when the client is heard again, how long it was quiet.
     private func watchForStall() {

@@ -57,6 +57,11 @@ public final class OfficialCLI: @unchecked Sendable {
         result["CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS"] = "1"
         // an hour's cache, as Claude Code writes it on a subscription within its limits
         result["CLAUDE_CODE_PROMPT_CACHE_TTL"] = "1h"
+        // a call to the client's tools waits for the client's result: Claude Code would otherwise move
+        // one running past two minutes to the background, end its turn, and leave the result Desktop
+        // brings later with nothing waiting for it. Desktop's own Claude Code decides what runs in
+        // the background.
+        result["CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS"] = "0"
         return result
     }
 

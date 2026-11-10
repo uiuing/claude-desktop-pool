@@ -40,10 +40,13 @@ final class OfficialSessionTests: XCTestCase {
         XCTAssertNotNil(settings["statusLine"])
         for (key, expected) in ["ENABLE_CLAUDEAI_MCP_SERVERS": "0", "DISABLE_AUTO_COMPACT": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
                                 "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1", "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS": "1",
-                                "CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"] {
+                                "CLAUDE_CODE_PROMPT_CACHE_TTL": "5m",
+                                // a call past two minutes still waits for Desktop's result (11-10: runs ended
+                                // their turn at 120 s and held the late result until Desktop gave up)
+                                "CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS": "0"] {
             XCTAssertEqual(plan.environment[key], expected, key)
         }
-        for key in ["CLAUDE_CODE_SKIP_PROMPT_HISTORY", "CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS", "ANTHROPIC_API_KEY", "CLAUDECODE"] {
+        for key in ["CLAUDE_CODE_SKIP_PROMPT_HISTORY", "ANTHROPIC_API_KEY", "CLAUDECODE"] {
             XCTAssertNil(plan.environment[key], key)
         }
         let transcript = try harness.transcriptURL
@@ -707,5 +710,18 @@ final class OfficialSessionTests: XCTestCase {
 
     func request(_ text: String, tools: [BridgeTool]? = nil) -> BridgeRequest {
         BridgeRequest(model: "claude-sonnet", messages: [.init(role: "user", content: .string(text))], tools: tools)
+    }
+
+    /// A run that reads nothing looks less often, up to a cap, and something read brings the pace
+    /// straight back: dozens of runs waiting on their client cost the Mac little.
+    func testQuietLooksEaseOffAndComeBackAtOnce() {
+        var quiet = 0
+        let streaming: UInt64 = 10_000_000
+        let waits = (0..<6).map { _ in OfficialSession.easedLook(streaming, quiet: &quiet, heard: false) }
+        XCTAssertEqual(waits, [20_000_000, 40_000_000, 80_000_000, 160_000_000, 160_000_000, 160_000_000])
+        XCTAssertEqual(OfficialSession.easedLook(streaming, quiet: &quiet, heard: true), streaming)
+        XCTAssertEqual(quiet, 0)
+        // a resting run already looks less often than the cap: it keeps its own pace
+        XCTAssertEqual(OfficialSession.easedLook(OfficialSession.restingLook, quiet: &quiet, heard: false), OfficialSession.restingLook)
     }
 }

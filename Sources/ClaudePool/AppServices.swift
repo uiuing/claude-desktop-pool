@@ -1085,7 +1085,10 @@ final class AppServices {
                 terminalLinkCollectors.removeValue(forKey: session.id)
                 generatingSessions.removeValue(forKey: session.id)
             }
-            else if let i = model.snapshot.sessions.firstIndex(where: { $0.id == session.id }) { model.snapshot.sessions[i] = session }
+            else if let i = model.snapshot.sessions.firstIndex(where: { $0.id == session.id }) {
+                // an assignment tells every view watching, changed or not
+                if model.snapshot.sessions[i] != session { model.snapshot.sessions[i] = session }
+            }
             else { model.snapshot.sessions.append(session) }
             synchronizeGeneratingAccounts()
             if session.state != .ended { await confirmNextAccount() }
@@ -1193,7 +1196,7 @@ final class AppServices {
         if terminal.isRunning, let alias = await coordinator?.conversationAlias(for: terminal.id) {
             allowed = await privacyBridge?.canAcceptManualInput(conversationID: alias) == true
         }
-        guard model.terminal?.id == terminal.id else { return }
+        guard model.terminal?.id == terminal.id, model.terminal?.textInputEnabled != allowed else { return }
         model.terminal?.textInputEnabled = allowed
     }
 
@@ -1523,7 +1526,8 @@ final class AppServices {
         generatingSessions = generatingSessions.filter { _, scope in
             library.accounts.contains(where: scope.matches)
         }
-        model.generatingSessionIDs = Set(generatingSessions.keys)
+        let generating = Set(generatingSessions.keys)
+        if model.generatingSessionIDs != generating { model.generatingSessionIDs = generating }
     }
 
     /// Another copy already owns the accounts. Bring it forward; a packaged copy then quits.
