@@ -4,6 +4,29 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-10
+
+### Added
+
+- Each model's own weekly limit, such as Fable's, is shown wherever the 5-hour and weekly limits are: in the menu bar, the plan summaries, each account and the routing page, with its reset time. The menu bar keeps the 5-hour limit over the weekly one and shows the tightest model limit beside them in larger type ("F72%").
+- Fable 5.2 is priced in the Usage page.
+
+### Changed
+
+- Claude Pool checks for Claude Code updates every four hours instead of once a day, also while it stays open in the background, so new models such as Fable 5.2 arrive sooner. Settings › Services has a Check for updates button that installs a newer Claude Code at once.
+
+### Fixed
+
+- Using up Fable's weekly limit no longer stops the whole account for a week. Only Fable waits for that limit's reset; Sonnet and Opus keep working on the account. Accounts 0.1.9 held back this way are released on update.
+- A model's limit named with a version, such as "Fable 5.1", is recognised as that model's limit instead of a limit on every model.
+- After Claude refuses Fable on an account, Fable stays off that account until the limit's reset, even when the usage panel still shows some room. Requests no longer go back to it and get refused again.
+- When Claude Code asks whether Fable should go on usage credits, as it does on Pro once the included Fable week ends, Pool closes the question without answering and moves the request to another account at once, instead of waiting ten minutes for it to fail. Pool never agrees to spend usage credits.
+- A limit Pool does not recognise no longer holds an account back on a reading alone; a refusal at it still moves the request and holds the account until its reset.
+- A conversation with many images no longer fails, and keeps being retried, when it moves to another account or starts a new session. Claude Code redraws only the parts of its input that changed, so Pool missed an image it had already shown, gave up after ten seconds and told Desktop to try again; each try typed the whole conversation once more and failed the same way. Pool now reads the image from the input as it appears on screen.
+- If a conversation still cannot be typed into Claude Code twice in a row, Desktop shows the error instead of retrying without end.
+- Quota in Claude Code's newer status-line layout is read.
+- Key text such as limit names, reset times and account names is no longer cut off; long lines wrap instead.
+
 ## [0.1.9] - 2026-11-09
 
 ### Fixed
@@ -127,7 +150,8 @@ First public release.
 - Update checks against GitHub Releases with verified one-click install.
 - Option to hide email addresses throughout the app.
 
-[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.9...v0.2.0
 [0.1.9]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.6...v0.1.7
