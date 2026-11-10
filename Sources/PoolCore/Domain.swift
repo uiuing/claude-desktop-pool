@@ -713,15 +713,19 @@ public enum PoolRouting {
     /// Assess only the limits that apply to every model. Pool readiness and totals are never
     /// filtered by one model; a model's own weekly limit is shown as its own figure.
     public static let anyModel = ""
-    /// Conversations each account serves now. A conversation counts once however many of its runs
-    /// are still live (a new run starts while the one it replaces winds down); a run that named no
-    /// conversation counts on its own, and one-off asks and ended runs not at all.
+    /// Work each account serves now. A conversation counts once while at most one of its runs is
+    /// answering (a new run starts while the one it replaces winds down idle); each run answering at
+    /// the same time counts on its own (a conversation's sub-agents, sessions of their own under its
+    /// tag), so a batch weighs on its account as the work it is. A run that named no conversation
+    /// counts on its own, and one-off asks and ended runs not at all.
     public static func conversationLoad(_ sessions: [PoolSession]) -> [UUID: Int] {
-        var seen: [UUID: Set<String>] = [:]
+        var live: [UUID: [String: Int]] = [:]
         for session in sessions where session.state != .ended && !session.isOneOff {
-            seen[session.accountID, default: []].insert(session.conversation ?? session.id.uuidString)
+            let key = session.conversation ?? session.id.uuidString
+            let answering = [.starting, .running, .waiting].contains(session.state) ? 1 : 0
+            live[session.accountID, default: [:]][key, default: 0] += answering
         }
-        return seen.mapValues(\.count)
+        return live.mapValues { $0.values.reduce(0) { $0 + max(1, $1) } }
     }
     /// How well an account suits a new conversation, from 0 to about 100. Nothing decides alone:
     /// what is left of the 5-hour limit and of the week weigh about the same; a 5-hour limit that is

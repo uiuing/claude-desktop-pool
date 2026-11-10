@@ -91,12 +91,13 @@ final class SessionHarness: @unchecked Sendable {
     }
     func session(timeout: TimeInterval = 10, imageTimeout: TimeInterval = 1, toolTimeout: TimeInterval = 1,
                  returnTimeout: TimeInterval = 3, readyTimeout: TimeInterval = 3,
-                 tapWait: TimeInterval = 0.5, callFirst: TimeInterval = 0.3, messageQuiet: TimeInterval = 0.1) -> OfficialSession {
+                 tapWait: TimeInterval = 0.5, callFirst: TimeInterval = 0.3, messageQuiet: TimeInterval = 0.1,
+                 limitedQuiet: TimeInterval = 0.2) -> OfficialSession {
         OfficialSession(workspace: workspace, account: account, model: model,
                         executable: URL(fileURLWithPath: "/fixture/claude"), helperExecutable: URL(fileURLWithPath: "/fixture/Claude Pool"),
                         timeout: timeout, imageAcknowledgementTimeout: imageTimeout, toolCatalogTimeout: toolTimeout,
                         returnReceiptTimeout: returnTimeout, readyTimeout: readyTimeout, commandSettle: 0.05,
-                        tapWait: tapWait, callFirst: callFirst, messageQuiet: messageQuiet, tapDirectory: tapRoot,
+                        tapWait: tapWait, callFirst: callFirst, messageQuiet: messageQuiet, tapDirectory: tapRoot, limitedQuiet: limitedQuiet,
                         launch: { try self.launch($0) })
     }
 

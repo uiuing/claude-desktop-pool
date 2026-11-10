@@ -49,6 +49,48 @@ final class ClaudeStreamTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path), "The tap goes with its run")
     }
 
+    /// Another run on this account was refused at its 5-hour limit. A reply that has had nothing of a
+    /// message streamed and stays quiet ends with that refusal, so it moves to another account; one
+    /// that has begun streaming is answering and goes on however long it is quiet (a real tool call's
+    /// input streamed nothing for 107 s, 11-10, and the reply then finished).
+    func testAnotherRunsLimitEndsOnlyAReplyThatHasNotBegun() async throws {
+        let limit = BridgeFailure.quotaLimited([.init(id: "five_hour", usedPercent: 100, observedAt: Date(), resetsAt: Date().addingTimeInterval(3600))])
+        do {
+            let harness = try SessionHarness(); defer { harness.clean() }
+            let session = harness.session()
+            let log = EventLog.recording(try await session.events(for: request("Hello")))
+            try await waitFor { harness.sentCount == 1 }
+            try harness.tap(#"{"tap":"on"}"#)
+            await session.accountLimited(limit, until: Date().addingTimeInterval(3600))
+            try await waitFor { await log.ended }
+            let failure = await log.failure as? BridgeFailure
+            XCTAssertEqual(failure, limit, "A reply not yet begun moves on")
+            harness.exited(); _ = await session.close()
+        }
+        do {
+            let harness = try SessionHarness(); defer { harness.clean() }
+            let session = harness.session()
+            let log = EventLog.recording(try await session.events(for: request("Hello")))
+            try await waitFor { harness.sentCount == 1 }
+            try harness.tap(#"{"tap":"on"}"#, #"{"s":1,"open":true}"#)
+            try harness.stream(1, Self.start("msg_1"), Self.textStart(0), Self.text(0, "Reading"))
+            try await waitFor { await log.text == "Reading" }
+            await session.accountLimited(limit, until: Date().addingTimeInterval(3600))
+            try await Task.sleep(nanoseconds: 800_000_000)
+            let ended = await log.ended
+            XCTAssertFalse(ended, "A reply that has begun streaming is not ended for another run's limit")
+            try harness.stream(1, Self.blockStop(0), Self.delta("end_turn", out: 7), Self.messageStop)
+            try harness.tap(#"{"s":1,"end":"done"}"#)
+            try harness.answer("Reading", message: "msg_1", usage: ["input_tokens": 3, "output_tokens": 7])
+            try harness.turnEnded()
+            try await waitFor { await log.ended }
+            let events = await log.events, failure = await log.failure
+            XCTAssertNil(failure)
+            XCTAssertEqual(events.last, .finished(.endTurn))
+            _ = await session.close()
+        }
+    }
+
     /// A message the transcript has before its stream begins waits for it while a stream is open,
     /// and is told once, from the stream (TestTapMessageWaitsForItsStream).
     func testATranscriptMessageWaitsForItsStream() async throws {

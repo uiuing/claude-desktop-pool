@@ -463,6 +463,19 @@ final class RoutingTests: XCTestCase {
         XCTAssertEqual(ranked.first?.id, busy.id, "46/88 with one conversation leads 100/5")
     }
 
+    /// A real pool (11-10): a conversation's sub-agents, each a session of its own under its tag, ran
+    /// sixteen at once on one account that counted them as one, so new ones kept landing there. Each
+    /// run answering at once counts; a run winding down idle beside its replacement still does not.
+    func testRunsAnsweringAtOnceEachCount() {
+        let busy = account("busy@example.com", session: 30, week: 10)
+        let tag = "527b3b00443f0015"
+        let agents = (0..<3).map { PoolSession(accountID: busy.id, name: "a\($0)", model: "opus", state: .running, conversation: tag) }
+        let waiting = PoolSession(accountID: busy.id, name: "w", model: "opus", state: .waiting, conversation: tag)
+        let idle = PoolSession(accountID: busy.id, name: "i", model: "opus", state: .idle, conversation: tag)
+        XCTAssertEqual(PoolRouting.conversationLoad(agents + [waiting, idle])[busy.id], 4)
+        XCTAssertEqual(PoolRouting.conversationLoad([idle])[busy.id], 1, "A conversation waiting for its next message counts once")
+    }
+
     /// A real pool (11-06): 100/3, 100/2 and 100/3 within half a point of each other were taken as equal
     /// and kept their saved order, so 2% of the week sat between two accounts with 3%.
     func testCloseScoresStillOrderByScore() {

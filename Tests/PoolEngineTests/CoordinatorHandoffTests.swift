@@ -137,6 +137,28 @@ final class CoordinatorHandoffTests: XCTestCase {
         _ = await coordinator.shutdown()
     }
 
+    /// Runs started at the same moment see each other: one still being started counts on the account
+    /// it is going to, so a burst of new work (sixteen sub-agents in a second, 11-10) does not all pick
+    /// the account that looked best before any of them was bound.
+    func testRunsBeingStartedCountWhereTheyAreGoing() async throws {
+        let date = Date()
+        func quota(_ used: Double) -> [QuotaWindow] { [.init(id: "five_hour", usedPercent: used, observedAt: date, resetsAt: date.addingTimeInterval(3600))] }
+        var accounts = accounts()
+        accounts[0].windows = quota(30); accounts[1].windows = quota(30)
+        let gate = HandoffGate()
+        let factory = GatedFactory(gate: gate, first: accounts[0].id)
+        let coordinator = PoolCoordinator(accounts: accounts, now: { date }, factory: { account, _ in try await factory.make(account.id) })
+        let first = Task { try await self.collect(coordinator, self.request(), id: "desktop-1#main") }
+        try await handoffWait { await factory.order.count == 1 }
+        let second = Task { try await self.collect(coordinator, self.request(), id: "desktop-2#main") }
+        try await handoffWait { await factory.order.count == 2 }
+        await gate.release()
+        _ = try await first.value; _ = try await second.value
+        let order = await factory.order
+        XCTAssertEqual(order, [accounts[0].id, accounts[1].id], "The second sees the first being started")
+        _ = await coordinator.shutdown()
+    }
+
     /// Pool's warmAccounts: an account that served a conversation of the model within the hour holds
     /// Claude Code's own opening in its cache, whatever the client's instructions, and a new conversation
     /// of that model leans toward it by what a first turn was measured to read. Another model's is not
@@ -467,6 +489,17 @@ private actor HandoffFactory {
         order.append(id)
         guard var queue = queues[id], !queue.isEmpty else { throw BridgeFailure.unavailable }
         let first = queue.removeFirst(); queues[id] = queue; return first
+    }
+}
+private actor GatedFactory {
+    private let gate: HandoffGate
+    private let first: UUID
+    private(set) var order: [UUID] = []
+    init(gate: HandoffGate, first: UUID) { self.gate = gate; self.first = first }
+    func make(_ id: UUID) async throws -> any SessionWorker {
+        order.append(id)
+        if order.count == 1 { await gate.wait() }
+        return HandoffWorker(steps: [.reply([.text("Synthetic reply."), .finished(.endTurn)])])
     }
 }
 private actor HandoffGate {

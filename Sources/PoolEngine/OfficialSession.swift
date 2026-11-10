@@ -117,10 +117,15 @@ public actor OfficialSession: SessionWorker {
     /// transcript row) is logged as stalled, with its steps. Only logged: nothing is ended for it.
     static let stallAfter: TimeInterval = 90
     /// Another run on this account was refused at a limit every model shares, until its reset: a
-    /// reply this run waits on that has heard nothing for `limitedQuiet` ends with that refusal, so
-    /// it moves to another account. A reply still streaming goes on.
+    /// reply this run waits on that has had nothing of a message streamed and heard nothing for
+    /// `limitedQuiet` ends with that refusal, so it moves to another account. A reply that has begun
+    /// streaming goes on, quiet or not.
     private var siblingLimit: (failure: BridgeFailure, until: Date)?
-    static let limitedQuiet: TimeInterval = 20
+    /// Whether the open reply has had any of a message streamed: one that has is answering, however
+    /// long it then goes quiet (a tool call's input can stream nothing for minutes), and is never
+    /// ended for another run's refusal.
+    private var replyStreamed = false
+    private let limitedQuiet: TimeInterval
     /// Stream events read and not yet told: they wait while a message typed in is not yet taken.
     private var streamQueue: [JSONValue] = []
     /// Transcript rows read and not yet handled: the first waits while its message's stream may
@@ -149,9 +154,10 @@ public actor OfficialSession: SessionWorker {
                 executable: URL, helperExecutable: URL, timeout: TimeInterval = 600, imageAcknowledgementTimeout: TimeInterval = 10,
                 toolCatalogTimeout: TimeInterval = 5, returnReceiptTimeout: TimeInterval = 3, readyTimeout: TimeInterval = 45,
                 commandSettle: TimeInterval = 1, tapWait: TimeInterval = 1, callFirst: TimeInterval = 0.5,
-                messageQuiet: TimeInterval = 0.3, tapDirectory: URL? = nil,
+                messageQuiet: TimeInterval = 0.3, tapDirectory: URL? = nil, limitedQuiet: TimeInterval = 20,
                 launch: @escaping @Sendable (SessionLaunch) throws -> SessionTransport = { try SessionTransport.launch($0) }) {
         self.id = id; self.workspace = workspace; self.account = account; self.model = model
+        self.limitedQuiet = limitedQuiet
         accountSnapshot = account; sessionKey = ClaudeReplay.sessionKey(id)
         self.executable = executable; self.helperExecutable = helperExecutable; self.timeout = timeout
         pasteTimeout = imageAcknowledgementTimeout; self.launch = launch
@@ -231,7 +237,7 @@ public actor OfficialSession: SessionWorker {
             }
         }
         responseID = token; deadline = results.isEmpty ? nil : Date().addingTimeInterval(timeout)
-        trace.note("reply.open:results=\(results.count)"); stalledSince = nil
+        trace.note("reply.open:results=\(results.count)"); stalledSince = nil; replyStreamed = false
         if pollTask != nil { startPolling() }
         reply.newReply(); replyCalls = 0
         // the turn may call what this request lets it, set at each continuation
@@ -875,7 +881,8 @@ public actor OfficialSession: SessionWorker {
     private func failForSiblingLimit(_ limit: (failure: BridgeFailure, until: Date)) -> Bool {
         let now = Date()
         guard limit.until > now else { siblingLimit = nil; return false }
-        guard response != nil, !invalidated, now.timeIntervalSince(trace.lastActivity) >= Self.limitedQuiet else { return false }
+        guard response != nil, !invalidated, !replyStreamed, tap?.going(bare: false) != true,
+              now.timeIntervalSince(trace.lastActivity) >= limitedQuiet else { return false }
         Diagnostics.record("session.account_limited", ["run": runTag, "quiet_s": String(Int(now.timeIntervalSince(trace.lastActivity)))])
         invalidated = true; failed("account_limited"); observer?.yield(.attention)
         fail(limit.failure)
@@ -934,7 +941,7 @@ public actor OfficialSession: SessionWorker {
     }
 
     private func streamEvent(_ event: JSONValue) {
-        observedInference = true
+        observedInference = true; replyStreamed = true
         switch event["type"]?.stringValue {
         case "message_start", "message_stop", "error": trace.note("stream." + (event["type"]?.stringValue ?? "-"))
         case "content_block_start": trace.note("stream.block:" + (event["content_block"]?["type"]?.stringValue ?? "-"))

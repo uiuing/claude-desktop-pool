@@ -73,6 +73,8 @@ public actor PoolCoordinator: BridgeBackend {
     /// The last request of a conversation whose reply failed, and when: a cancel for the conversation
     /// that arrives just after is that request's, not the retry's admitted since.
     private var creating = 0
+    /// Runs being started on each account, between its pick and its binding.
+    private var starting: [UUID: Int] = [:]
     /// No bound in the app (Pool's own: macOS compresses and swaps memory itself, and a Claude Code process
     /// is some 170-205 MiB of footprint, so a bound read from memory only held conversations back); tests
     /// set one to exercise how runs make way.
@@ -697,7 +699,10 @@ public actor PoolCoordinator: BridgeBackend {
     }
     /// Conversations each account serves now, from the runs that have not been stopped.
     private func conversationLoad() -> [UUID: Int] {
-        PoolRouting.conversationLoad(bindings.values.filter { !$0.stopped }.map(\.session))
+        var load = PoolRouting.conversationLoad(bindings.values.filter { !$0.stopped }.map(\.session))
+        // runs still being started count where they are going, so a burst of new work spreads
+        for (account, count) in starting where count > 0 { load[account, default: 0] += count }
+        return load
     }
     private func restingAccounts() -> Set<UUID> {
         let date = now()
@@ -866,6 +871,8 @@ public actor PoolCoordinator: BridgeBackend {
                 "excluded": String(excluded.count), "candidates": scored.joined(separator: ","),
                 "warm": bonus.isEmpty ? "-" : bonus.sorted { $0.key.uuidString < $1.key.uuidString }
                     .map { Diagnostics.id($0.key) + ":+" + String(Int($0.value.rounded())) }.joined(separator: ",")])
+            starting[account.id, default: 0] += 1
+            defer { starting[account.id, default: 1] -= 1; if starting[account.id] == 0 { starting[account.id] = nil } }
             do { selection = (account, try await factory(account, model)) }
             catch BridgeFailure.accountUnavailable(let state) {
                 markUnavailable(AccountScope(account), state: state)
