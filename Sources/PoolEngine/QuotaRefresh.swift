@@ -211,6 +211,8 @@ public actor QuotaRefreshService {
     private var accounts: [PoolAccount] = []
     private var records: [UUID: Record] = [:]
     private var requested: [UUID: QuotaRefreshReason] = [:]
+    /// Limits an account had that its last read did not show, kept that once.
+    private var missedOnce: [UUID: Set<String>] = [:]
     private var suspended = Set<UUID>()
     private var generations: [UUID: UInt64] = [:]
     private var preferences = QuotaRefreshPreferences()
@@ -699,14 +701,25 @@ public actor QuotaRefreshService {
             records[account.id]?.status.observerID = observer.id; await publish(account.id, scope: scope)
             try Task.checkCancellation()
             guard !suspended.contains(account.id), currentIdentity(account), generations[account.id, default: 0] == generation else { throw QuotaRefreshFailure.cancelled }
-            let windows = try await observer.read()
+            let read = try await observer.read()
+            // A limit the account had that this panel did not show is kept until a second read in a
+            // row misses it too: one panel can be read before all its rows are drawn, and the reading
+            // replaces what the account had. A limit gone for good goes with the next read.
+            let had = accounts.first { $0.id == account.id }?.windows.filter { $0.state == .reported } ?? []
+            let missing = had.filter { old in !read.contains { $0.id == old.id } }
+            let missed = Set(missing.map(\.id))
+            let kept: [QuotaWindow]
+            if missed.isEmpty || missedOnce[account.id] == missed { kept = []; missedOnce[account.id] = nil }
+            else { kept = missing; missedOnce[account.id] = missed }
+            let windows = read + kept
             let timings = await observer.timings()
             let fiveHour = windows.first { $0.id == "five_hour" }
             Diagnostics.record("quota.read", ["account": tag, "reason": reason.rawValue, "outcome": "ok",
                 "reused": await observer.reads > 1 ? "yes" : "no",
                 "ms": String(Int(Date().timeIntervalSince(began) * 1000)),
                 "ready_ms": timings.readyMS.map(String.init) ?? "-", "panel_ms": timings.panelMS.map(String.init) ?? "-",
-                "windows": String(windows.count),
+                "windows": String(read.count), "ids": read.map(\.id).sorted().joined(separator: ","),
+                "kept": kept.isEmpty ? "-" : kept.map(\.id).sorted().joined(separator: ","),
                 "five_hour": fiveHour.map { $0.state != .reported ? $0.state.rawValue : $0.resetsAt == nil ? "no_reset" : $0.resetsAt! <= $0.observedAt ? "past_reset" : "reset" } ?? "-"])
             guard !suspended.contains(account.id), currentIdentity(account), generations[account.id, default: 0] == generation else { throw QuotaRefreshFailure.cancelled }
             await update(.reading(scope: scope, windows: windows))
@@ -850,6 +863,8 @@ private actor QuotaObserver {
     private var firstRun = FirstRunScreens()
     private var lastOutput = Date.distantPast
     private var typedAt = Date.distantPast
+    /// The rows a panel showed at its first complete-looking look, and when.
+    private var candidate: ([String], Date)?
     private var ready = false, typed = false, submitted = false, ended = false, closing = false, sessionEnding = false
     private(set) var extraUsage = false
     private(set) var cleanupFailed = false
@@ -869,7 +884,7 @@ private actor QuotaObserver {
     }
     func read() async throws -> [QuotaWindow] {
         try Task.checkCancellation()
-        reads += 1
+        reads += 1; candidate = nil
         if transport == nil { try start() }
         if failure == .needsAttention { failure = nil }
         let deadline = Date().addingTimeInterval(timeout)
@@ -900,10 +915,17 @@ private actor QuotaObserver {
             if submitted, Date().timeIntervalSince(lastOutput) >= 0.35 {
                 do {
                     let windows = try NativeUsageParser.parse(screen.visibleText, plan: account.plan, observedAt: Date())
-                    extraUsage = NativeUsageParser.usesExtraUsage(screen.visibleText)
-                    return windows
+                    // The panel draws its rows one after another: a reading is taken once a second
+                    // look, a moment later, finds the same rows.
+                    let rows = windows.map { "\($0.id)=\($0.usedPercent ?? -1)" }
+                    if let (seen, at) = candidate, seen == rows, Date().timeIntervalSince(at) >= 0.3 {
+                        candidate = nil
+                        extraUsage = NativeUsageParser.usesExtraUsage(screen.visibleText)
+                        return windows
+                    }
+                    if candidate?.0 != rows { candidate = (rows, Date()) }
                 }
-                catch QuotaRefreshFailure.loading {} catch { throw error }
+                catch QuotaRefreshFailure.loading { candidate = nil } catch { throw error }
             }
             try await Task.sleep(nanoseconds: 50_000_000)
         }
@@ -921,7 +943,7 @@ private actor QuotaObserver {
                 while NativeUsageParser.isPanel(screen.visibleText), !ended, Date() < deadline { try await Task.sleep(nanoseconds: 50_000_000) }
                 guard !NativeUsageParser.isPanel(screen.visibleText), !ended, failure == nil else { return false }
             }
-            typed = false; submitted = false; extraUsage = false
+            typed = false; submitted = false; extraUsage = false; candidate = nil
             return true
         } catch { return false }
     }

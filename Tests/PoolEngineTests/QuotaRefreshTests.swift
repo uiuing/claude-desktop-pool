@@ -533,6 +533,43 @@ final class QuotaRefreshTests: XCTestCase {
         XCTAssertEqual(commands(), 2, "The person's refresh reads again once the reading is older")
         let stopped = await service.stop(); XCTAssertTrue(stopped)
     }
+    /// A panel read before its Fable row is drawn does not take the Fable limit away: the account
+    /// keeps it through one read that misses it, and lets it go when the next read misses it too.
+    func testALimitMissingFromOneReadIsKeptUntilTheNextMissesItToo() async throws {
+        let workspace = try fixtureWorkspace(), clock = QuotaTestClock(), log = QuotaUpdateLog()
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel)
+        let service = makeService(workspace: workspace, fixture: fixture, now: { clock.value }) { await log.append($0) }
+        var account = fixtureAccount()
+        try await service.start(); await service.setAccounts([account])
+        func refresh(_ count: Int) async throws -> [String] {
+            await service.requestRefresh(accountID: account.id)
+            let deadline = ContinuousClock.now.advanced(by: .seconds(30))
+            while await log.readings.count < count, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+            // the read is over once its account is idle again; a refresh asked for before then is that read's
+            while await service.statuses()[account.id]?.phase != .idle, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+            let readings = await log.readings.count; XCTAssertEqual(readings, count)
+            let reading = await log.readings.last ?? []
+            _ = account.absorb(reading, replacingSnapshot: true, at: clock.value)
+            await service.setAccounts([account])
+            return reading.map(\.id).sorted()
+        }
+        let first = try await refresh(1)
+        XCTAssertEqual(first.count, 3)
+        let modelLimit = try XCTUnwrap(first.first { $0.hasPrefix("seven_day_") })
+        // the panel drawn without its last row: the model's own weekly limit
+        let lines = livePanel.components(separatedBy: "\n")
+        let third = try XCTUnwrap(lines.indices.filter { lines[$0].hasPrefix("Current week") }.last)
+        fixture.panel = (lines[..<third] + lines[(third + 3)...]).joined(separator: "\n")
+        clock.advance(30)
+        let missedOnce = try await refresh(2)
+        XCTAssertEqual(missedOnce, first, "One read without the model's row keeps its limit")
+        XCTAssertEqual(account.windows.first { $0.id == modelLimit }?.usedPercent, 3)
+        clock.advance(30)
+        let missedTwice = try await refresh(3)
+        XCTAssertEqual(missedTwice, ["five_hour", "seven_day"], "A second read in a row without it lets it go")
+        XCTAssertNil(account.windows.first { $0.id == modelLimit })
+        let stopped = await service.stop(); XCTAssertTrue(stopped)
+    }
     func testFastSingleConversationCanRefreshAtTenSeconds() async throws {
         let workspace = try fixtureWorkspace(), first = expectation(description: "First automatic read"), second = expectation(description: "Ten-second follow-up")
         let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel), clock = QuotaTestClock(), counter = QuotaEventCounter()
@@ -1030,7 +1067,10 @@ private final class QuotaTestClock: @unchecked Sendable {
 }
 private final class UsageProcessFixture: @unchecked Sendable {
     private let lock = NSLock()
-    private let workspace: OwnedWorkspace, panel: String
+    private let workspace: OwnedWorkspace
+    private var panelText: String
+    /// What the next /usage draws; a test can change it between reads.
+    var panel: String { get { lock.withLock { panelText } } set { lock.withLock { panelText = newValue } } }
     private let deferExit: Bool, blockCleanup: Bool
     /// A child that does not end on Ctrl-C. Pool must then report it, never escalate.
     var ignoresInterrupt = false
@@ -1055,7 +1095,7 @@ private final class UsageProcessFixture: @unchecked Sendable {
     var exitCount: Int { lock.withLock { exits } }
     func onLaunch(_ observer: @escaping @Sendable () -> Void) { lock.withLock { launchObserver = observer } }
     init(workspace: OwnedWorkspace, panel: String, needsTrust: Bool = false, firstRun: [String] = [], deferExit: Bool = false, blockCleanup: Bool = false) {
-        self.workspace = workspace; self.panel = panel; self.needsTrust = needsTrust; self.firstRun = firstRun
+        self.workspace = workspace; self.panelText = panel; self.needsTrust = needsTrust; self.firstRun = firstRun
         self.deferExit = deferExit; self.blockCleanup = blockCleanup
     }
     func launch(_ plan: SessionLaunch) throws -> SessionTransport {
