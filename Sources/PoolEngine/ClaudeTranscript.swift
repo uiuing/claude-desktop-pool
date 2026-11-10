@@ -16,6 +16,9 @@ struct ClaudeTranscript {
         /// A message the person sent reached the session: a user row that is no tool's result, or
         /// one queued mid-turn.
         case accepted
+        /// A message queued mid-turn left the queue: handed to the model with the next tool results
+        /// (`remove`) or as a turn of its own once the one running ended (`dequeue`).
+        case queueHandedOn
         /// Content blocks of an answer (Claude Code writes one a row), under its message's id, with
         /// the message's usage so far.
         case assistant(message: String, blocks: [Block], usage: BridgeUsage?, stop: String?)
@@ -29,7 +32,11 @@ struct ClaudeTranscript {
         guard let value = try? JSONDecoder().decode(JSONValue.self, from: line), value["isSidechain"]?.boolValue != true else { return nil }
         switch value["type"]?.stringValue {
         case "queue-operation":
-            return value["operation"]?.stringValue == "enqueue" ? .accepted : nil
+            switch value["operation"]?.stringValue {
+            case "enqueue": return .accepted
+            case "remove", "dequeue": return .queueHandedOn
+            default: return nil
+            }
         case "user":
             return value["isMeta"]?.boolValue != true && isPrompt(value["message"]) ? .accepted : nil
         case "assistant":

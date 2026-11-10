@@ -32,10 +32,10 @@ final class PrivacyStandInTests: XCTestCase {
         XCTAssertEqual(try restorer.append(masked, final: true), later)
     }
 
-    func testBareStandInsAreRestoredOnlyAsWholeWordsAcrossAnySplit() throws {
+    func testBareStandInsAreRestoredWhereNoLetterOrDigitRunsOnAcrossAnySplit() throws {
         let values = ["user-1": "quinn", "user-10": "avery", "public-ip-1": "93.184.216.34"]
         let text = "/Users/user-1/a user-10 super-user-1 my.user-1 user-1的 ssh public-ip-1."
-        let want = "/Users/quinn/a avery super-user-1 my.user-1 quinn的 ssh 93.184.216.34."
+        let want = "/Users/quinn/a avery super-quinn my.quinn quinn的 ssh 93.184.216.34."
         for split in 0...text.count {
             var restorer = PrivacyTextRestorer(values: values)
             let head = try restorer.append(String(text.prefix(split)))

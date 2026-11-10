@@ -962,6 +962,32 @@ extension PrivacyBridgeTests {
         XCTAssertEqual(told, "Listed for synthowner")
     }
 
+    /// Claude Code keeps a pasted image under a folder named after the project's path, so the account
+    /// name in it is masked between hyphens. The model's call to read it must reach the client with the
+    /// real name, or the client is told the file does not exist.
+    func testAStandInBetweenHyphensInAToolCallComesBackAsTheName() async throws {
+        let name = "synthowner", backend = PrivacyBackendFixture()
+        let bridge = PrivacyBridge(backend: backend, detector: FixtureDetector(), wait: .seconds(5), machineUsers: [name])
+        let path = "/private/tmp/claude-501/-Users-" + name + "-Documents-app/7f3c/images/3.png"
+        let reply = Task { try await collectPrivacy(try await bridge.events(for: self.textRequest("[Image: source: \(path)]"), conversationID: "machine#slug")) }
+        try await privacyEventually { await backend.requests.count == 1 }
+        let sent = await backend.requests[0].messages[0].content.stringValue!
+        XCTAssertFalse(sent.contains("-\(name)-"), sent)
+        let slug = try XCTUnwrap(sent.range(of: "-Users-")), after = sent[slug.upperBound...]
+        let standIn = String(after[..<(try XCTUnwrap(after.range(of: "-Documents-"))).lowerBound])
+        XCTAssertTrue(standIn.hasPrefix("user-"), "The folder's owner is masked")
+        let masked = path.replacingOccurrences(of: "-\(name)-", with: "-\(standIn)-")
+        XCTAssertTrue(sent.contains(masked), sent)
+        let call = BridgeToolCall(id: "toolu_slug", name: "Read", input: .object(["file_path": .string(masked)]))
+        // split inside the stand-in, as a stream may cut it
+        let cut = masked.range(of: standIn)!.upperBound
+        await backend.finish(0, [.text("Opening " + String(masked[..<cut])), .text(String(masked[cut...]) + "."), .toolUse(call), .finished(.toolUse)])
+        let events = try await reply.value
+        XCTAssertEqual(events.privacyText, "Opening \(path).")
+        let told = try XCTUnwrap(events.compactMap { if case .toolUse(let call) = $0 { return call }; return nil }.first)
+        XCTAssertEqual(told.input["file_path"]?.stringValue, path)
+    }
+
     func testOnlyAccountNamesWorthMaskingAreTakenAsMachineUsers() {
         XCTAssertTrue(PrivacyRules.machineUser("synthowner"))
         XCTAssertTrue(PrivacyRules.machineUser("abc"))

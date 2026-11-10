@@ -198,7 +198,10 @@ final class ClaudeReplayTests: XCTestCase {
         XCTAssertNil(row(#"{"type":"user","isMeta":true,"message":{"role":"user","content":"caveat"}}"#))
         XCTAssertNil(row(#"{"type":"user","isSidechain":true,"message":{"role":"user","content":"agent"}}"#))
         XCTAssertEqual(row(#"{"type":"queue-operation","operation":"enqueue","content":"later"}"#), .accepted)
-        XCTAssertNil(row(#"{"type":"queue-operation","operation":"dequeue"}"#))
+        // a queued message handed on, with the next tool results or as a turn of its own
+        XCTAssertEqual(row(#"{"type":"queue-operation","operation":"remove","timestamp":"2026-11-10T04:22:31.102Z","sessionId":"00000000-0000-4000-8000-000000000001"}"#), .queueHandedOn)
+        XCTAssertEqual(row(#"{"type":"queue-operation","operation":"dequeue"}"#), .queueHandedOn)
+        XCTAssertNil(row(#"{"type":"queue-operation","operation":"popAll"}"#))
         XCTAssertEqual(row(#"{"type":"system","subtype":"turn_duration","durationMs":5}"#), .turnEnded)
         XCTAssertNil(row(#"{"type":"system","subtype":"api_error"}"#))
         XCTAssertNil(row(#"{"type":"file-history-snapshot"}"#))

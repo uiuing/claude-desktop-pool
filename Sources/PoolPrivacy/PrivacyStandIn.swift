@@ -18,11 +18,19 @@ enum PrivacyStandIn {
         }
     }
 
-    /// A stand-in written like a name is one only as a whole word: `user-1` is not in `user-10` or `my-user-1`.
+    /// A stand-in written like a name is one only as a whole word: `user-1` is not in `user-10` or `xuser-2`.
     static func bare(_ token: String) -> Bool { token.first?.isLetter == true }
     static func wordCharacter(_ character: Character?) -> Bool {
         guard let character, character.isASCII else { return false }
-        return character.isLetter || character.isNumber || character == "_" || character == "-"
+        return character.isLetter || character.isNumber || character == "_"
+    }
+    /// Whether a name-like stand-in between these characters is one. The rule is masking's own
+    /// (`PrivacyConversation.standsAlone`): a value is masked wherever no letter or digit runs on
+    /// into it, so between "-", "." or "/" too, as in Claude Code's folder `-Users-name-project`.
+    /// What is put back must be found by the same rule, or a path comes back with the stand-in in it.
+    /// No text of the conversation ever said a stand-in (`reserveWords`), so one found is Pool's.
+    static func standsAsName(before: Character?, after: Character?) -> Bool {
+        !wordCharacter(before) && !wordCharacter(after)
     }
 
     /// Each place `token` stands as a stand-in in `text`.
@@ -36,7 +44,7 @@ enum PrivacyStandIn {
             if bare {
                 let before = range.location > 0 ? text.substring(with: NSRange(location: range.location - 1, length: 1)).first : nil
                 let after = NSMaxRange(range) < text.length ? text.substring(with: NSRange(location: NSMaxRange(range), length: 1)).first : nil
-                if wordCharacter(before) || before == "." || wordCharacter(after) { continue }
+                if !standsAsName(before: before, after: after) { continue }
             }
             found.append(range)
         }

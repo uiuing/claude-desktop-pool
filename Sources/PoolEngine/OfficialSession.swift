@@ -95,6 +95,9 @@ public actor OfficialSession: SessionWorker {
     private var quotaGenerations: [String: Int] = [:]
     private var observedInference = false
     private var acceptedRows = 0
+    /// When words sent with tool results (a message the person wrote while tools ran) were queued
+    /// in Claude Code and not yet handed to the model.
+    private var queuedWordsSince: Date?
     private var awaitingAccept = false
     private var turnFailed = false
     /// The model families whose reply was seen running on usage credits, each told once.
@@ -653,10 +656,18 @@ public actor OfficialSession: SessionWorker {
     /// Tool results that come with more words from the client: the words are sent first, as a
     /// message Claude Code queues mid-turn, then the parked calls are released.
     private func deliver(_ results: [(String, JSONValue)], extraText: String, to directory: URL, responseToken: UUID) async {
+        let started = Date()
         do {
             try await type([.text(extraText)], busy: true, responseToken: responseToken)
+            queuedWordsSince = Date()
+            Diagnostics.record("session.interjection", ["run": runTag, "stage": "queued", "chars": String(extraText.count),
+                                                       "results": String(results.count), "ms": String(Int(Date().timeIntervalSince(started) * 1000))])
             try deliver(results, to: directory)
-        } catch { inputFailed(error) }
+        } catch {
+            Diagnostics.record("session.interjection", ["run": runTag, "stage": "not_queued", "chars": String(extraText.count),
+                                                       "why": error is CancellationError ? "cancelled" : (error as? BridgeFailure).map { String(describing: $0).prefix { $0 != "(" }.description } ?? "other", "ms": String(Int(Date().timeIntervalSince(started) * 1000))])
+            inputFailed(error)
+        }
     }
     /// Each result goes to its call as Claude Code makes it: at once for a call it is waiting on,
     /// held for one it has not made yet, since it makes a message's calls one at a time.
@@ -938,6 +949,7 @@ public actor OfficialSession: SessionWorker {
     private func handle(_ row: ClaudeTranscript.Row) {
         switch row {
         case .accepted: trace.note("row.accepted")
+        case .queueHandedOn: trace.note("row.queue_handed_on")
         case .assistant(_, let blocks, _, let stop): trace.note("row.assistant:\(blocks.count):" + (stop ?? "-"))
         case .apiError(let status, _, _): trace.note("row.api_error:" + (status.map(String.init) ?? "-"))
         case .turnEnded: trace.note("row.turn_ended")
@@ -953,6 +965,10 @@ public actor OfficialSession: SessionWorker {
             // entering the message has its own limits; the reply deadline starts once it is taken
             if response != nil { deadline = Date().addingTimeInterval(timeout) }
             observer?.yield(.working)
+        case .queueHandedOn:
+            guard let since = queuedWordsSince else { return }
+            queuedWordsSince = nil
+            Diagnostics.record("session.interjection", ["run": runTag, "stage": "handed_on", "ms": String(Int(Date().timeIntervalSince(since) * 1000))])
         case .assistant(let message, let blocks, let usage, let stop):
             observedInference = true
             if canTell { refreshProgressDeadline(); observer?.yield(.working) }
@@ -970,6 +986,10 @@ public actor OfficialSession: SessionWorker {
             fail(classify(status: status ?? 0, text: text))
         case .turnEnded:
             officialIdle = true
+            if let since = queuedWordsSince {
+                // Claude Code sends what is still queued as a turn of its own (`dequeue`)
+                Diagnostics.record("session.interjection", ["run": runTag, "stage": "queued_at_turn_end", "ms": String(Int(Date().timeIntervalSince(since) * 1000))])
+            }
             removeAttachmentFiles()
             reply.listening = canTell
             apply(reply.settle())

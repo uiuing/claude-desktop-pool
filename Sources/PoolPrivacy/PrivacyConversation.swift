@@ -746,7 +746,7 @@ struct PrivacyTextRestorer {
         if token.hasPrefix("{{") { return true }
         let after = end == pending.endIndex ? nil : pending[end]
         if PrivacyStandIn.bare(token) {
-            return !PrivacyStandIn.wordCharacter(before) && before != "." && !PrivacyStandIn.wordCharacter(after)
+            return PrivacyStandIn.standsAsName(before: before, after: after)
         }
         let afterDecimal = after == "." && pending.index(after: end) < pending.endIndex && pending[pending.index(after: end)].isNumber
         return !numberCharacter(before) && !(after != "." ? numberCharacter(after) : afterDecimal)
