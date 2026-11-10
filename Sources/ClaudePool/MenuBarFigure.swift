@@ -1,9 +1,9 @@
 import AppKit
 
 /// The menu bar item: Claude's mark, the shown plan's 5-hour limit over its weekly one and, beside
-/// them in larger type filling the bar's height, its tightest model limit ("F72%"). It is one template
-/// image, so the menu bar tints it like its own items and the figures stay aligned; a plan with only
-/// one of the two limits shows it at full size.
+/// them, its tightest model limit ("F72%") in the type of a single figure, as the menu bar's own items
+/// are written. It is one template image, so the menu bar tints it like its own items and the figures
+/// stay aligned; a plan with only one of the two limits shows it in that type too.
 @MainActor enum MenuBarFigure {
     private static var cache: [MenuBarFigures?: NSImage] = [:]
 
@@ -21,11 +21,11 @@ import AppKit
         let layout: (stacked: [String], beside: String?) = figures?.layout ?? (stacked: [], beside: nil)
         let lines = layout.stacked
         let stacked = lines.count == 2
-        let font = NSFont.monospacedDigitSystemFont(ofSize: stacked ? 9.5 : 12.5, weight: stacked ? .semibold : .medium)
+        let single = NSFont.monospacedDigitSystemFont(ofSize: 12.5, weight: .medium)
+        let font = stacked ? NSFont.monospacedDigitSystemFont(ofSize: 9.5, weight: .semibold) : single
         let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.black]
-        // The model limit spans both lines: one figure in the size of a single-line one, so no height is left empty.
-        let besideAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 14, weight: .semibold),
-                                                               .foregroundColor: NSColor.black]
+        // The model limit is one figure, so it is written as a single figure is, centred on the bar.
+        let besideAttributes: [NSAttributedString.Key: Any] = [.font: single, .foregroundColor: NSColor.black]
         let sizes = lines.map { ($0 as NSString).size(withAttributes: attributes) }
         let columnWidth = ceil(sizes.map(\.width).max() ?? 0)
         let besideSize = layout.beside.map { ($0 as NSString).size(withAttributes: besideAttributes) }

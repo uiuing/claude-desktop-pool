@@ -145,7 +145,7 @@ struct MenuBarFigures: Hashable {
     /// The model limit's text: "F72%".
     var modelText: String? { modelPercent.map { "\(model?.prefix(1).uppercased() ?? "")\($0)%" } }
     /// What the menu bar draws: the 5-hour limit over the weekly one, as always, and beside them,
-    /// in larger type, the tightest model limit when the plan has one.
+    /// as a single figure, the tightest model limit when the plan has one.
     var layout: (stacked: [String], beside: String?) {
         ([session, week].compactMap { $0.map { "\($0)%" } }, modelText)
     }
