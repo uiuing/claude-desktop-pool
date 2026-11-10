@@ -36,6 +36,12 @@ final class SessionHarness: @unchecked Sendable {
     /// Draws the input as Claude Code does: each paste in its place, a text of many lines as
     /// "[Pasted text #n +k lines]" numbered with the images, a full row going on under a 3-space indent.
     var drawDraftLikeClient = false
+    /// With `drawDraftLikeClient`, redraw only the cells that changed since the last frame, moving the
+    /// cursor over the rest, as the official client does for a long input: an unchanged letter is never
+    /// written again. As in a recorded session, each paste first redraws the conversation over the
+    /// input's rows, so a mark can reach the output as "[Imag" and " #27]".
+    var drawDraftAsDifferences = false
+    private var lastFrame: [String] = []
     var acknowledgeText = true
     var acknowledgeInitialTools = true
     var exitNormally = true
@@ -45,6 +51,8 @@ final class SessionHarness: @unchecked Sendable {
     /// a later key fails with `processExited` while the session still thinks it is running.
     var exitEventLags = false
     var firstRun = false
+    /// A screen drawn instead of the empty input box when the run starts.
+    var startScreen: String?
 
     /// Where a run's tap goes: the fixture's root has a space in its path, which BUN_OPTIONS
     /// cannot carry, so the tap is made in this folder of the test's, as in the user's temporary
@@ -76,10 +84,15 @@ final class SessionHarness: @unchecked Sendable {
         try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: tapRoot)
     }
 
+    var model = PoolModel.defaults[0]
+    /// Draws a whole screen as the client does, replacing what was there.
+    func draw(_ text: String) {
+        processContinuation?.yield(.output(Data(("\u{1b}[2J\u{1b}[H" + text.replacingOccurrences(of: "\n", with: "\r\n")).utf8)))
+    }
     func session(timeout: TimeInterval = 10, imageTimeout: TimeInterval = 1, toolTimeout: TimeInterval = 1,
                  returnTimeout: TimeInterval = 3, readyTimeout: TimeInterval = 3,
                  tapWait: TimeInterval = 0.5, callFirst: TimeInterval = 0.3, messageQuiet: TimeInterval = 0.1) -> OfficialSession {
-        OfficialSession(workspace: workspace, account: account, model: PoolModel.defaults[0],
+        OfficialSession(workspace: workspace, account: account, model: model,
                         executable: URL(fileURLWithPath: "/fixture/claude"), helperExecutable: URL(fileURLWithPath: "/fixture/Claude Pool"),
                         timeout: timeout, imageAcknowledgementTimeout: imageTimeout, toolCatalogTimeout: toolTimeout,
                         returnReceiptTimeout: returnTimeout, readyTimeout: readyTimeout, commandSettle: 0.05,
@@ -114,7 +127,7 @@ final class SessionHarness: @unchecked Sendable {
         if acknowledgeInitialTools { try acknowledgeCatalog() }
         if firstRun {
             processContinuation?.yield(.output(Data("\u{1b}[2J\u{1b}[HChoose the text style that looks best with your terminal\n❯ 1. Dark mode".utf8)))
-        } else { renderPrompt("") }
+        } else if let startScreen { draw(startScreen) } else { renderPrompt("") }
         return SessionTransport(events: stream, write: { try self.write($0) }, interrupt: {
             let count = self.lock.withLock { self.interrupts += 1; self.draftImages = 0; self.draftMarks = []; self.pasted = ""; return self.interrupts }
             self.renderPrompt("")
@@ -181,12 +194,31 @@ final class SessionHarness: @unchecked Sendable {
     private func submitDraft() throws {
         let sent = lock.withLock {
             let sent = pasted
-            typedTexts.append(sent); pasted = ""; draftImages = 0; draftMarks = []; enters += 1
+            typedTexts.append(sent); pasted = ""; draftImages = 0; draftMarks = []; lastFrame = []; enters += 1
             return sent
         }
         renderPrompt("")
         try row(["type": .string("user"), "message": .object(["role": .string("user"), "content": .string(sent.isEmpty ? "[Image #1]" : sent)])])
         lock.withLock { submitted += 1 }
+    }
+
+    /// The official client's redraw: only the cells that differ from the last frame are written, the
+    /// cursor moved over the others, and a row is cleared past its end when it got shorter.
+    private static func differences(from old: [String], to new: [String]) -> String {
+        var out = ""
+        for (index, row) in new.enumerated() {
+            let before = index < old.count ? Array(old[index]) : [], after = Array(row)
+            var column = 0
+            while column < after.count {
+                guard column >= before.count || before[column] != after[column] else { column += 1; continue }
+                var end = column
+                while end < after.count, end >= before.count || before[end] != after[end] { end += 1 }
+                out += "\u{1b}[\(index + 1);\(column + 1)H" + String(after[column..<end])
+                column = end
+            }
+            if before.count > after.count { out += "\u{1b}[\(index + 1);\(after.count + 1)H\u{1b}[K" }
+        }
+        return out
     }
 
     /// Draws the input the way the terminal does: hard-wrapped at the 180-column width.
@@ -195,6 +227,19 @@ final class SessionHarness: @unchecked Sendable {
             var rest = Substring("❯ " + lock.withLock { draftMarks.joined() }), rows: [String] = []
             rows.append(String(rest.prefix(180))); rest = rest.dropFirst(180)
             while !rest.isEmpty { rows.append("   " + rest.prefix(177)); rest = rest.dropFirst(177) }
+            if drawDraftAsDifferences {
+                let frame = rows + ["---"]
+                let previous = lock.withLock { lastFrame }
+                lock.withLock { lastFrame = frame }
+                if !previous.isEmpty {
+                    // Each paste redraws the conversation over these rows and then the input again.
+                    let filler = String(repeating: "⏺ The merchant pages are back: each one was opened and read, the screenshots are attached. ", count: 2)
+                    let conversation = frame.map { _ in filler }
+                    let out = Self.differences(from: previous, to: conversation) + Self.differences(from: conversation, to: frame)
+                    processContinuation?.yield(.output(Data(out.utf8)))
+                    return
+                }
+            }
             processContinuation?.yield(.output(Data(("\u{1b}[2J\u{1b}[H" + rows.joined(separator: "\r\n") + "\r\n---").utf8)))
             return
         }

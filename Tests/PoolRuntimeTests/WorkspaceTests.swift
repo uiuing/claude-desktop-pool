@@ -165,4 +165,15 @@ final class WorkspaceTests: XCTestCase {
         try workspace.removeRun(id)
         XCTAssertFalse(FileManager.default.fileExists(atPath: empty.path))
     }
+
+    func testLoadingTheLibraryLiftsAnOldModelCooldownOffTheWholeAccount() async throws {
+        let workspace = OwnedWorkspace(root: try fixture().appendingPathComponent("app"))
+        let store = PoolStore(workspace: workspace)
+        let reset = Date().addingTimeInterval(3 * 86400)
+        let window = QuotaWindow(id: "seven_day_overage_included", usedPercent: 100, observedAt: Date(), resetsAt: reset)
+        try await store.save(PoolLibrary(accounts: [PoolAccount(email: "reset@example.com", state: .limited, windows: [window], cooldownUntil: reset)]))
+        let loaded = try await store.load().accounts[0]
+        XCTAssertNil(loaded.cooldownUntil)
+        XCTAssertEqual(loaded.windows[0].refusedUntil.map { Int($0.timeIntervalSince1970) }, Int(reset.timeIntervalSince1970))
+    }
 }

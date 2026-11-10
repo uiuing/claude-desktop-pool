@@ -126,6 +126,11 @@ public actor PoolCoordinator: BridgeBackend {
     /// How many tokens a model's first turn read from a warm cache, the largest measured within the
     /// hour: what a warm account saves a new conversation (PoolRouting.warmBonus). Counts only.
     private var openingRead: [String: (tokens: Int, until: Date)] = [:]
+    /// Conversations whose last turns failed in typing before anything was sent, and since when.
+    /// Such a failure is the same on the next try, and a 502 makes the client ask again without
+    /// end, replaying the whole conversation each time: the second one in a row is answered as the
+    /// request's own fault, so the person sees it.
+    private var typingFailures: [String: (count: Int, since: Date)] = [:]
     private static let shelfMost = 64
     private static let unconfirmedRest: TimeInterval = 60
 
@@ -1032,6 +1037,7 @@ public actor PoolCoordinator: BridgeBackend {
                         if bindings[id] != nil { bindings[id]?.session.state = .ended; publish(id); remove(id) }
                     } else { bindings[id]?.retiring = false }
                 }
+                typingFailures[alias] = nil
                 await enforceParkCap()
                 await enforceIdleCap()
                 return
@@ -1041,7 +1047,9 @@ public actor PoolCoordinator: BridgeBackend {
                 var provenAccountFailure = false
                 switch error {
                 case BridgeFailure.quotaLimited(let windows):
-                    let evidence = windows.filter { $0.applies(to: model.cliAlias) && $0.isExhausted(at: now()) }
+                    // A limit Pool cannot place still refused this request: it holds the whole account, as a
+                    // reading of it never would.
+                    let evidence = windows.filter { ($0.applies(to: model.cliAlias) || $0.scope == .other) && $0.isExhausted(at: now()) }
                     let accepted = sameIdentity(binding) ? applyLimits(evidence, accountID: binding.session.accountID) : []
                     route(id: id, model: model.id, reason: .accountLimited)
                     provenAccountFailure = !accepted.isEmpty
@@ -1079,13 +1087,27 @@ public actor PoolCoordinator: BridgeBackend {
                     bindings[id]?.busy = false; bindings[id]?.serving = nil; bindings[id]?.stopped = true; bindings[id]?.session.state = .attention
                     publish(id)
                 }
-                continuation.finish(throwing: wasCancelled ? BridgeFailure.cancelled : error)
+                continuation.finish(throwing: wasCancelled ? BridgeFailure.cancelled : repeatedTyping(error, alias: alias, committed: committed))
                 return
             }
         }
         setWorkState(id, state: .waitingUser)
         if bindings[id]?.serving == generation { bindings[id]?.busy = false; bindings[id]?.serving = nil; publish(id) }
         continuation.finish(throwing: BridgeFailure.cancelled)
+    }
+
+    /// A typing failure (`compatibility` before any reply) a conversation already had in the last
+    /// ten minutes becomes a 400 the client shows instead of a 502 it asks again on.
+    private func repeatedTyping(_ error: Error, alias: String, committed: Bool) -> Error {
+        guard case BridgeFailure.compatibility = error, !committed else { return error }
+        let at = now()
+        var record: (count: Int, since: Date) = typingFailures[alias].flatMap { at.timeIntervalSince($0.since) < 600 ? $0 : nil } ?? (0, at)
+        record.count += 1
+        typingFailures[alias] = record
+        if typingFailures.count > 256, let oldest = typingFailures.min(by: { $0.value.since < $1.value.since })?.key { typingFailures[oldest] = nil }
+        Diagnostics.record("coordinator.route", ["decision": "typing_failed", "conversation": Diagnostics.tag(alias), "count": String(record.count)])
+        guard record.count >= 2 else { return error }
+        return BridgeFailure.unsupported("Claude Code could not take this conversation's message twice in a row. Update Claude Pool, or start a new conversation.")
     }
 
     /// A run started within a request's reply (a replay or a handoff) takes that request on.
@@ -1121,22 +1143,22 @@ public actor PoolCoordinator: BridgeBackend {
     }
     private func applyLimits(_ windows: [QuotaWindow], accountID: UUID) -> [QuotaWindow] {
         guard let index = accounts.firstIndex(where: { $0.id == accountID }) else { return [] }
-        let accepted = mergeWindows(windows, accountIndex: index)
+        // A refusal at a model's limit holds that window until its reset; only a limit every model
+        // shares puts the whole account on cooldown.
+        let accepted = mergeWindows(windows.map { $0.refused() }, accountIndex: index)
         if !accepted.isEmpty { onUpdate(.quota(scope: AccountScope(accounts[index]), windows: accepted)) }
-        if let reset = accepted.filter({ $0.modelFamily == nil }).compactMap(\.resetsAt).filter({ $0 > now() }).max() {
+        if let reset = accepted.filter({ $0.isGlobal || $0.scope == .other }).compactMap(\.resetsAt).filter({ $0 > now() }).max() {
             accounts[index].cooldownUntil = max(reset, accounts[index].cooldownUntil ?? reset)
             onUpdate(.accountState(scope: AccountScope(accounts[index]), state: accounts[index].state, cooldownUntil: accounts[index].cooldownUntil))
+        }
+        for window in accepted where window.holdsRefusal(at: now()) {
+            Diagnostics.record("coordinator.refusal", ["window": window.id, "scope": window.scope == .other ? "other" : "model",
+                "held_s": String(Int(window.refusedUntil!.timeIntervalSince(now())))])
         }
         return accepted
     }
     private func mergeWindows(_ windows: [QuotaWindow], accountIndex: Int) -> [QuotaWindow] {
-        var accepted: [QuotaWindow] = []
-        for window in windows {
-            if let current = accounts[accountIndex].windows.first(where: { $0.id == window.id }), current.observedAt > window.observedAt { continue }
-            accounts[accountIndex].windows.removeAll { $0.id == window.id }
-            accounts[accountIndex].windows.append(window); accepted.append(window)
-        }
-        return accepted
+        accounts[accountIndex].absorb(windows, at: now())
     }
 
     private func observe(_ event: WorkerObservation, sessionID: UUID) {

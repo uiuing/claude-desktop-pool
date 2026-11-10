@@ -27,7 +27,7 @@ final class ModelIdentityTests: XCTestCase {
         let stored = #"{"version":1,"accounts":[],"preferences":{"port":18473,"language":"system"},"reportedModels":[{"alias":"opus","id":"../x","name":"X"},{"alias":"haiku","id":"claude-haiku-6","name":"Haiku 6"}]}"#
         let decoded = try JSONDecoder().decode(PoolLibrary.self, from: Data(stored.utf8))
         XCTAssertEqual(PoolModel.listing(decoded.reportedModels ?? []).map(\.listedID),
-                       ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-6", "claude-fable-5-1"])
+                       ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-6", "claude-fable-5-2"])
         let old = #"{"version":1,"accounts":[],"preferences":{"port":18473,"language":"system"}}"#
         XCTAssertNil(try JSONDecoder().decode(PoolLibrary.self, from: Data(old.utf8)).reportedModels)
     }

@@ -1025,7 +1025,7 @@ final class AppServicesTests: XCTestCase {
         XCTAssertEqual(app.model.privacy.phase, .ready)
     }
 
-    func testDailyUpdateChecksPersistAcrossRestartAndManualCheckBypassesTheDayGate() async throws {
+    func testClientUpdateChecksRunEveryFourHoursPersistAcrossRestartAndManualCheckBypassesTheGate() async throws {
         let clock = AppTestClock()
         let app = try await application(clock: clock, automaticUpdates: true)
         let firstCount = await app.downloads.latestRequests; XCTAssertEqual(firstCount, 1)
@@ -1035,7 +1035,11 @@ final class AppServicesTests: XCTestCase {
         let restarted = await reopen(app, clock: clock)
         let restartCount = await app.downloads.latestRequests; XCTAssertEqual(restartCount, 1)
         XCTAssertEqual(restarted.model.runtime.installedVersion, "2.1.300")
-        clock.nextDay()
+        // Three hours on is still inside the interval; four is not.
+        clock.advance(hours: 3)
+        await restarted.services.checkRuntimeUpdateIfNeeded()
+        let insideCount = await app.downloads.latestRequests; XCTAssertEqual(insideCount, 1)
+        clock.advance(hours: 1)
         await restarted.services.checkRuntimeUpdateIfNeeded()
         let nextDayCount = await app.downloads.latestRequests; XCTAssertEqual(nextDayCount, 2)
         XCTAssertEqual(restarted.model.runtime.availableVersion, "2.1.301")
@@ -1048,13 +1052,29 @@ final class AppServicesTests: XCTestCase {
         XCTAssertEqual(again.model.runtime.phase, .updateAvailable)
     }
 
-    func testFailedDailyCheckPreservesKnownUpdateAndDoesNotRetryUntilNextDay() async throws {
+    /// Settings' Check for updates looks at once, inside the four-hour interval, and installs what it finds.
+    func testCheckForUpdatesInSettingsInstallsANewerClientAtOnce() async throws {
+        let clock = AppTestClock()
+        let app = try await application(clock: clock, automaticUpdates: true)
+        XCTAssertEqual(app.model.runtime.installedVersion, "2.1.300")
+        try await app.downloads.publish("2.1.301")
+        await app.services.handle(.checkAndUpdateRuntime)
+        XCTAssertEqual(app.model.runtime.installedVersion, "2.1.301")
+        XCTAssertEqual(app.model.runtime.phase, .ready)
+        XCTAssertNil(app.model.runtime.updateCheckMessage)
+        // Nothing newer: the client stays as it is.
+        await app.services.handle(.checkAndUpdateRuntime)
+        XCTAssertEqual(app.model.runtime.installedVersion, "2.1.301")
+        XCTAssertEqual(app.model.runtime.phase, .ready)
+    }
+
+    func testFailedCheckPreservesKnownUpdateAndDoesNotRetryBeforeFourHours() async throws {
         let clock = AppTestClock()
         let app = try await application(clock: clock, automaticUpdates: true)
         try await app.downloads.publish("2.1.301")
         await app.services.handle(.checkRuntimeUpdate)
         await app.downloads.setFailure(true)
-        clock.nextDay()
+        clock.advance(hours: 4)
         await app.services.checkRuntimeUpdateIfNeeded()
         let failedCount = await app.downloads.latestRequests; XCTAssertEqual(failedCount, 3)
         XCTAssertEqual(app.model.runtime.installedVersion, "2.1.300")
@@ -1062,6 +1082,7 @@ final class AppServicesTests: XCTestCase {
         XCTAssertEqual(app.model.runtime.phase, .updateAvailable)
         XCTAssertNotNil(app.model.runtime.updateCheckMessage)
         XCTAssertTrue(app.model.snapshot.executableReady)
+        clock.advance(hours: 3)
         await app.services.checkRuntimeUpdateIfNeeded()
         let repeatedCount = await app.downloads.latestRequests; XCTAssertEqual(repeatedCount, 3)
         let restarted = await reopen(app, clock: clock)
@@ -1070,7 +1091,7 @@ final class AppServicesTests: XCTestCase {
         XCTAssertEqual(restarted.model.runtime.phase, .updateAvailable)
         XCTAssertNotNil(restarted.model.runtime.updateCheckMessage)
         await app.downloads.setFailure(false)
-        clock.nextDay()
+        clock.advance(hours: 1)
         await restarted.services.checkRuntimeUpdateIfNeeded()
         let recoveredCount = await app.downloads.latestRequests; XCTAssertEqual(recoveredCount, 4)
         XCTAssertNil(restarted.model.runtime.updateCheckMessage)
@@ -1239,6 +1260,9 @@ private final class AppTestClock: @unchecked Sendable {
     var value: Date { lock.withLock { instant } }
     func nextDay() {
         lock.withLock { instant = Calendar.current.date(byAdding: .day, value: 1, to: instant)! }
+    }
+    func advance(hours: Double) {
+        lock.withLock { instant = instant.addingTimeInterval(hours * 3600) }
     }
 }
 

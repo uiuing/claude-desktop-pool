@@ -7,35 +7,177 @@ public enum PoolMode: String, Codable, Sendable { case stopped, ready, running, 
 public enum SessionState: String, Codable, Sendable { case starting, running, waiting, idle, attention, ended }
 public enum QuotaWindowState: String, Codable, Sendable { case reported, unknown, notApplicable }
 
+/// Which requests a window's limit holds back. `other` windows are shown but never stop an
+/// account, route a request or count in a pool's global figures: only an id Pool recognises can.
+public enum QuotaScope: Equatable, Sendable {
+    /// Every model: the 5-hour and the weekly limit.
+    case all
+    /// Only these model families.
+    case models(Set<String>)
+    /// A window Pool does not recognise.
+    case other
+}
+
+extension QuotaScope {
+    var isModels: Bool { if case .models = self { return true } else { return false } }
+}
+
 public struct QuotaWindow: Codable, Equatable, Sendable, Identifiable {
+    /// The shared weekly limit of the models Claude lets run on usage credits once it is used up.
+    public static let overageIncludedID = "seven_day_overage_included"
+    /// The models that limit holds today (the server sends a list; Fable is the only one seen so far).
+    public static let overageIncludedModels: Set<String> = ["fable"]
+    /// The model families a weekly limit can be named after.
+    public static let modelFamilies = ["opus", "sonnet", "haiku", "fable", "mythos"]
+
     public var id: String
     public var usedPercent: Double?
     public var observedAt: Date
     public var resetsAt: Date?
     public var state: QuotaWindowState
-    public var modelFamily: String?
+    public var scope: QuotaScope
+    /// Claude refused the account at this model-scoped limit until this time. A later reading that
+    /// shows room (the panel can show room a turn does not fit in) does not lift it before then.
+    public var refusedUntil: Date?
+    /// Whether the refusal came with the limit's own reset (true) or `refusedUntil` is only a cycle
+    /// guessed after it (false). Nil in a library saved before the field: taken as stated.
+    public var refusalStatedReset: Bool?
     public var startsOnNextUse: Bool
+    /// `scope` is for a window whose id says nothing; a recognised id always gives its own.
     public init(id: String, usedPercent: Double? = nil, observedAt: Date, resetsAt: Date? = nil,
-                state: QuotaWindowState = .reported, modelFamily: String? = nil, startsOnNextUse: Bool = false) {
-        self.id = id; self.usedPercent = usedPercent; self.observedAt = observedAt; self.resetsAt = resetsAt
+                state: QuotaWindowState = .reported, scope: QuotaScope? = nil, refusedUntil: Date? = nil,
+                startsOnNextUse: Bool = false, refusalStatedReset: Bool? = nil) {
+        let known = Self.canonical(id)
+        self.id = known?.id ?? id
+        self.usedPercent = usedPercent; self.observedAt = observedAt; self.resetsAt = resetsAt
         self.state = usedPercent == nil && state == .reported ? .unknown : state
-        self.modelFamily = modelFamily ?? Self.nativeModelFamily(id)
+        self.scope = known?.scope ?? scope ?? .other
+        self.refusedUntil = self.scope == .all ? nil : refusedUntil
+        self.refusalStatedReset = self.refusedUntil == nil ? nil : refusalStatedReset
         self.startsOnNextUse = startsOnNextUse && id == "five_hour" && state == .reported && usedPercent == 0 && resetsAt == nil
     }
-    enum CodingKeys: String, CodingKey { case id, usedPercent, observedAt, resetsAt, state, modelFamily, startsOnNextUse }
+    /// The one place a window's name becomes its identity and scope. Nil for a name not recognised.
+    public static func canonical(_ id: String) -> (id: String, scope: QuotaScope)? {
+        switch id {
+        case "five_hour", "seven_day": return (id, .all)
+        case overageIncludedID, "seven_day_fable": return (overageIncludedID, .models(overageIncludedModels))
+        default:
+            for family in modelFamilies where id == "seven_day_\(family)" { return (id, .models([family])) }
+            return nil
+        }
+    }
+    /// A weekly limit named after what it covers ("Fable", "Fable 5.1", "Sonnet only"): a model
+    /// family alone, with an optional version and "only". Anything else keeps its own slug and has
+    /// no scope. Nil when the name leaves nothing to name it by.
+    public static func scoped(name: String) -> (id: String, scope: QuotaScope)? {
+        let lower = name.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let family = lower.range(of: #"^([a-z]+)(?: [0-9]+(?:\.[0-9]+)*)?(?: only)?$"#, options: .regularExpression)
+            .flatMap { _ in lower.split(separator: " ").first.map(String.init) }
+            .flatMap { modelFamilies.contains($0) ? $0 : nil }
+        if let family, let known = canonical("seven_day_\(family)") { return known }
+        let slug = slug(lower.replacingOccurrences(of: #" only$"#, with: "", options: .regularExpression))
+        return slug.isEmpty ? nil : ("seven_day_" + slug, .other)
+    }
+    public static func slug(_ text: String) -> String {
+        text.lowercased().replacingOccurrences(of: #"[^a-z0-9]+"#, with: "_", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+    }
+    enum CodingKeys: String, CodingKey { case id, usedPercent, observedAt, resetsAt, state, modelFamily, scope, scopeModels, refusedUntil, refusalStatedReset, startsOnNextUse }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        // Saved before scopes: a model family stood for a model-scoped window, none for a global one.
+        // Only the ids Pool recognises keep a scope now (seven_day_fable becomes the overage-included window).
+        var stored: QuotaScope?
+        switch try values.decodeIfPresent(String.self, forKey: .scope) {
+        case "all"?: stored = .all
+        case "models"?: stored = .models(Set(try values.decodeIfPresent([String].self, forKey: .scopeModels) ?? []))
+        case "other"?: stored = .other
+        default:
+            if let family = try values.decodeIfPresent(String.self, forKey: .modelFamily), Self.modelFamilies.contains(family) { stored = .models([family]) }
+        }
         self.init(id: try values.decode(String.self, forKey: .id),
                   usedPercent: try values.decodeIfPresent(Double.self, forKey: .usedPercent),
                   observedAt: try values.decode(Date.self, forKey: .observedAt),
                   resetsAt: try values.decodeIfPresent(Date.self, forKey: .resetsAt),
                   state: try values.decodeIfPresent(QuotaWindowState.self, forKey: .state) ?? .reported,
-                  modelFamily: try values.decodeIfPresent(String.self, forKey: .modelFamily),
-                  startsOnNextUse: try values.decodeIfPresent(Bool.self, forKey: .startsOnNextUse) ?? false)
+                  scope: stored,
+                  refusedUntil: try values.decodeIfPresent(Date.self, forKey: .refusedUntil),
+                  startsOnNextUse: try values.decodeIfPresent(Bool.self, forKey: .startsOnNextUse) ?? false,
+                  refusalStatedReset: try values.decodeIfPresent(Bool.self, forKey: .refusalStatedReset))
+    }
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encodeIfPresent(usedPercent, forKey: .usedPercent)
+        try values.encode(observedAt, forKey: .observedAt)
+        try values.encodeIfPresent(resetsAt, forKey: .resetsAt)
+        try values.encode(state, forKey: .state)
+        switch scope {
+        case .all: try values.encode("all", forKey: .scope)
+        case .models(let models): try values.encode("models", forKey: .scope); try values.encode(models.sorted(), forKey: .scopeModels)
+        case .other: try values.encode("other", forKey: .scope)
+        }
+        try values.encodeIfPresent(refusedUntil, forKey: .refusedUntil)
+        try values.encodeIfPresent(refusalStatedReset, forKey: .refusalStatedReset)
+        try values.encode(startsOnNextUse, forKey: .startsOnNextUse)
+    }
+    public var isGlobal: Bool { scope == .all }
+    /// The order model-scoped limits are listed in.
+    public static let modelDisplayOrder = ["fable", "opus", "sonnet", "haiku", "mythos"]
+    /// What a model-scoped limit is named after: "Fable", "Opus". Nil for the other scopes.
+    public static func modelName(of scope: QuotaScope) -> String? {
+        guard case .models(let families) = scope, !families.isEmpty else { return nil }
+        let known = modelDisplayOrder.filter { families.contains($0) }
+        let rest = families.subtracting(modelDisplayOrder).sorted()
+        return (known + rest).map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: "/")
+    }
+    public var modelName: String? { Self.modelName(of: scope) }
+    /// Where a window is listed, by id: 5 hours, the week, each model's week (Fable, Opus, Sonnet, Haiku, Mythos), the rest.
+    public static func displayRank(_ id: String) -> Int {
+        switch canonical(id)?.scope {
+        case .all?: return id == "five_hour" ? 0 : 1
+        case .models(let families)?:
+            return 2 + (modelDisplayOrder.firstIndex { families.contains($0) } ?? modelDisplayOrder.count)
+        default: return 100
+        }
     }
     public func applies(to model: String) -> Bool {
-        guard let modelFamily else { return true }
-        return model.lowercased().split(separator: "-").contains(Substring(modelFamily.lowercased()))
+        switch scope {
+        case .all: return true
+        case .other: return false
+        case .models(let families):
+            let parts = Set(model.lowercased().split(separator: "-").map(String.init))
+            return families.contains { parts.contains($0.lowercased()) }
+        }
+    }
+    /// Claude refused the account at this model-scoped limit and its reset has not come.
+    public func holdsRefusal(at now: Date) -> Bool { refusedUntil.map { $0 > now } ?? false }
+    /// This window as a new reading of it, given what was saved: a refusal still standing is kept
+    /// whatever the reading says, unless the reading belongs to a later cycle.
+    public func carrying(_ old: QuotaWindow?, at now: Date) -> QuotaWindow {
+        guard scope != .all, let old, old.holdsRefusal(at: now), let until = old.refusedUntil else { return self }
+        if let reset = resetsAt, reset > until.addingTimeInterval(60) { return self }
+        var held = self
+        held.refusedUntil = until
+        held.refusalStatedReset = old.refusalStatedReset
+        // A refusal that stated no reset only guessed a cycle: the limit's own reset, read later,
+        // ends it, earlier than the guess. A reset already past lifts it.
+        if old.refusalStatedReset == false, let reset = resetsAt {
+            if reset <= now { return self }
+            if reset < until { held.refusedUntil = reset; held.refusalStatedReset = true }
+        }
+        held.resetsAt = resetsAt ?? old.resetsAt
+        held.state = .reported; held.usedPercent = 100
+        return held
+    }
+    /// This window as a refusal: used up until its reset (a cycle after the refusal without one).
+    public func refused() -> QuotaWindow {
+        guard scope != .all else { return self }
+        var held = self
+        held.usedPercent = 100; held.state = .reported
+        held.refusedUntil = recoversAt
+        held.refusalStatedReset = resetsAt != nil
+        return held
     }
     public func isFresh(at now: Date) -> Bool {
         observedAt <= now && now.timeIntervalSince(observedAt) <= 600
@@ -50,7 +192,7 @@ public struct QuotaWindow: Codable, Equatable, Sendable, Identifiable {
     /// A new cycle began after this reading: its stated reset passed or, without one, a whole
     /// cycle went by. Claude restores a limit at its reset, so it is full again until read.
     public func isRenewed(at now: Date) -> Bool {
-        guard state == .reported, observedAt <= now else { return false }
+        guard state == .reported, observedAt <= now, !holdsRefusal(at: now) else { return false }
         if let resetsAt { return resetsAt <= now }
         return now.timeIntervalSince(observedAt) >= span
     }
@@ -64,19 +206,15 @@ public struct QuotaWindow: Codable, Equatable, Sendable, Identifiable {
     /// What is left now: the last reading within its cycle, all of it once the cycle renewed.
     public func remaining(at now: Date) -> Double? {
         guard let recorded = recordedRemaining(at: now) else { return nil }
+        if holdsRefusal(at: now) { return 0 }
         return isRenewed(at: now) ? 100 : recorded
     }
     /// Used up until the reset: the stated one, or at the latest a cycle after the reading.
     public func isExhausted(at now: Date) -> Bool {
-        state == .reported && usedPercent == 100 && observedAt <= now && !isRenewed(at: now)
+        state == .reported && observedAt <= now && (holdsRefusal(at: now) || (usedPercent == 100 && !isRenewed(at: now)))
     }
     /// When an exhausted limit comes back: its stated reset, or at the latest a cycle after the reading.
     public var recoversAt: Date { resetsAt ?? observedAt.addingTimeInterval(span) }
-    private static func nativeModelFamily(_ id: String) -> String? {
-        // These are native model-scoped window names, not plan capacity assumptions.
-        for family in ["opus", "sonnet", "haiku", "fable", "mythos"] where id == "seven_day_\(family)" { return family }
-        return nil
-    }
 }
 
 public struct PoolAccount: Codable, Equatable, Sendable, Identifiable {
@@ -103,13 +241,13 @@ public struct PoolAccount: Codable, Equatable, Sendable, Identifiable {
     public func effectiveState(at now: Date) -> AccountState {
         guard state == .limited else { return state }
         if let cooldownUntil, cooldownUntil > now { return .limited }
-        return windows.contains { $0.modelFamily == nil && $0.isExhausted(at: now) } ? .limited : .ready
+        return windows.contains { $0.isGlobal && $0.isExhausted(at: now) } ? .limited : .ready
     }
     /// Whether Claude refused the account at `window`'s limit before its reset, though the last
     /// reading had some of it left: the refusal's cooldown ends at the window's reset. Claude's usage
     /// panel can show room a turn still does not fit in, so until then the window has none.
     public func isRefused(_ window: QuotaWindow, at now: Date) -> Bool {
-        guard effectiveState(at: now) == .limited, window.modelFamily == nil, let cooldownUntil, cooldownUntil > now,
+        guard effectiveState(at: now) == .limited, window.isGlobal, let cooldownUntil, cooldownUntil > now,
               let reset = window.resetsAt, abs(reset.timeIntervalSince(cooldownUntil)) < 60 else { return false }
         return !window.isExhausted(at: now)
     }
@@ -120,17 +258,37 @@ public struct PoolAccount: Codable, Equatable, Sendable, Identifiable {
         let state = effectiveState(at: now)
         guard state == .ready || state == .limited else { return .unavailable }
         if isWeekUsedUp(at: now) { return .weekUsed }
-        if state == .limited || windows.contains(where: { $0.modelFamily == nil && $0.isExhausted(at: now) }) { return .limited }
+        if state == .limited || windows.contains(where: { $0.isGlobal && $0.isExhausted(at: now) }) { return .limited }
         return PoolRouting.assessment(self, model: PoolRouting.anyModel, now: now).state == .unknown ? .unread : .usable
     }
     /// A limit longer than the 5-hour one, for every model, is used up until its reset.
     public func isWeekUsedUp(at now: Date) -> Bool {
-        windows.contains { $0.modelFamily == nil && $0.id != "five_hour" && $0.isExhausted(at: now) }
+        windows.contains { $0.isGlobal && $0.id != "five_hour" && $0.isExhausted(at: now) }
     }
     /// Worth reading without being asked: it can serve now or within hours. A used-up week comes
     /// back only at its reset, and an unusable account only once it is fixed.
     public func isInRotation(at now: Date) -> Bool {
         [.ready, .limited].contains(effectiveState(at: now)) && !isWeekUsedUp(at: now)
+    }
+    /// Takes in readings of windows, newest word first: an older reading never replaces a newer one,
+    /// and a refusal Claude gave at a model's limit outlasts a reading that shows room. With
+    /// `replacingSnapshot` windows the reading did not return are dropped, except those held by a refusal.
+    /// Returns the windows taken.
+    @discardableResult
+    public mutating func absorb(_ readings: [QuotaWindow], replacingSnapshot: Bool = false, at now: Date = Date()) -> [QuotaWindow] {
+        if replacingSnapshot, let snapshotAt = readings.map(\.observedAt).max() {
+            let returned = Set(readings.map(\.id))
+            windows.removeAll { !returned.contains($0.id) && $0.observedAt <= snapshotAt && !$0.holdsRefusal(at: now) }
+        }
+        var taken: [QuotaWindow] = []
+        for reading in readings {
+            let old = windows.first { $0.id == reading.id }
+            if let old, old.observedAt > reading.observedAt { continue }
+            let window = reading.carrying(old, at: now)
+            windows.removeAll { $0.id == window.id }
+            windows.append(window); taken.append(window)
+        }
+        return taken
     }
 }
 
@@ -338,7 +496,7 @@ public struct RoutingHandoff: Equatable, Sendable {
 public struct QuotaPoolGroup: Equatable, Sendable, Identifiable {
     public var id: String
     public var windowID: String
-    public var modelFamily: String?
+    public var scope: QuotaScope
     public var plan: String?
     public var accountIDs: [UUID]
     public var knownCount: Int
@@ -372,29 +530,35 @@ public struct QuotaPoolSummary: Equatable, Sendable {
         for key in buckets.keys.sorted() {
             let members = buckets[key]!
             let windowIDs = Set(members.flatMap { $0.windows.filter { model == PoolRouting.anyModel || $0.applies(to: model) }.map(\.id) })
-            for windowID in windowIDs.sorted() {
+            for windowID in windowIDs.sorted(by: { (QuotaWindow.displayRank($0), $0) < (QuotaWindow.displayRank($1), $1) }) {
                 var known = 0, unknown = 0, notApplicable = 0
+                let isModelWindow = QuotaWindow.canonical(windowID).map { if case .models = $0.scope { return true } else { return false } } ?? false
                 var remaining = 0.0, usable = 0.0
                 var resets: [Date] = []
-                var family: String?
+                var scope: QuotaScope?
                 for account in members {
-                    guard let window = account.windows.first(where: { $0.id == windowID && (model == PoolRouting.anyModel || $0.applies(to: model)) }) else { unknown += 1; continue }
-                    family = window.modelFamily
+                    guard let window = account.windows.first(where: { $0.id == windowID && (model == PoolRouting.anyModel || $0.applies(to: model)) }) else {
+                        // An account whose panel was read and has no row for a model is held only by the global limits for it:
+                        // it is not unknown there. One never read still is.
+                        if isModelWindow, account.windows.contains(where: { $0.isGlobal && $0.state == .reported }) { continue }
+                        unknown += 1; continue
+                    }
+                    scope = window.scope
                     if window.isNotApplicable(at: now) { notApplicable += 1; continue }
                     guard var amount = PoolRouting.remaining(window, in: account, now: now) else { unknown += 1; continue }
                     // A shorter limit is of no use while a longer one is used up: a 5-hour limit renewed under a
                     // spent week counts as nothing left, not as full. What a week has left under a spent 5-hour
                     // limit is real and comes back at that limit's reset.
-                    if window.modelFamily == nil,
-                       account.windows.contains(where: { $0.modelFamily == nil && $0.span > window.span && $0.isExhausted(at: now) }) { amount = 0 }
+                    if window.isGlobal,
+                       account.windows.contains(where: { $0.isGlobal && $0.span > window.span && $0.isExhausted(at: now) }) { amount = 0 }
                     // Percent sums stay exact for the whole-number readings Claude shows.
                     known += 1; remaining += amount
                     if account.effectiveState(at: now) == .ready, account.cooldownUntil.map({ $0 <= now }) ?? true,
                        PoolRouting.assessment(account, model: model, now: now).state == .available { usable += amount }
                     if let reset = window.resetsAt, reset > now { resets.append(reset) }
                 }
-                if family == nil { family = members.lazy.compactMap { $0.windows.first { $0.id == windowID } }.first?.modelFamily }
-                groups.append(QuotaPoolGroup(id: key + "/" + windowID, windowID: windowID, modelFamily: family,
+                if scope == nil { scope = members.lazy.compactMap { $0.windows.first { $0.id == windowID } }.first?.scope }
+                groups.append(QuotaPoolGroup(id: key + "/" + windowID, windowID: windowID, scope: scope ?? .other,
                     plan: members.first?.plan, accountIDs: members.map(\.id), knownCount: known, unknownCount: unknown,
                     notApplicableCount: notApplicable,
                     remainingUnits: known > 0 ? remaining / 100 : nil,
@@ -483,6 +647,27 @@ public struct PoolLibrary: Codable, Equatable, Sendable {
     public var reportedModels: [ModelIdentity]?
     public init(accounts: [PoolAccount] = [], preferences: PoolPreferences = .init(), reportedModels: [ModelIdentity]? = nil) {
         self.accounts = accounts; self.preferences = preferences; self.reportedModels = reportedModels
+    }
+    /// 0.1.9 could put the whole account on cooldown for a refusal at one model's limit (Fable's).
+    /// Such a cooldown, one that matches a model window's reset and no global window's, is lifted
+    /// and held by that window alone. Returns whether anything changed.
+    @discardableResult
+    public mutating func liftModelCooldowns(at now: Date) -> Bool {
+        var changed = false
+        for index in accounts.indices {
+            guard let cooldown = accounts[index].cooldownUntil, cooldown > now else { continue }
+            let windows = accounts[index].windows
+            func matches(_ window: QuotaWindow) -> Bool { window.resetsAt.map { abs($0.timeIntervalSince(cooldown)) < 60 } ?? false }
+            guard !windows.contains(where: { $0.isGlobal && (matches($0) || $0.isExhausted(at: now)) }),
+                  let target = windows.firstIndex(where: { $0.scope.isModels && matches($0) }) else { continue }
+            accounts[index].cooldownUntil = nil
+            var window = accounts[index].windows[target]
+            window.usedPercent = 100; window.state = .reported
+            window.refusedUntil = cooldown; window.refusalStatedReset = true
+            accounts[index].windows[target] = window
+            changed = true
+        }
+        return changed
     }
     /// Records what `identity`'s alias runs on; returns whether that changed.
     public mutating func record(_ identity: ModelIdentity) -> Bool {

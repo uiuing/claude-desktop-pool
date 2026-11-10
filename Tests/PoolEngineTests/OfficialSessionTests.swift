@@ -404,6 +404,30 @@ final class OfficialSessionTests: XCTestCase {
         _ = await session.close()
     }
 
+    /// A conversation moved to another account types everything since its session's last turn as one
+    /// message: many screenshots between long texts. On so long an input the client redraws only the
+    /// cells that changed, so an image's mark reaches the output with letters it shares with the mark
+    /// before left out ("[Imag #27]"). The screen still shows it whole, and the image counts as shown.
+    func testAnImageMarkDrawnOnlyWhereItChangedIsStillSeen() async throws {
+        let harness = try SessionHarness(); defer { harness.clean() }
+        harness.drawDraftLikeClient = true; harness.drawDraftAsDifferences = true
+        let session = harness.session(imageTimeout: 1)
+        let result = (1...8).map { "line \($0) of a tool result" }.joined(separator: "\n")
+        var content: [JSONValue] = []
+        for index in 0..<13 {
+            content.append(.object(["type": .string("text"), "text": .string(result)]))
+            content.append(try sessionFixtureImage(red: UInt8(250 - index * 15)))
+        }
+        content.append(.object(["type": .string("text"), "text": .string("What changed?")]))
+        let r = BridgeRequest(model: "claude-sonnet", messages: [.init(role: "user", content: .array(content))])
+        let reply = Task { try await collectEvents(try await session.events(for: r)) }
+        try await waitFor { harness.sentCount == 1 }
+        XCTAssertEqual(harness.imageBytes.count, 13)
+        try harness.answer("Thirteen screenshots"); try harness.turnEnded()
+        _ = try await reply.value
+        _ = await session.close()
+    }
+
     func testAnImageThatIsNeverShownIsNeverSentAndOnlyTheOwnedDraftIsCleared() async throws {
         let harness = try SessionHarness(); defer { harness.clean() }
         harness.acknowledgeImages = false
@@ -554,6 +578,70 @@ final class OfficialSessionTests: XCTestCase {
         XCTAssertEqual(all.first { $0.id == "monthly" }?.state, .notApplicable)
         XCTAssertEqual(models.map(\.id), ["claude-sonnet-5-5"])
         _ = await session.close()
+    }
+
+    /// Client 2.1.319 sends `rate_limits.limits[]`: kind, group, percent, ISO resets_at, scope, severity.
+    func testStatusLineLimitsArrayIsReadByKindNotByWords() async throws {
+        let harness = try SessionHarness(); defer { harness.clean() }
+        let session = harness.session(), recorder = SessionObservations()
+        let observing = Task { for await event in await session.observations() { await recorder.add(event) } }
+        defer { observing.cancel() }
+        let reply = Task { try await collectEvents(try await session.events(for: self.request("Report"))) }
+        try await waitFor { harness.sentCount == 1 }
+        try harness.answer("Report")
+        try await Task.sleep(nanoseconds: 120_000_000)
+        func row(_ kind: String, _ percent: Double, _ resets: JSONValue, scope: JSONValue? = nil) -> JSONValue {
+            var fields: [String: JSONValue] = ["kind": .string(kind), "group": .string("g"), "percent": .number(percent),
+                                               "resets_at": resets, "severity": .string("info")]
+            if let scope { fields["scope"] = scope }
+            return .object(fields)
+        }
+        func model(_ name: String) -> JSONValue { .object(["model": .object(["display_name": .string(name)])]) }
+        let limits: JSONValue = .object(["limits": .array([
+            row("session", 12, .string("2033-05-18T03:33:20Z")),
+            row("weekly_all", 30, .string("2033-05-20T03:33:20.500Z")),
+            row("weekly_scoped", 100, .string("2033-05-20T03:33:20Z"), scope: model("Fable 5.1")),
+            row("weekly_scoped", 40, .null, scope: model("Opus and Sonnet")),
+            row("weekly_scoped", 55, .string("2033-05-20T03:33:20Z"), scope: .object(["surface": .object(["display_name": .string("Cowork")])])),
+            row("monthly_credit", 70, .null)])])
+        try harness.emit(["event": .string("statusLine"), "rate_limits": limits])
+        try harness.turnEnded()
+        _ = try await reply.value
+        try await waitFor { await recorder.quotas.count >= 6 }
+        let all = await recorder.quotas
+        func window(_ id: String) -> QuotaWindow? { all.first { $0.id == id } }
+        XCTAssertEqual(window("five_hour")?.scope, .all)
+        XCTAssertEqual(window("five_hour")?.usedPercent, 12)
+        XCTAssertEqual(window("five_hour")?.resetsAt, Date(timeIntervalSince1970: 2_000_000_000))
+        XCTAssertEqual(window("seven_day")?.scope, .all)
+        XCTAssertEqual(window("seven_day_overage_included")?.scope, .models(["fable"]))
+        XCTAssertEqual(window("seven_day_overage_included")?.usedPercent, 100)
+        XCTAssertEqual(window("seven_day_opus_and_sonnet")?.scope, .other)
+        XCTAssertNil(window("seven_day_opus_and_sonnet")?.resetsAt)
+        XCTAssertEqual(window("surface_cowork")?.scope, .other)
+        XCTAssertEqual(window("limit_monthly_credit_g")?.scope, .other)
+        _ = await session.close()
+    }
+
+    /// A refusal's rate-limit info as the client records it: the Fable limit is the overage-included window.
+    func testRefusalInfoForTheOverageIncludedWindowIsScopedToItsModels() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let info: JSONValue = .object(["status": .string("rejected"), "rateLimitType": .string("seven_day_overage_included"),
+                                       "resetsAt": .number(1_800_086_400)])
+        let windows = ClientErrorWords.windows(info, at: now)
+        XCTAssertEqual(windows.map(\.id), ["seven_day_overage_included"])
+        XCTAssertEqual(windows.first?.scope, .models(["fable"]))
+        XCTAssertEqual(windows.first?.usedPercent, 100)
+        let unified: JSONValue = .object(["status": .string("allowed"), "unifiedWindows": .object([
+            "seven_day_cowork": .object(["utilization": .number(1), "resetsAt": .number(1_800_086_400)]),
+            "overage": .object(["utilization": .number(1), "resetsAt": .number(1_800_086_400)]),
+            "seven_day_fable": .object(["utilization": .number(0.5), "resetsAt": .number(1_800_086_400)])])])
+        let mixed = ClientErrorWords.windows(unified, at: now)
+        XCTAssertEqual(mixed.map(\.id), ["overage", "seven_day_cowork", "seven_day_overage_included"])
+        XCTAssertEqual(mixed.map(\.scope), [.other, .other, .models(["fable"])])
+        let account = PoolAccount(email: "user@example.com", state: .ready, windows: mixed)
+        XCTAssertEqual(account.effectiveState(at: now), .ready)
+        XCTAssertFalse(PoolRouting.candidates([account], model: "claude-opus-5", now: now).isEmpty)
     }
 
     func testSessionEndHookDoesNotReleaseTheChildOrRunBeforeActualExit() async throws {

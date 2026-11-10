@@ -60,6 +60,7 @@ public enum ModelPricing {
 
     /// Longest prefixes first, so `claude-opus-5-5` is not read as `claude-opus-5`.
     private static let table: [(String, ModelPrice)] = [
+        ("claude-fable-5-2", .init(input: 8, output: 40, cacheRead: 0.20)),
         ("claude-fable-5-1", .init(input: 10, output: 50, cacheRead: 0.25)),
         ("claude-fable-5", .init(input: 10, output: 50)),
         ("claude-mythos-5-1", .init(input: 10, output: 50, cacheRead: 0.25)),

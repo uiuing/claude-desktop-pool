@@ -59,6 +59,12 @@ final class UsageLedgerTests: XCTestCase {
         XCTAssertNotEqual(ModelPricing.price(for: "claude-opus-5"), price, "The longer id wins.")
         XCTAssertEqual(ModelPricing.price(for: "claude-sonnet-4-5-20250929")?.input, 3)
         XCTAssertNil(ModelPricing.price(for: "claude-unknown-9"))
+        // Fable 5.2 has its own price, and neither of the older Fable entries answers for it.
+        let fable = ModelPricing.price(for: "claude-fable-5-2")
+        XCTAssertEqual([fable?.input, fable?.output, fable?.cacheRead], [8, 40, 0.20])
+        XCTAssertEqual(ModelPricing.price(for: "claude-fable-5-2[1m]"), fable)
+        XCTAssertEqual(ModelPricing.price(for: "claude-fable-5-1")?.input, 10)
+        XCTAssertEqual(ModelPricing.price(for: "claude-fable-5")?.input, 10)
     }
 
     func testHaikuIsBilledWholeAtTheTierItsPromptReaches() {

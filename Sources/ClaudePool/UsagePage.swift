@@ -197,7 +197,7 @@ private struct UsageFilterBar: View {
     private func chip(_ title: String, symbol: String, active: Bool) -> some View {
         HStack(spacing: 5) {
             Image(systemName: symbol).font(.system(size: 10))
-            Text(title).lineLimit(1).truncationMode(.middle).frame(maxWidth: 170, alignment: .leading).fixedSize(horizontal: true, vertical: false)
+            Text(title).fixedSize(horizontal: true, vertical: false)
             Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(.secondary)
         }
         .font(.system(size: 11, weight: .medium)).foregroundStyle(active ? PoolPalette.accent : .primary)
@@ -255,7 +255,7 @@ private struct UsageAccountPicker: View {
         Button(action: action) {
             HStack(spacing: 6) {
                 Image(systemName: "checkmark").font(.system(size: 9, weight: .semibold)).opacity(selected ? 1 : 0).frame(width: 12)
-                Text(title).lineLimit(1).truncationMode(.middle)
+                Text(title).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
                 if let detail { Text(detail).foregroundStyle(.tertiary).monospacedDigit() }
             }.font(.system(size: 11)).padding(.horizontal, 8).padding(.vertical, 5)
@@ -277,9 +277,9 @@ private struct UsageChange: View {
             HStack(spacing: 2) {
                 Image(systemName: flat ? "equal" : change > 0 ? "arrow.up.right" : "arrow.down.right").font(.system(size: 8, weight: .bold))
                 Text(model.percentText(abs(change)))
-            }.font(.system(size: 10)).foregroundStyle(.secondary).monospacedDigit().lineLimit(1).help(comparison)
+            }.font(.system(size: 10)).foregroundStyle(.secondary).monospacedDigit().fixedSize(horizontal: false, vertical: true).help(comparison)
         } else {
-            Text(model.t(range == .all ? "All time" : "No earlier data")).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
+            Text(model.t(range == .all ? "All time" : "No earlier data")).font(.system(size: 10)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
         }
     }
     private var comparison: String {
@@ -317,14 +317,14 @@ private struct UsageKPIs: View {
             }
             tile(model.t("Cache hits"), totals.cacheHitRate.map(model.percentText) ?? "—", identifier: "usage.cacheRate") {
                 Text(totals.cacheSaving > 0.005 ? model.t("Saved {0}", model.costText(totals.cacheSaving)) : model.t("Nothing saved yet"))
-                    .font(.system(size: 10)).foregroundStyle(totals.cacheSaving > 0.005 ? PoolPalette.good : .secondary).lineLimit(1)
+                    .font(.system(size: 10)).foregroundStyle(totals.cacheSaving > 0.005 ? PoolPalette.good : .secondary).fixedSize(horizontal: false, vertical: true)
             }.help(model.t("Prompt tokens read from Claude's cache, and what that saved against sending them as input."))
         }
     }
     private func tile<Detail: View>(_ title: String, _ value: String, identifier: String, @ViewBuilder detail: () -> Detail) -> some View {
         PoolCard(padding: 11) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
+                Text(title).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Text(value).font(.system(size: 19, weight: .semibold, design: .rounded)).monospacedDigit()
                     .lineLimit(1).minimumScaleFactor(0.6)
                 detail()
@@ -426,7 +426,7 @@ private struct UsageTrend: View {
             ForEach(Array(summary.series.enumerated()), id: \.element.id) { index, share in
                 HStack(spacing: 4) {
                     Circle().fill(UsagePalette.color(index: index, id: share.id)).frame(width: 6, height: 6)
-                    Text(model.usageSeriesName(share, grouping: summary.grouping)).lineLimit(1).truncationMode(.middle)
+                    Text(model.usageSeriesName(share, grouping: summary.grouping)).fixedSize(horizontal: false, vertical: true)
                     if share.id == UsageSummary.other { Text(model.t("{0} more", "\(share.trend.first ?? 0)")).foregroundStyle(.tertiary).lineLimit(1).fixedSize() }
                     Text(model.percentText(summary.totals.total > 0 ? Double(share.tally.total) / Double(summary.totals.total) : 0))
                         .foregroundStyle(.tertiary).monospacedDigit()
@@ -512,7 +512,7 @@ private struct UsageTooltip: View {
             ForEach(rows, id: \.share.id) { row in
                 HStack(spacing: 5) {
                     Circle().fill(UsagePalette.color(index: row.index, id: row.share.id)).frame(width: 6, height: 6)
-                    Text(model.usageSeriesName(row.share, grouping: summary.grouping)).lineLimit(1).truncationMode(.middle)
+                    Text(model.usageSeriesName(row.share, grouping: summary.grouping)).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 6)
                     Text(model.usageText(row.value))
                 }
@@ -574,12 +574,12 @@ private struct UsageTableHeader: View {
     var detail: String?
     let columns: [(String, CGFloat)]
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(.primary)
-            if let detail { Text(detail).foregroundStyle(.tertiary).lineLimit(1) }
+            if let detail { Text(detail).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true) }
             Spacer(minLength: 4)
             ForEach(columns.indices, id: \.self) { index in
-                Text(columns[index].0).lineLimit(1).frame(width: columns[index].1, alignment: .trailing)
+                Text(columns[index].0).multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true).frame(width: columns[index].1, alignment: .trailing)
             }
         }.font(.system(size: 10)).foregroundStyle(.secondary).padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 6)
     }
@@ -615,9 +615,15 @@ private struct UsageModels: View {
             HStack(spacing: 8) {
                 Circle().fill(color).frame(width: 7, height: 7)
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text(share.name).font(.system(size: 11, weight: .medium)).lineLimit(1)
-                        priceText(share.id)
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 6) {
+                            Text(share.name).font(.system(size: 11, weight: .medium)).lineLimit(1).fixedSize()
+                            priceText(share.id)
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(share.name).font(.system(size: 11, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+                            priceText(share.id)
+                        }
                     }
                     HStack(spacing: 6) {
                         UsageShareBar(fraction: fraction, color: color)
@@ -640,9 +646,9 @@ private struct UsageModels: View {
     @ViewBuilder private func priceText(_ id: String) -> some View {
         if let price = ModelPricing.price(for: id) {
             Text(model.t("{0} in · {1} out /MTok", model.costText(price.input), model.costText(price.output)))
-                .font(.system(size: 9)).foregroundStyle(.tertiary).lineLimit(1)
+                .font(.system(size: 9)).foregroundStyle(.tertiary).lineLimit(1).fixedSize()
         } else {
-            Text(model.t("No list price")).font(.system(size: 9)).foregroundStyle(PoolPalette.amber).lineLimit(1)
+            Text(model.t("No list price")).font(.system(size: 9)).foregroundStyle(PoolPalette.amber).fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -658,7 +664,7 @@ private struct UsageCache: View {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(model.t("Prompt cache")).font(.system(size: 12, weight: .semibold))
                     Text(totals.cacheHitRate.map { model.t("{0} of prompt read from cache", model.percentText($0)) } ?? "")
-                        .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                        .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 4)
                     if totals.cacheSaving > 0.005 {
                         Text(model.t("Saved {0}", model.costText(totals.cacheSaving))).font(.system(size: 11, weight: .medium))
@@ -683,10 +689,10 @@ private struct UsageCache: View {
                     ForEach(UsageTokenKind.allCases) { kind in
                         HStack(spacing: 4) {
                             Circle().fill(kind.color).frame(width: 6, height: 6)
-                            Text(model.t(kind.title)).foregroundStyle(.secondary).lineLimit(1)
+                            Text(model.t(kind.title)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                             Text(model.tokenText(kind.value(totals))).fontWeight(.medium)
                             Text(kind.rate).foregroundStyle(.tertiary)
-                        }.lineLimit(1).accessibilityElement(children: .combine)
+                        }.fixedSize(horizontal: false, vertical: true).accessibilityElement(children: .combine)
                     }
                 }.font(.system(size: 10)).monospacedDigit()
                 Text(model.t("Rates are against input. Pool's sessions keep their cache for an hour, so most writes are 1-hour writes."))
@@ -714,7 +720,7 @@ private struct UsageAccounts: View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 8) {
                     Text(model.t("Accounts")).font(.system(size: 12, weight: .semibold))
-                    Text(countText).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
+                    Text(countText).font(.system(size: 10)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 4)
                     Menu {
                         Picker(model.t("Sort by"), selection: $order) {
@@ -794,7 +800,7 @@ private struct UsageAccounts: View {
                     Button { if !ids.isEmpty { model.toggleUsageAccounts(ids) } } label: {
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 4) {
-                                Text(model.usagePlanName(plan.id)).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                                Text(model.usagePlanName(plan.id)).font(.system(size: 11, weight: .medium)).fixedSize(horizontal: false, vertical: true)
                                 Text("\(ids.count)").font(.system(size: 10)).foregroundStyle(.tertiary)
                             }
                             Text("\(model.usageText(value)) · \(model.percentText(total > 0 ? value / total : 0))")
@@ -820,8 +826,8 @@ private struct UsageAccounts: View {
                 Text("\(rank)").font(.system(size: 10)).foregroundStyle(.tertiary).frame(width: 22, alignment: .trailing)
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 5) {
-                        Text(model.usageAccountName(share.id)).font(.system(size: 11, weight: .medium)).lineLimit(1).truncationMode(.middle)
-                        if let plan { Text(model.t(plan)).font(.system(size: 9)).foregroundStyle(.tertiary).lineLimit(1) }
+                        Text(model.usageAccountName(share.id)).font(.system(size: 11, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+                        if let plan { Text(model.t(plan)).font(.system(size: 9)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true) }
                     }
                     HStack(spacing: 6) {
                         UsageShareBar(fraction: total > 0 ? value / total : 0, color: color)

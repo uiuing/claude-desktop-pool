@@ -76,21 +76,19 @@ public enum NativeUsageParser {
             guard let percent = capture(#"([0-9]+(?:\.[0-9]+)?)%\s+used"#, in: section) else { throw QuotaRefreshFailure.loading }
             guard let used = Double(percent), used.isFinite, (0...100).contains(used) else { throw QuotaRefreshFailure.unsupportedFormat }
             let headingName = String(flat[nameRange]).lowercased()
-            let id: String, family: String?
-            if headingName == "session" { id = "five_hour"; family = nil }
-            else if let scope = capture(#"\(([^)]+)\)"#, in: headingName), scope != "all models" {
-                let cleaned = scope.replacingOccurrences(of: #"\s+only$"#, with: "", options: .regularExpression)
-                let slug = cleaned.replacingOccurrences(of: #"[^a-z0-9]+"#, with: "_", options: .regularExpression).trimmingCharacters(in: CharacterSet(charactersIn: "_"))
-                guard !slug.isEmpty else { throw QuotaRefreshFailure.unsupportedFormat }
-                // An unfamiliar heading can describe a product-wide constraint. Only an
-                // explicit single model family can narrow which requests it limits.
-                family = ["opus", "sonnet", "haiku", "fable", "mythos"].first(where: { cleaned == $0 })
-                id = "seven_day_" + slug
-            } else { id = "seven_day"; family = nil }
+            let id: String, scope: QuotaScope
+            if headingName == "session" { id = "five_hour"; scope = .all }
+            else if let named = capture(#"\(([^)]+)\)"#, in: headingName), named != "all models" {
+                // An unfamiliar heading can describe a product-wide constraint, so only a model
+                // family alone ("Fable", "Fable 5.1", "Sonnet only") narrows which requests it limits;
+                // anything else is shown and holds nothing back.
+                guard let scoped = QuotaWindow.scoped(name: named) else { throw QuotaRefreshFailure.unsupportedFormat }
+                id = scoped.id; scope = scoped.scope
+            } else { id = "seven_day"; scope = .all }
             guard seen.insert(id).inserted else { throw QuotaRefreshFailure.unsupportedFormat }
             let resetText = capture(#"Resets\s+([^()]+\([^)]+\))"#, in: section)
             let reset = resetText.flatMap { resetTime($0, observedAt: observedAt, windowID: id) }
-            windows.append(.init(id: id, usedPercent: used, observedAt: observedAt, resetsAt: reset, modelFamily: family))
+            windows.append(.init(id: id, usedPercent: used, observedAt: observedAt, resetsAt: reset, scope: scope))
         }
         guard !windows.isEmpty else { throw QuotaRefreshFailure.unsupportedFormat }
         if !seen.contains("five_hour"), seen.contains("seven_day") {

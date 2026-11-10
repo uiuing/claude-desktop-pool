@@ -4,9 +4,9 @@ import XCTest
 final class RoutingTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
     private func window(_ id: String, _ used: Double?, age: TimeInterval = 0,
-                        state: QuotaWindowState = .reported, modelFamily: String? = nil) -> QuotaWindow {
+                        state: QuotaWindowState = .reported, scope: QuotaScope? = nil) -> QuotaWindow {
         .init(id: id, usedPercent: used, observedAt: now.addingTimeInterval(-age),
-              resetsAt: now.addingTimeInterval(3600), state: state, modelFamily: modelFamily)
+              resetsAt: now.addingTimeInterval(3600), state: state, scope: scope)
     }
     private func account(_ email: String = "a•••@gmail.com", plan: String? = "Pro", session: Double? = nil,
                          week: Double? = nil, age: TimeInterval = 0) -> PoolAccount {
@@ -168,20 +168,21 @@ final class RoutingTests: XCTestCase {
 
     func testDynamicModelWindowsOnlyRestrictTheirModels() {
         var a = account(plan: "Ultra", week: 20)
-        a.windows.append(window("seven_day_fable", 100))
+        a.windows.append(window("seven_day_overage_included", 100))
         XCTAssertTrue(PoolRouting.candidates([a], model: "claude-fable-5", now: now).isEmpty)
         XCTAssertEqual(PoolRouting.assessment(a, model: "sonnet", now: now).headroom, 80)
-        a.windows.append(window("vendor_window", 100, modelFamily: "sonnet"))
+        a.windows.append(window("vendor_window", 100, scope: .models(["sonnet"])))
         XCTAssertTrue(PoolRouting.candidates([a], model: "sonnet", now: now).isEmpty)
         XCTAssertEqual(PoolRouting.assessment(a, model: "opus", now: now).headroom, 80)
     }
 
-    func testUnknownAdditionalWindowIsNotIgnoredAsUnlimited() {
+    func testUnknownAdditionalWindowIsShownButNeverBlocks() {
         var a = account(week: 20)
         a.windows.append(window("monthly_capacity", nil))
-        XCTAssertEqual(PoolRouting.assessment(a, model: "opus", now: now).state, .unknown)
+        XCTAssertEqual(PoolRouting.assessment(a, model: "opus", now: now).headroom, 80)
         a.windows[1] = window("monthly_capacity", 100)
-        XCTAssertTrue(PoolRouting.candidates([a], model: "opus", now: now).isEmpty)
+        XCTAssertFalse(PoolRouting.candidates([a], model: "opus", now: now).isEmpty)
+        XCTAssertEqual(a.effectiveState(at: now), .ready)
     }
 
     func testProactiveHandoffRequiresConfirmedCycleHeadroomAndBetterBackup() {
@@ -303,7 +304,7 @@ final class RoutingTests: XCTestCase {
 
     func testUnknownBlockerPreventsAConfidentRecoveryTime() {
         var a = account(week: 100)
-        a.windows.append(window("monthly_capacity", nil))
+        a.windows.append(window("monthly_capacity", nil, scope: .models(["sonnet"])))
         XCTAssertEqual(QuotaRecovery.account(a, model: "sonnet", now: now), .unknown)
         XCTAssertNil(QuotaRecovery.pool([a], model: "sonnet", now: now).nextRecoveryAt)
         a.windows.removeLast()
@@ -531,7 +532,7 @@ final class RoutingTests: XCTestCase {
 
     func testModelSpecificRecoveryAndCooldownKeepTheirOwnBottlenecks() {
         var a = account(plan: "Ultra", week: 40)
-        a.windows.append(window("seven_day_fable", 100))
+        a.windows.append(window("seven_day_overage_included", 100))
         XCTAssertEqual(QuotaRecovery.account(a, model: "sonnet", now: now), .available)
         XCTAssertEqual(QuotaRecovery.account(a, model: "fable", now: now), .scheduled(now.addingTimeInterval(3600)))
         a.cooldownUntil = now.addingTimeInterval(7200)

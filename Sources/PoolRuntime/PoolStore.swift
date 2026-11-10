@@ -10,13 +10,14 @@ public actor PoolStore {
         let data: Data
         do { data = try workspace.read(workspace.root.appendingPathComponent("library.json")) }
         catch RuntimeError.missingFile { return PoolLibrary() }
-        let library: PoolLibrary
+        var library: PoolLibrary
         do { library = try JSONDecoder().decode(PoolLibrary.self, from: data) }
         catch { throw RuntimeError.invalidLibrary }
         guard library.version == 1, ["system", "light", "dark"].contains(library.preferences.appearance), library.preferences.routingPolicy.isValid, library.preferences.quotaRefresh.isValid,
               Set(library.accounts.map(\.id)).count == library.accounts.count else {
             throw RuntimeError.invalidLibrary
         }
+        library.liftModelCooldowns(at: Date())
         return library
     }
 

@@ -82,7 +82,7 @@ struct MainWindow: View {
                     Button { model.showAbout(); Task { await model.updates.installAndRestart() } } label: {
                         Label(model.t(model.updates.canInstall ? "Update and restart" : "Update available"), systemImage: "arrow.down.circle.fill")
                             .font(.system(size: 11, weight: .medium)).foregroundStyle(PoolPalette.accent)
-                            .lineLimit(1).minimumScaleFactor(0.8)
+                            .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 8)
                     }.buttonStyle(.plain).disabled(model.updates.install == .downloading || model.updates.install == .restarting).help(model.t("Claude Pool {0} is available.", model.updates.latestVersion?.description ?? "—"))
                         .accessibilityIdentifier("sidebar.update")
@@ -98,7 +98,7 @@ struct MainWindow: View {
                 Image(systemName: page.symbol).font(.system(size: 12)).frame(width: 15)
                 HStack(spacing: 3) {
                     Text(model.t(page.title)).font(.system(size: 12, weight: model.page == page ? .semibold : .regular))
-                        .lineLimit(1).minimumScaleFactor(0.85).layoutPriority(1)
+                        .fixedSize(horizontal: false, vertical: true).layoutPriority(1)
                     Spacer(minLength: 0)
                     if page == .accounts && !model.snapshot.accounts.isEmpty {
                         Text("\(model.snapshot.accounts.count)").font(.system(size: 10)).foregroundStyle(.secondary).fixedSize()
@@ -134,18 +134,18 @@ struct PoolDashboard: View {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Text(model.useSummaryText)
-                                .font(.system(size: 12, weight: .semibold)).lineLimit(1).truncationMode(.middle)
+                                .font(.system(size: 12, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
                             Spacer(minLength: 6)
                             Button(model.t("View routing")) { model.page = .routing }.buttonStyle(.plain)
                                 .font(.system(size: 11)).foregroundStyle(PoolPalette.accent)
                         }
-                        Text(model.newConversationText).font(.system(size: 11)).lineLimit(1)
+                        Text(model.newConversationText).font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
                             .foregroundStyle(model.newConversationAccount == nil ? PoolPalette.amber : .secondary)
                         Text(model.t("{0}/{1} accounts usable", "\(model.confirmedReadyCount)", "\(model.snapshot.accounts.count)"))
                             .font(.system(size: 11)).foregroundStyle(.secondary)
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Text(model.runsInUseText).foregroundStyle(.secondary)
-                            Text(model.runsBreakdownText).foregroundStyle(.tertiary).lineLimit(1)
+                            Text(model.runsBreakdownText).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
                         }.font(.system(size: 11)).help(model.runsExplainedText).accessibilityIdentifier("pool.runsInUse")
                         if model.quotaSummary.unknownAccounts > 0 {
                             HStack(spacing: 6) {

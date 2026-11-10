@@ -5,7 +5,7 @@ import PoolPrivacy
 import SwiftUI
 
 enum UIAction: Equatable {
-    case installRuntime, checkRuntimeUpdate, updateRuntime, rollbackRuntime, addAccount, signIn(UUID), checkAccount(UUID), removeAccount(UUID)
+    case installRuntime, checkRuntimeUpdate, checkAndUpdateRuntime, updateRuntime, rollbackRuntime, addAccount, signIn(UUID), checkAccount(UUID), removeAccount(UUID)
     case connectDesktop, disconnectDesktop, restartDesktop, menuBarPlan(String?), sendTerminalInput(String), sendTerminalKey(String), cancelSession(UUID)
     case requestSessionExit(UUID), closeTerminal(UUID)
     case installPrivacyModel, previewPrivacy(String), clearPrivacyPreview, clearPrivacyReview
@@ -129,14 +129,26 @@ struct PlanQuota: Identifiable, Equatable {
     /// The earliest official reset that brings a limited account back.
     var nextRecovery: Date?
     /// The 5-hour and weekly limits that apply to every model: what the menu bar shows.
-    var session: QuotaPoolGroup? { windows.first { $0.windowID == "five_hour" && $0.modelFamily == nil } }
-    var week: QuotaPoolGroup? { windows.first { $0.windowID == "seven_day" && $0.modelFamily == nil } }
+    var session: QuotaPoolGroup? { windows.first { $0.windowID == "five_hour" && $0.scope == .all } }
+    var week: QuotaPoolGroup? { windows.first { $0.windowID == "seven_day" && $0.scope == .all } }
+    /// The limits that hold back only some models, in display order.
+    var modelLimits: [QuotaPoolGroup] { windows.filter { QuotaWindow.modelName(of: $0.scope) != nil } }
 }
 
 /// The figures beside the menu bar icon: what the shown plan has left in its 5-hour and weekly limits.
 struct MenuBarFigures: Hashable {
     var session: Int?
     var week: Int?
+    /// The model limit with the least left across the plan: its name and percent.
+    var model: String?
+    var modelPercent: Int?
+    /// The model limit's text: "F72%".
+    var modelText: String? { modelPercent.map { "\(model?.prefix(1).uppercased() ?? "")\($0)%" } }
+    /// What the menu bar draws: the 5-hour limit over the weekly one, as always, and beside them,
+    /// in larger type, the tightest model limit when the plan has one.
+    var layout: (stacked: [String], beside: String?) {
+        ([session, week].compactMap { $0.map { "\($0)%" } }, modelText)
+    }
 }
 
 struct PoolTerminal: Identifiable, Equatable {
@@ -321,9 +333,32 @@ final class PoolAppModel {
     /// What the shown plan has left: its 5-hour limit, and its weekly limit when it has one.
     var menuBarFigures: MenuBarFigures? {
         guard let plan = menuBarPlan else { return nil }
-        let figures = MenuBarFigures(session: plan.session?.averageRemainingPercent.map { Int($0.rounded()) },
+        var figures = MenuBarFigures(session: plan.session?.averageRemainingPercent.map { Int($0.rounded()) },
                                      week: plan.week?.averageRemainingPercent.map { Int($0.rounded()) })
+        // The model limit with the least left, the way a used-up one shows as none left.
+        let tight = plan.modelLimits.compactMap { group in group.averageRemainingPercent.map { (group, $0) } }.min { $0.1 < $1.1 }
+        figures.model = tight.flatMap { QuotaWindow.modelName(of: $0.0.scope) }
+        figures.modelPercent = tight.map { Int($0.1.rounded()) }
         return figures.session == nil && figures.week == nil ? nil : figures
+    }
+    /// Each model limit's average left across the plan: "Fable 72% · Opus 90%". Nil when it has none.
+    func modelLimitsText(_ plan: PlanQuota) -> String? {
+        let parts = plan.modelLimits.map { group in
+            (QuotaWindow.modelName(of: group.scope) ?? "") + " " + (group.averageRemainingPercent.map { "\(Int($0.rounded()))%" } ?? "—")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+    /// The account's model limit with the least left, as the menu card's small ring shows it.
+    func tightestModelLimit(_ account: PoolAccount) -> (window: QuotaWindow, remaining: Double?)? {
+        displayedWindows(account).filter { $0.modelName != nil }
+            .map { ($0, remaining(account, window: $0.id)) }
+            .min { ($0.1 ?? 101) < ($1.1 ?? 101) }
+    }
+    /// "Weekly · Fable · 72% left · Resets Mon 01:00" for the ring's hover.
+    func modelLimitHelp(_ account: PoolAccount, window: QuotaWindow, remaining: Double?) -> String {
+        [quotaTitle(window.id),
+         remaining.map { t("{0}% left", "\(Int($0.rounded()))") },
+         (window.resetsAt ?? window.refusedUntil).map { t("Resets {0}", exactTime($0)) }].compactMap { $0 }.joined(separator: " · ")
     }
     /// Accounts best first: usable by what is left, then unread, then coming back soonest, unusable last.
     var rankedAccounts: [PoolAccount] {
@@ -492,15 +527,19 @@ final class PoolAppModel {
         Array(Set(snapshot.accounts.flatMap { $0.windows.filter { $0.state != .notApplicable }.map(\.id) }))
             .sorted { quotaWindowOrder($0) < quotaWindowOrder($1) }
     }
+    /// 5 hours, the week, each model's week (Fable, Opus, Sonnet, Haiku, Mythos), then the rest.
     func quotaWindowOrder(_ id: String) -> String {
-        switch id { case "five_hour": return "0"; case "seven_day": return "1"; default: return "2" + id }
+        String(format: "%03d", QuotaWindow.displayRank(id)) + id
+    }
+    /// The model a limit is named after, as written by Claude and never translated: "Fable".
+    func limitModelName(_ id: String) -> String? {
+        QuotaWindow.canonical(id).flatMap { QuotaWindow.modelName(of: $0.scope) }
     }
     func quotaTitle(_ id: String) -> String {
+        if let name = limitModelName(id) { return t("Weekly · {0}", name) }
         switch id {
         case "five_hour": return t("Session limit")
         case "seven_day": return t("Weekly limit")
-        case "seven_day_opus": return t("Weekly · Opus")
-        case "seven_day_sonnet": return t("Weekly · Sonnet")
         default: return t("Additional limit")
         }
     }
@@ -509,7 +548,7 @@ final class PoolAppModel {
         switch id {
         case "five_hour": return t("5 hours")
         case "seven_day": return t("7 days")
-        default: return quotaTitle(id)
+        default: return limitModelName(id) ?? quotaTitle(id)
         }
     }
     /// The shortest name, under a ring: "5h", "7d".
@@ -517,13 +556,13 @@ final class PoolAppModel {
         switch id {
         case "five_hour": return t("5h")
         case "seven_day": return t("7d")
-        default: return quotaTitle(id)
+        default: return limitModelName(id).map { String($0.prefix(1)) } ?? quotaTitle(id)
         }
     }
     /// When the account's running limits reset: "Resets 5h 23:10 · 7d Mon 01:00". A limit that has
     /// not started is left out; an account with none running has not been used since they renewed.
     func nextResetText(_ account: PoolAccount) -> String {
-        let global = account.windows.filter { $0.modelFamily == nil && !$0.isNotApplicable(at: now) }
+        let global = account.windows.filter { $0.scope == .all && !$0.isNotApplicable(at: now) }
             .sorted { quotaWindowOrder($0.id) < quotaWindowOrder($1.id) }
         let running = global.filter { ($0.resetsAt ?? .distantPast) > now }
         if !running.isEmpty {
@@ -637,6 +676,7 @@ final class PoolAppModel {
     }
     /// The calendar times are read in: Taipei for the demo, otherwise the Mac's, whose first
     /// weekday says where "this week" starts.
+    var shortDateZone: TimeZone { demo ? TimeZone(identifier: "Asia/Taipei")! : .current }
     private var displayCalendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.locale = locale
@@ -664,6 +704,12 @@ final class PoolAppModel {
         formatter.setLocalizedDateFormatFromTemplate(template)
         return formatter.string(from: date)
     }
+    /// A day as month and day in the shown language: "11/16".
+    func shortDate(_ date: Date) -> String {
+        let formatter = DateFormatter(); formatter.locale = locale; formatter.timeZone = displayCalendar.timeZone
+        formatter.setLocalizedDateFormatFromTemplate("Md")
+        return formatter.string(from: date)
+    }
     /// "02:00 reset (in 2h 0m)", for one limit of one account.
     func shortReset(_ account: PoolAccount, window: String) -> String {
         guard let reading = account.windows.first(where: { $0.id == window }) else { return t("Not reported yet") }
@@ -686,15 +732,41 @@ final class PoolAppModel {
     /// One account's state in a few words: what it has left, or why it cannot be used and until when.
     func accountStatus(_ account: PoolAccount) -> String {
         guard account.email?.isEmpty == false else { return stateTitle(.signedOut) }
+        var text: String
         switch account.standing(at: now) {
         case .usable:
             let headroom = PoolRouting.assessment(account, model: PoolRouting.anyModel, now: now).headroom
-            return headroom.map { t("{0}% left", "\(Int($0.rounded()))") } ?? t("Available")
-        case .unread: return quotaRefresh[account.id]?.busy == true ? t("Reading quota…") : t("Quota not read yet")
-        case .limited: return backAt(account).map { t("5-hour limit reached · back {0}", clockTime($0)) } ?? t("Limit reached")
-        case .weekUsed: return backAt(account).map { t("Week used up · back {0}", clockTime($0)) } ?? t("Week used up")
-        case .unavailable: return stateTitle(account.effectiveState(at: now))
+            text = headroom.map { t("{0}% left", "\(Int($0.rounded()))") } ?? t("Available")
+            if let block = modelBlockText(account) { text += " · " + block }
+        case .unread: text = quotaRefresh[account.id]?.busy == true ? t("Reading quota…") : t("Quota not read yet")
+        case .limited:
+            text = backAt(account).map { t("5-hour limit reached · back {0}", clockTime($0)) } ?? t("Limit reached")
+        case .weekUsed:
+            text = backAt(account).map { t("Week used up · back {0}", clockTime($0)) } ?? t("Week used up")
+        case .unavailable: text = stateTitle(account.effectiveState(at: now))
         }
+        return text
+    }
+    /// A model limit used up or refused while the account can still serve the other models: "Fable used up · back Fri 14:00".
+    func modelBlockText(_ account: PoolAccount) -> String? {
+        let blocked = displayedWindows(account).filter { $0.modelName != nil && $0.isExhausted(at: now) }
+        guard let window = blocked.first, let name = window.modelName else { return nil }
+        let back = (window.refusedUntil ?? window.resetsAt).flatMap { $0 > now ? $0 : nil }
+        return back.map { t("{0} used up · back {1}", name, clockTime($0)) } ?? t("{0} used up", name)
+    }
+    /// "F 72%": the account's tightest model limit, for lists of accounts.
+    func accountBrief(_ account: PoolAccount) -> String? {
+        guard let tight = tightestModelLimit(account), let left = tight.remaining, let name = tight.window.modelName else { return nil }
+        return "\(name.prefix(1)) \(Int(left.rounded()))%"
+    }
+    /// Spoken and hover text of an account's limits together.
+    func accountQuotaSummary(_ account: PoolAccount) -> String {
+        var parts = displayedWindows(account).compactMap { window -> String? in
+            guard let left = remaining(account, window: window.id) else { return nil }
+            return limitName(window.id) + " " + t("{0}% left", "\(Int(left.rounded()))")
+        }
+        if let block = modelBlockText(account) { parts.append(block) }
+        return parts.joined(separator: ", ")
     }
     func stateTitle(_ state: AccountState) -> String {
         switch state {
@@ -761,7 +833,7 @@ final class PoolAppModel {
         case .installRuntime, .updateRuntime:
             snapshot.executableReady = true
             runtime = .init(phase: .ready, installedVersion: "2.1.301")
-        case .checkRuntimeUpdate: runtime.phase = .ready
+        case .checkRuntimeUpdate, .checkAndUpdateRuntime: runtime.phase = .ready
         case .rollbackRuntime:
             guard let previous = runtime.previousVersion else { return }
             runtime = .init(phase: .ready, installedVersion: previous, previousVersion: runtime.installedVersion)
@@ -813,10 +885,14 @@ final class PoolAppModel {
             [.init(id: "five_hour", usedPercent: session, observedAt: date.addingTimeInterval(-60), resetsAt: date.addingTimeInterval(7200)),
              .init(id: "seven_day", usedPercent: week, observedAt: date.addingTimeInterval(-60), resetsAt: date.addingTimeInterval(172800))]
         }
+        // Fable's weekly limit: only some accounts report one.
+        func fable(_ used: Double) -> QuotaWindow {
+            .init(id: QuotaWindow.overageIncludedID, usedPercent: used, observedAt: date.addingTimeInterval(-60), resetsAt: date.addingTimeInterval(172800))
+        }
         let accounts = [
             PoolAccount(id: ids[0], email: "mi•••ella@example.com", plan: "Ultra", state: .ready,
-                        windows: [.init(id: "seven_day", usedPercent: 36, observedAt: date.addingTimeInterval(-60), resetsAt: date.addingTimeInterval(172800))], createdAt: date),
-            PoolAccount(id: ids[1], email: "sa•••ahmad@example.org", plan: "Max 5x", state: .ready, windows: windows(42, 23), createdAt: date),
+                        windows: [.init(id: "seven_day", usedPercent: 36, observedAt: date.addingTimeInterval(-60), resetsAt: date.addingTimeInterval(172800)), fable(10)], createdAt: date),
+            PoolAccount(id: ids[1], email: "sa•••ahmad@example.org", plan: "Max 5x", state: .ready, windows: windows(42, 23) + [fable(28)], createdAt: date),
             PoolAccount(id: ids[2], email: "al•••ezra@example.net", plan: "Pro", state: .limited, windows: windows(100, 61), cooldownUntil: date.addingTimeInterval(7200), createdAt: date),
             // Its 5-hour limit came back half an hour ago and has not been used since.
             PoolAccount(id: ids[3], email: "jo•••ana@example.com", plan: "Max 5x", state: .ready, windows: [
@@ -873,7 +949,7 @@ final class PoolAppModel {
     static func demoUsage(ids: [UUID], now: Date) -> UsageLedger {
         var ledger = UsageLedger(), seed: UInt64 = 0x5EED
         func next(_ range: Int) -> Int { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return Int((seed >> 33) % UInt64(max(1, range))) }
-        let models = [("claude-sonnet-5-5", "Sonnet 5.5"), ("claude-opus-5-5", "Opus 5.5"), ("claude-haiku-5-5", "Haiku 5.5"), ("claude-fable-5-1", "Fable 5.1")]
+        let models = [("claude-sonnet-5-5", "Sonnet 5.5"), ("claude-opus-5-5", "Opus 5.5"), ("claude-haiku-5-5", "Haiku 5.5"), ("claude-fable-5-2", "Fable 5.2")]
         let daily = 12 + ids.count * 2
         for day in (0..<30).reversed() {
             let weekend = Calendar.current.isDateInWeekend(now.addingTimeInterval(Double(-day) * 86_400))

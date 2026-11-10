@@ -161,8 +161,16 @@ final class ScreenshotTests: XCTestCase {
         for language in L10n.languages.map(\.code) {
             for dark in [false, true] {
                 let model = PoolAppModel.demoModel(language: language)
-                try await capture(MenuPanel(model: model), size: .init(width: 320, height: 390), dark: dark,
+                try await capture(MenuPanel(model: model), size: .init(width: 340, height: 980), dark: dark,
                                   to: output.appendingPathComponent("menu-\(language)-\(dark ? "dark" : "light").png"))
+                // The menu bar item at 4x: the usual two lines, and a model limit with less left than the week.
+                if language == "en" || language == "zh-Hans" {
+                    let suffix = (language == "en" ? "" : "-" + language) + "-\(dark ? "dark" : "light").png"
+                    try renderMenuBar(model.menuBarFigures, dark: dark, to: output.appendingPathComponent("menubar" + suffix))
+                    var tight = model.menuBarFigures
+                    tight?.model = "Fable"; tight?.modelPercent = 12
+                    try renderMenuBar(tight, dark: dark, to: output.appendingPathComponent("menubar-fable" + suffix))
+                }
                 try await capture(QuitIndicatorView(title: model.t("Quitting Claude Pool"),
                                                     detail: model.t("Ending Claude sessions. This takes a few seconds."))
                     .padding(16).environment(\.locale, model.locale), size: .init(width: 380, height: 92), dark: dark,
@@ -275,7 +283,7 @@ final class ScreenshotTests: XCTestCase {
                 announced.page = .pool
                 try await capture(MainWindow(model: announced), size: .init(width: 680, height: 560), dark: dark,
                                   to: output.appendingPathComponent("update-banner-\(suffix).png"))
-                try await capture(MenuPanel(model: announced), size: .init(width: 340, height: 640), dark: dark,
+                try await capture(MenuPanel(model: announced), size: .init(width: 340, height: 980), dark: dark,
                                   to: output.appendingPathComponent("update-menu-\(suffix).png"))
             }
         }
@@ -357,6 +365,29 @@ final class ScreenshotTests: XCTestCase {
                 }
             }
         }
+    }
+
+    /// The template image as the menu bar tints it (black on light, white on dark), at 4x.
+    private func renderMenuBar(_ figures: MenuBarFigures?, dark: Bool, to url: URL) throws {
+        let figure = MenuBarFigure.image(figures)
+        let scale: CGFloat = 4
+        let size = NSSize(width: figure.size.width * scale + 24, height: figure.size.height * scale + 24)
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width), pixelsHigh: Int(size.height),
+                                                    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                                    colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+        (dark ? NSColor(white: 0.16, alpha: 1) : NSColor(white: 0.93, alpha: 1)).setFill()
+        NSRect(origin: .zero, size: size).fill()
+        let tint = NSImage(size: figure.size, flipped: false) { rect in
+            figure.draw(in: rect)
+            (dark ? NSColor.white : NSColor.black).setFill()
+            rect.fill(using: .sourceAtop)
+            return true
+        }
+        tint.draw(in: NSRect(x: 12, y: 12, width: figure.size.width * scale, height: figure.size.height * scale))
+        NSGraphicsContext.restoreGraphicsState()
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: url)
     }
 
     private func capture<Content: View>(_ content: Content, size: NSSize, dark: Bool, to url: URL) async throws {

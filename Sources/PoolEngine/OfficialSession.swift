@@ -97,6 +97,8 @@ public actor OfficialSession: SessionWorker {
     private var acceptedRows = 0
     private var awaitingAccept = false
     private var turnFailed = false
+    /// The model families whose reply was seen running on usage credits, each told once.
+    private var creditsSpent: Set<String> = []
 
     /// The turn's reply, told from the stream, the transcript and the helper's calls.
     private var reply: ClaudeReply
@@ -541,6 +543,7 @@ public actor OfficialSession: SessionWorker {
                 failed("first_run_stuck"); throw BridgeFailure.compatibility
             case .none: break
             }
+            if let failure = usageCreditsFailure() { failed("usage_credits"); throw failure }
             // the input box's "❯ " (a drawn row may lose its trailing space), on no first-run screen
             if !FirstRunScreens.isShowing(text), !promptArea().isEmpty {
                 if let directory, FileManager.default.fileExists(atPath: directory.appendingPathComponent("tools-listed.json").path) {
@@ -565,7 +568,7 @@ public actor OfficialSession: SessionWorker {
     /// own once the paste shows (or its wait is over), again while the transcript has not taken
     /// the message, at most four times.
     private func type(_ pieces: [ClaudePrompt.Piece], busy: Bool, responseToken: UUID) async throws {
-        var lastText = "", image = 0
+        var lastText = "", image = 0, pastedBefore = 0
         trace.note("input.typing:\(pieces.count)")
         draft = .owned
         for (index, piece) in pieces.enumerated() {
@@ -587,12 +590,12 @@ public actor OfficialSession: SessionWorker {
             case .text(var text):
                 text = index == 0 ? Self.pasteable(text, busy: busy) : Self.typeable(text)
                 if index == 0 && pieces.count == 1 && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { text = "." }
-                drawn = Data()
+                drawn = Data(); pastedBefore = Self.pastedMarks(in: promptArea())
                 try transport?.write(Data(("\u{1B}[200~" + text + "\u{1B}[201~").utf8))
                 lastText = text
             }
         }
-        await awaitShown(lastText, responseToken: responseToken)
+        await awaitShown(lastText, pastedBefore: pastedBefore, responseToken: responseToken)
         try await Task.sleep(nanoseconds: 150_000_000)
         try checkInput(responseToken)
         let before = acceptedRows
@@ -615,18 +618,18 @@ public actor OfficialSession: SessionWorker {
         let until = Date().addingTimeInterval(pasteTimeout)
         while Date() < until {
             try checkInput(responseToken)
-            if let number = imageNumbers(in: drawnText()).filter({ $0 > after }).min() { return number }
+            if let number = imageNumbers(in: drawnText()).union(imageNumbers(in: promptArea())).filter({ $0 > after }).min() { return number }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
         failed("image_not_shown")
         throw BridgeFailure.compatibility
     }
 
-    /// Waits for the input to show the paste: "Pasted text", or its last line's last 16
-    /// characters, in what was drawn since. A long paste takes a second more per 64 KB. The wait
+    /// Waits for the input to show the paste: one more "Pasted text" mark, or its last line's last
+    /// 16 characters, in what was drawn since or in the input as the screen now shows it. A long paste takes a second more per 64 KB. The wait
     /// ending is not a failure: Return is pressed anyway (tui.go shown, 1081-1118). Whitespace is
     /// left out of the comparison, since the terminal wraps the input wherever a line is full.
-    private func awaitShown(_ text: String, responseToken: UUID) async {
+    private func awaitShown(_ text: String, pastedBefore: Int, responseToken: UUID) async {
         guard !text.isEmpty else { return }
         var tail = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if let newline = tail.lastIndex(of: "\n") { tail = String(tail[tail.index(after: newline)...]).trimmingCharacters(in: .whitespaces) }
@@ -635,8 +638,9 @@ public actor OfficialSession: SessionWorker {
         let until = Date().addingTimeInterval(pasteTimeout + Double(text.utf8.count / 65_536))
         while Date() < until {
             guard (try? checkInput(responseToken)) != nil else { return }
-            let seen = drawnText()
-            if seen.contains("Pasted text") || (!wanted.isEmpty && Self.compact(seen).contains(wanted)) { return }
+            let seen = drawnText(), input = promptArea()
+            if seen.contains("Pasted text") || Self.pastedMarks(in: input) > pastedBefore { return }
+            if !wanted.isEmpty && (Self.compact(seen).contains(wanted) || Self.compact(input).contains(wanted)) { return }
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
         Diagnostics.record("session.paste_not_shown", ["run": runTag, "bytes": String(text.utf8.count)])
@@ -695,10 +699,17 @@ public actor OfficialSession: SessionWorker {
     /// "[Image #10]" can be drawn as "[Image" and "#10]" on two rows.
     private static let imageMark = try! NSRegularExpression(pattern: "\\[Image#([0-9]+)\\]")
 
-    /// What the client drew since the last paste, its escapes taken out (tui.go plain).
+    /// What the client drew since the last paste, its escapes taken out (tui.go plain). The client
+    /// writes only the cells that changed since its last frame and moves the cursor over the rest,
+    /// so a mark next to an earlier one can arrive as "[Imag" and " #27]": a mark missing here is
+    /// looked for again in `promptArea`, the input as the screen shows it.
     private func drawnText() -> String {
         let text = String(decoding: drawn, as: UTF8.self)
         return Self.ansi.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: " ")
+    }
+
+    private static func pastedMarks(in text: String) -> Int {
+        compact(text).components(separatedBy: "[Pastedtext#").count - 1
     }
 
     private func imageNumbers(in text: String) -> Set<Int> {
@@ -798,6 +809,10 @@ public actor OfficialSession: SessionWorker {
         }
         drain()
         if ended { return 40_000_000 }
+        if response != nil, ready, !invalidated, let failure = usageCreditsFailure() {
+            invalidated = true; failed("usage_credits"); observer?.yield(.attention); fail(failure)
+            return 40_000_000
+        }
         reply.listening = canTell
         apply(reply.tick(now: Date()))
         watchForStall()
@@ -1089,9 +1104,10 @@ public actor OfficialSession: SessionWorker {
         guard observedInference else { return }
         let generation = tokenCount(event["prompt_cache"]?["requests"])
         var windows: [QuotaWindow] = []
-        for (key, raw) in (event["rate_limits"]?.objectValue ?? [:]).sorted(by: { $0.key < $1.key }) {
-            guard !key.isEmpty, key.utf8.count <= 96,
-                  key.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || $0 == "_" || $0 == "-" }),
+        for (name, raw) in (event["rate_limits"]?.objectValue ?? [:]).sorted(by: { $0.key < $1.key }) where name != "limits" {
+            let key = QuotaWindow.canonical(name)?.id ?? name
+            guard !name.isEmpty, name.utf8.count <= 96,
+                  name.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || $0 == "_" || $0 == "-" }),
                   raw == .null || raw.objectValue != nil else { continue }
             let reset = raw["resets_at"]?.doubleValue.flatMap { $0.isFinite && $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
             let used = raw["used_percentage"]?.doubleValue.flatMap { $0.isFinite && (0...100).contains($0) ? $0 : nil }
@@ -1102,12 +1118,55 @@ public actor OfficialSession: SessionWorker {
             let newResponse = generation.map { $0 > quotaGenerations[key, default: 0] } ?? false
             let measured = !newResponse && previous?.usedPercent == used && previous?.resetsAt == reset && previous?.state == state ? previous!.observedAt : Date()
             let window = QuotaWindow(id: key, usedPercent: used, observedAt: measured, resetsAt: reset, state: state,
-                                     modelFamily: raw["model_family"]?.stringValue)
-            knownQuota[key] = window
-            if let generation { quotaGenerations[key] = max(generation, quotaGenerations[key, default: 0]) }
-            windows.append(window)
+                                     scope: raw["model_family"]?.stringValue.flatMap { QuotaWindow.modelFamilies.contains($0) ? QuotaScope.models([$0]) : nil })
+            note(window, generation: generation, into: &windows, keyed: key)
+        }
+        // The structured form (client 2.1.319): one row per limit, told apart by kind, never by its words.
+        for row in event["rate_limits"]?["limits"]?.arrayValue ?? [] {
+            guard let (id, scope) = Self.limitIdentity(row) else { continue }
+            let used = row["percent"]?.doubleValue.flatMap { $0.isFinite && (0...100).contains($0) ? $0 : nil }
+            let reset = row["resets_at"]?.stringValue.flatMap(Self.isoDate)
+            let previous = knownQuota[id]
+            let newResponse = generation.map { $0 > quotaGenerations[id, default: 0] } ?? false
+            let measured = !newResponse && previous?.usedPercent == used && previous?.resetsAt == reset ? previous!.observedAt : Date()
+            let window = QuotaWindow(id: id, usedPercent: used, observedAt: measured, resetsAt: reset, scope: scope)
+            // Two rows can name one window; the tighter one stands.
+            if let same = windows.first(where: { $0.id == window.id }), (same.usedPercent ?? 0) >= (window.usedPercent ?? 0) { continue }
+            windows.removeAll { $0.id == window.id }
+            note(window, generation: generation, into: &windows, keyed: window.id)
         }
         if !windows.isEmpty { observer?.yield(.quota(windows)) }
+    }
+
+    private func note(_ window: QuotaWindow, generation: Int?, into windows: inout [QuotaWindow], keyed key: String) {
+        knownQuota[key] = window
+        if let generation { quotaGenerations[key] = max(generation, quotaGenerations[key, default: 0]) }
+        windows.append(window)
+    }
+
+    /// Which window a `rate_limits.limits[]` row is: session and weekly_all are the limits every model
+    /// shares, weekly_scoped names a model, and a surface or a kind not known is shown and holds nothing back.
+    static func limitIdentity(_ row: JSONValue) -> (id: String, scope: QuotaScope)? {
+        guard row.objectValue != nil else { return nil }
+        switch row["kind"]?.stringValue {
+        case "session"?: return ("five_hour", .all)
+        case "weekly_all"?: return ("seven_day", .all)
+        case "weekly_scoped"?:
+            if let name = row["scope"]?["model"]?["display_name"]?.stringValue { return QuotaWindow.scoped(name: name) }
+            if let name = row["scope"]?["surface"]?["display_name"]?.stringValue {
+                let slug = QuotaWindow.slug(name)
+                return slug.isEmpty ? nil : ("surface_" + slug, .other)
+            }
+            return nil
+        default:
+            let slug = QuotaWindow.slug([row["kind"]?.stringValue, row["group"]?.stringValue].compactMap { $0 }.joined(separator: "_"))
+            return slug.isEmpty || slug.utf8.count > 96 ? nil : ("limit_" + slug, .other)
+        }
+    }
+    static func isoDate(_ text: String) -> Date? {
+        let plain = ISO8601DateFormatter(), fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return plain.date(from: text) ?? fractional.date(from: text)
     }
 
     /// A refusal's rate-limit info, forwarded to the caller.
@@ -1115,6 +1174,39 @@ public actor OfficialSession: SessionWorker {
         guard !windows.isEmpty else { return }
         for window in windows { knownQuota[window.id] = window }
         observer?.yield(.quota(windows))
+    }
+
+    /// The client's usage-credits screens (UsageCreditsScreen), read from what is drawn. A choice or a
+    /// "requires usage credits" notice is closed with Esc only (never an option, never Return) and the
+    /// request ends as a refusal at the model's weekly limit, which the pool holds on this account for that
+    /// model alone. A reply already running on usage credits goes on, and the window is held for later requests.
+    private func usageCreditsFailure() -> BridgeFailure? {
+        guard let finding = UsageCreditsScreen.look(at: screen.visibleText) else { return nil }
+        let own = model.cliAlias.lowercased()
+        let fallback = QuotaWindow.modelFamilies.contains(own) ? own : QuotaWindow.slug(own)
+        let now = Date()
+        func held(_ family: String) -> QuotaWindow {
+            let id = family == "fable" ? QuotaWindow.overageIncludedID : "seven_day_" + family
+            func upcoming(_ key: String) -> Date? { knownQuota[key]?.resetsAt.flatMap { $0 > now ? $0 : nil } }
+            return QuotaWindow(id: id, usedPercent: 100, observedAt: now, resetsAt: upcoming(id) ?? upcoming("seven_day"), scope: .models([family]))
+        }
+        switch finding {
+        case .spending(let named):
+            let family = named ?? fallback
+            guard creditsSpent.insert(family).inserted else { return nil }
+            Diagnostics.record("session.usage_credits", ["run": runTag, "family": family, "reason": "spending"])
+            let window = held(family).refused()
+            knownQuota[window.id] = window
+            observer?.yield(.quota([window]))
+            return nil
+        case .choice(let named), .required(let named):
+            let family = named ?? fallback
+            var reason = "required"
+            if case .choice = finding { reason = "choice" }
+            Diagnostics.record("session.usage_credits", ["run": runTag, "family": family, "reason": reason])
+            try? transport?.write(Data([0x1B]))
+            return .quotaLimited([held(family)])
+        }
     }
 
     /// The client asks the person at the session window. Pool never answers for them, and the

@@ -86,6 +86,7 @@ final class AppServices {
     private var workspaceClaim: OwnedWorkspace.Claim?
     private var recoveryTask: Task<Void, Never>?
     private var accountCheckTask: Task<Void, Never>?
+    private var runtimeCheckTask: Task<Void, Never>?
     private var lastQuietCheck = Date.distantPast
     /// When each account was last checked because a read failed, so a failing read checks it at most hourly.
     private var failedReadChecks: [UUID: Date] = [:]
@@ -180,6 +181,7 @@ final class AppServices {
             observeAvailability()
             keepRecovering()
             if dependencies.checkAccountsAutomatically { keepCheckingAccounts() }
+            if dependencies.checkRuntimeUpdatesAutomatically { keepCheckingRuntime() }
             await startPoolIfReady()
             if dependencies.installRuntimeAutomatically, !model.snapshot.executableReady, model.runtime.phase == .notInstalled {
                 Task { await self.handle(.installRuntime) }
@@ -216,6 +218,10 @@ final class AppServices {
             switch action {
             case .installRuntime, .updateRuntime: try await installRuntime()
             case .checkRuntimeUpdate: try await checkRuntimeUpdate()
+            case .checkAndUpdateRuntime:
+                // Asked for by the person: a newer client is installed at once, as an automatic look would.
+                try await checkRuntimeUpdate()
+                if model.runtime.phase == .updateAvailable { try await installRuntime() }
             case .installPrivacyModel: try await installPrivacyModel()
             case .previewPrivacy(let text): await previewPrivacy(text)
             case .clearPrivacyPreview:
@@ -590,13 +596,17 @@ final class AppServices {
         await updateQuotaAvailability()
     }
 
+    static let runtimeUpdateInterval: TimeInterval = 4 * 3600
+
     func checkRuntimeUpdateIfNeeded() async {
         await checkPrivacyUpdateIfNeeded()
         guard dependencies.checkRuntimeUpdatesAutomatically, !model.demo, loaded, workspace != nil,
               model.snapshot.executableReady, !model.isWorking, !model.runtime.busy, !runtimeUpdateInFlight else { return }
         let now = dependencies.now()
+        // Claude Code releases new models in minor versions: look again once four hours have passed
+        // since the last attempt, whether it worked or not.
         if let record = runtimeUpdateRecord, record.attemptedAt <= now,
-           Calendar.current.isDate(record.attemptedAt, inSameDayAs: now) { return }
+           now.timeIntervalSince(record.attemptedAt) < Self.runtimeUpdateInterval { return }
         do { try await checkRuntimeUpdate() }
         catch { model.runtime.updateCheckMessage = model.t("Could not check for updates. Try again."); return }
         if dependencies.installRuntimeAutomatically, model.runtime.phase == .updateAvailable { await handle(.updateRuntime) }
@@ -1098,11 +1108,7 @@ final class AppServices {
             var applied = false
             do { try await mutate(later: true) { next in
                 applied = scope.applyObservation(to: &next.accounts) { account in
-                    for window in windows {
-                        if let old = account.windows.first(where: { $0.id == window.id }), old.observedAt > window.observedAt { continue }
-                        account.windows.removeAll { $0.id == window.id }
-                        account.windows.append(window)
-                    }
+                    account.absorb(windows)
                     Self.reconcileQuotaState(&account, observed: windows)
                 }
             }
@@ -1345,14 +1351,7 @@ final class AppServices {
             // Refresh service already owns this observation; avoid feeding it back into itself.
             do { try await mutate { next in
                 scope.applyObservation(to: &next.accounts) { account in
-                    if let snapshotAt = windows.map(\.observedAt).max() {
-                        let returned = Set(windows.map(\.id))
-                        account.windows.removeAll { !returned.contains($0.id) && $0.observedAt <= snapshotAt }
-                    }
-                    for window in windows {
-                        if let old = account.windows.first(where: { $0.id == window.id }), old.observedAt > window.observedAt { continue }
-                        account.windows.removeAll { $0.id == window.id }; account.windows.append(window)
-                    }
+                    account.absorb(windows, replacingSnapshot: true)
                     Self.reconcileQuotaState(&account, observed: windows)
                 }
             } } catch { report(error) }
@@ -1407,8 +1406,8 @@ final class AppServices {
     /// A used-up limit holds the account until it resets; once nothing holds it, it is ready again.
     /// A cooldown Claude stated still in the future keeps it limited.
     static func reconcileQuotaState(_ account: inout PoolAccount, observed: [QuotaWindow]? = nil, now: Date = Date()) {
-        guard [.ready, .limited].contains(account.state), observed?.contains(where: { $0.modelFamily == nil }) ?? true else { return }
-        let exhausted = account.windows.filter { $0.modelFamily == nil && $0.isExhausted(at: now) }
+        guard [.ready, .limited].contains(account.state), observed?.contains(where: \.isGlobal) ?? true else { return }
+        let exhausted = account.windows.filter { $0.isGlobal && $0.isExhausted(at: now) }
         if let back = exhausted.map(\.recoversAt).max() {
             account.state = .limited
             account.cooldownUntil = max(back, account.cooldownUntil ?? back)
@@ -1423,6 +1422,17 @@ final class AppServices {
     /// so a changed plan is read afresh and a revoked sign-in asks to sign in again before a switch
     /// lands on it. Other accounts are checked when chosen or on request, so a large pool costs no
     /// more than a small one.
+    /// While Pool stays open and in the background, the client is looked at again on its own: every
+    /// half hour this asks, and `checkRuntimeUpdateIfNeeded` goes on only once four hours have passed.
+    private func keepCheckingRuntime() {
+        runtimeCheckTask?.cancel()
+        runtimeCheckTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(30 * 60)) } catch { return }
+                await self?.checkRuntimeUpdateIfNeeded()
+            }
+        }
+    }
     private func keepCheckingAccounts() {
         accountCheckTask?.cancel()
         accountCheckTask = Task { [weak self] in
@@ -1469,7 +1479,7 @@ final class AppServices {
                 let now = Date()
                 let next = self.library.accounts.compactMap { account -> Date? in
                     guard account.state == .limited else { return nil }
-                    let holds = account.windows.filter { $0.modelFamily == nil && $0.isExhausted(at: now) }.map(\.recoversAt)
+                    let holds = account.windows.filter { $0.isGlobal && $0.isExhausted(at: now) }.map(\.recoversAt)
                     return (holds + [account.cooldownUntil].compactMap { $0 }).filter { $0 > now }.max() ?? now
                 }.min()
                 if let next, next <= now {
@@ -1601,7 +1611,7 @@ final class AppServices {
         }
         privacyPreviewTask?.cancel(); previewGeneration += 1; model.privacyPreview = .init()
         await privacyDetector?.unload()
-        recoveryTask?.cancel(); accountCheckTask?.cancel()
+        recoveryTask?.cancel(); accountCheckTask?.cancel(); runtimeCheckTask?.cancel()
         // Every run has ended by now, so what is left is a reply saying so; a client that does not
         // read it does not hold the app open.
         await server?.stop(waitingAtMost: 3); listeningPort = nil; pathMonitor?.cancel()

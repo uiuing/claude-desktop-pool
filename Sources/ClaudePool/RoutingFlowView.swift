@@ -114,9 +114,14 @@ struct RoutingFlowView: View {
                 .font(.system(size: 15, weight: .light)).foregroundStyle(lane?.working == true ? PoolPalette.accent : .secondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text(lane.map { model.accountName($0.accountID) } ?? model.t("No conversations"))
-                    .font(.system(size: 10, weight: .medium)).foregroundStyle(color).lineLimit(1).truncationMode(.middle)
+                    .font(.system(size: 10, weight: .medium)).foregroundStyle(color).fixedSize(horizontal: false, vertical: true)
                 if let lane {
-                    AccountUseBadges(model: model, use: lane.conversations > 0 ? AccountUse(conversations: lane.conversations, working: lane.working) : nil)
+                    HStack(spacing: 6) {
+                        AccountUseBadges(model: model, use: lane.conversations > 0 ? AccountUse(conversations: lane.conversations, working: lane.working) : nil)
+                        if let account = model.snapshot.accounts.first(where: { $0.id == lane.accountID }), let brief = model.accountBrief(account) {
+                            Text(brief).font(.system(size: 9)).foregroundStyle(.secondary).monospacedDigit().fixedSize()
+                        }
+                    }
                 }
             }
             Spacer(minLength: 0)
@@ -137,8 +142,8 @@ struct RoutingFlowView: View {
                 .frame(width: 44, height: 44)
                 .background(color.opacity(0.07), in: RoundedRectangle(cornerRadius: 14))
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(color.opacity(0.18), lineWidth: 1))
-            Text(title).font(.system(size: 10, weight: .medium)).lineLimit(1).help(title)
-            Text(detail).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1).help(detail)
+            Text(title).font(.system(size: 10, weight: .medium)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true).help(title)
+            Text(detail).font(.system(size: 9)).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true).help(detail)
         }.frame(width: width).accessibilityElement(children: .combine)
     }
 
@@ -183,7 +188,7 @@ struct RoutingFlowView: View {
                     .help(model.routeReason(decision.reason))
             }
             Text(model.accountName(conversation.accountID)).font(.system(size: 10)).foregroundStyle(.secondary)
-                .lineLimit(1).truncationMode(.middle)
+                .fixedSize(horizontal: false, vertical: true)
                 .id(conversation.accountID)
                 .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .opacity))
         }

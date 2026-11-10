@@ -175,8 +175,8 @@
   "Installing…": "설치 중…",
   "Update Claude Code": "Claude Code 업데이트",
   "Try again": "다시 시도",
-  "Weekly · Opus": "주간 · Opus",
-  "Weekly · Sonnet": "주간 · Sonnet",
+  "Weekly · {0}": "주간 · {0}",
+  "{0} used up": "{0} 소진",
   "Additional limit": "추가 한도",
   "Not applicable": "해당 없음",
   "{0}: not applicable": "{0}: 해당 없음",
@@ -686,5 +686,8 @@
   "Turn off sensitive data redaction?": "민감 정보 마스킹을 끌까요?",
   "New requests go to Claude exactly as written, including any keys, passwords or personal details in them. You can turn redaction on again here at any time.": "이후 새 요청은 작성된 그대로 Claude에 전송되며, 키, 비밀번호, 개인 정보도 바뀌지 않습니다. 여기에서 언제든지 다시 켤 수 있습니다.",
   "Requests go to Claude exactly as written.": "요청이 작성된 그대로 Claude에 전송됩니다.",
-  "Redaction is off": "마스킹이 꺼져 있습니다"
+  "Redaction is off": "마스킹이 꺼져 있습니다",
+  "{0} used up · back {1}": "{0} 소진 · {1} 복구",
+  "{0} 7 days: {1}% left": "{0} 7일: {1}% 남음",
+  "The menu bar shows this plan's limits and its tightest model limit.": "메뉴 막대에는 이 플랜의 한도와 남은 양이 가장 적은 모델 한도가 표시됩니다."
 }

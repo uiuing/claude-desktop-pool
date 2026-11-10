@@ -38,7 +38,7 @@ You have more than one Claude account, and in Claude Desktop:
 - **Shares the quota of all your accounts.** When one runs out, another takes over and the conversation keeps going.
 - **Works everywhere in Desktop.** Chat, Cowork and Code all use it.
 - **Protects your privacy.** Keys, passwords, emails and other private info are hidden on your Mac before anything is sent, and put back in the reply.
-- **Shows what's left.** Every account's quota and reset time, in the menu bar.
+- **Shows what's left.** Every account's quota and reset time in the menu bar, including each model's own weekly limit such as Fable's.
 - **Connects in one click.** No signing out, no setup; disconnect any time.
 - **Uses the official Claude Code** with your own accounts. No API keys.
 

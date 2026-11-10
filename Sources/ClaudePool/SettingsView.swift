@@ -259,7 +259,12 @@ struct RuntimeActionButton: View {
         case .updateAvailable:
             Button(model.t("Update Claude Code")) { model.perform(.updateRuntime) }.controlSize(.small).disabled(model.isWorking)
         case .ready:
-            Text(model.t("Updates automatically")).font(.system(size: 10)).foregroundStyle(.secondary)
+            // Updates come by themselves every few hours; a new model need not wait for the next look.
+            VStack(alignment: .trailing, spacing: 4) {
+                Button(model.t("Check for updates")) { model.perform(.checkAndUpdateRuntime) }
+                    .controlSize(.small).disabled(model.isWorking).accessibilityIdentifier("settings.checkRuntime")
+                Text(model.t("Updates automatically")).font(.system(size: 10)).foregroundStyle(.secondary)
+            }
         case .notInstalled, .failed:
             Button(model.t(model.runtime.phase == .failed ? "Try again" : "Install Claude Code")) { model.perform(.installRuntime) }
                 .controlSize(.small).disabled(model.isWorking)

@@ -110,17 +110,11 @@ struct AccountsPage: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 7) {
                     Circle().fill(model.accountColor(account)).frame(width: 7, height: 7)
-                    Text(model.accountName(account.id)).font(.system(size: 12, weight: .semibold)).lineLimit(1).truncationMode(.middle)
+                    Text(model.accountName(account.id)).font(.system(size: 12, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
                         .help(model.lastQuotaUpdate(account).map { model.t("Last updated {0}", model.exactTime($0)) } ?? model.accountName(account.id))
-                    Text(account.plan.map { model.t($0) } ?? model.t("Plan not reported")).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                    Text(account.plan.map { model.t($0) } ?? model.t("Plan not reported")).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize()
                     AccountUseBadges(model: model, use: model.accountUse[account.id])
                     Spacer(minLength: 6)
-                    // The limits below already say what is left; the header speaks only when the account cannot be used.
-                    let standing = account.standing(at: model.now)
-                    if standing != .usable && standing != .unread {
-                        Text(model.accountStatus(account))
-                            .font(.system(size: 11)).foregroundStyle(model.accountColor(account)).lineLimit(1)
-                    }
                     if signedIn && [.ready, .limited, .needsAttention].contains(account.state) {
                         Button { model.perform(.refreshQuota(account.id)) } label: {
                             if refresh?.busy == true { ProgressView().controlSize(.mini).frame(width: 16) }
@@ -138,6 +132,11 @@ struct AccountsPage: View {
                         Image(systemName: "ellipsis").font(.system(size: 12, weight: .semibold)).frame(width: 18, height: 18)
                     }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                         .accessibilityLabel(model.t("Account actions")).disabled(model.isWorking)
+                }
+                // The limits below already say what is left; this line speaks only when the account cannot be used.
+                if account.standing(at: model.now) != .usable && account.standing(at: model.now) != .unread {
+                    Text(model.accountStatus(account)).font(.system(size: 11)).foregroundStyle(model.accountColor(account))
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 if !signedIn {
                     actionLine(model.t("Sign in to use this account."), button: model.t("Sign in"), prominent: true) { model.perform(.signIn(account.id)) }
@@ -160,8 +159,16 @@ struct AccountsPage: View {
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 if signedIn, !model.displayedWindows(account).isEmpty {
-                    HStack(alignment: .top, spacing: 18) {
-                        ForEach(model.displayedWindows(account)) { window in accountQuota(account, id: window.id) }
+                    // Two limits sit side by side; with model limits too they go two to a row so no title is cut.
+                    let windows = model.displayedWindows(account)
+                    if windows.count <= 2 {
+                        HStack(alignment: .top, spacing: 18) {
+                            ForEach(windows) { window in accountQuota(account, id: window.id) }
+                        }
+                    } else {
+                        LazyVGrid(columns: [GridItem(.flexible(), spacing: 18, alignment: .top), GridItem(.flexible(), alignment: .top)], alignment: .leading, spacing: 10) {
+                            ForEach(windows) { window in accountQuota(account, id: window.id) }
+                        }
                     }
                 }
             }
@@ -177,17 +184,8 @@ struct AccountsPage: View {
     }
     private func accountQuota(_ account: PoolAccount, id: String) -> some View {
         let remaining = model.remaining(account, window: id)
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(model.quotaTitle(id)).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
-                Text(model.shortReset(account, window: id)).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
-                Spacer(minLength: 4)
-                Text(remaining.map { model.t("{0}% left", "\(Int($0.rounded()))") } ?? model.quotaText(account, window: id))
-                    .font(.system(size: 12, weight: .medium)).monospacedDigit().foregroundStyle(PoolPalette.quota(remaining))
-                    .poolNumeric(remaining)
-            }
-            PoolGauge(value: remaining, height: 4)
-        }.frame(maxWidth: .infinity)
+        return QuotaLine(title: model.quotaTitle(id), reset: model.shortReset(account, window: id),
+                         valueText: remaining.map { model.t("{0}% left", "\(Int($0.rounded()))") } ?? model.quotaText(account, window: id), value: remaining)
             .help(model.refusedNote(account, window: id) ?? account.windows.first(where: { $0.id == id })?.resetsAt.map { model.t("Resets {0}", model.exactTime($0)) + " · " + model.countdown($0) } ?? model.resetText(account, window: id))
             .accessibilityElement(children: .combine)
     }

@@ -405,7 +405,58 @@ final class GatewayIntegrationTests: XCTestCase {
         let order = await factory.accountOrder
         XCTAssertEqual(order, [a.id, b.id, a.id, b.id])
         XCTAssertNil(recorder.cooldowns[a.id])
-        XCTAssertTrue(recorder.quotaUpdates.flatMap { $0 }.contains(limit))
+        // stored as a refusal held until the window's reset
+        XCTAssertEqual(recorder.quotaUpdates.flatMap { $0 }.first { $0.id == limit.id }?.refusedUntil, limit.resetsAt)
+        _ = await coordinator.shutdown()
+    }
+
+    /// The Fable limit (`seven_day_overage_included`) used up stops Fable on that account for a week, not the account.
+    func testAFableRefusalHoldsOnlyFableOnThatAccountUntilItsReset() async throws {
+        let a = makeAccount("Account A", offset: 0), b = makeAccount("Account B", offset: 1)
+        let reset = Date().addingTimeInterval(86400)
+        let limit = QuotaWindow(id: "seven_day_overage_included", usedPercent: 100, observedAt: Date(), resetsAt: reset)
+        let source = ScriptedWorker(steps: [.failure([], .quotaLimited([limit]))])
+        let sonnet = ScriptedWorker(steps: [.reply([.text("Sonnet still works on this account."), .finished(.endTurn)])])
+        let backup = ScriptedWorker(steps: [.reply([.text("Fable continued on the backup."), .finished(.endTurn)])])
+        let laterBackup = ScriptedWorker(steps: [.reply([.text("Fable stays on the backup."), .finished(.endTurn)])])
+        let factory = WorkerFactory(queues: [a.id: [source, sonnet], b.id: [backup, laterBackup]])
+        let recorder = RouteRecorder()
+        let coordinator = makeCoordinator(accounts: [a, b], factory: factory, recorder: recorder)
+        var fableRequest = firstRequest(); fableRequest.model = "claude-fable-5"
+        let first = try await collect(coordinator, route: route(fableRequest, explicitID: "fable-limit"))
+        XCTAssertEqual(first, [.text("Fable continued on the backup."), .finished(.endTurn)])
+        XCTAssertNil(recorder.cooldowns[a.id], "A model-scoped refusal sets no account cooldown")
+        let held = recorder.quotaUpdates.flatMap { $0 }.first { $0.id == "seven_day_overage_included" }
+        XCTAssertEqual(held?.refusedUntil, reset)
+        let other = try await collect(coordinator, route: route(firstRequest("Use Sonnet."), explicitID: "sonnet-available"))
+        XCTAssertEqual(other, [.text("Sonnet still works on this account."), .finished(.endTurn)])
+        let later = try await collect(coordinator, route: route(fableRequest, explicitID: "fable-later"))
+        XCTAssertEqual(later, [.text("Fable stays on the backup."), .finished(.endTurn)])
+        let order = await factory.accountOrder
+        XCTAssertEqual(order, [a.id, b.id, a.id, b.id])
+        _ = await coordinator.shutdown()
+    }
+
+    /// A limit Pool cannot place (`overage`) that refused a request still holds the account until its
+    /// reset and hands the request on, though a mere reading of it never would.
+    func testARefusalAtAnUnplacedLimitHoldsTheAccountAndHandsOff() async throws {
+        let a = makeAccount("Account A", offset: 0), b = makeAccount("Account B", offset: 1)
+        let reset = Date().addingTimeInterval(3600)
+        let limit = QuotaWindow(id: "overage", usedPercent: 100, observedAt: Date(), resetsAt: reset)
+        XCTAssertEqual(limit.scope, .other)
+        let source = ScriptedWorker(steps: [.failure([], .quotaLimited([limit]))])
+        let backup = ScriptedWorker(steps: [.reply([.text("Continued on the backup."), .finished(.endTurn)])])
+        let laterBackup = ScriptedWorker(steps: [.reply([.text("Still on the backup."), .finished(.endTurn)])])
+        let factory = WorkerFactory(queues: [a.id: [source], b.id: [backup, laterBackup]])
+        let recorder = RouteRecorder()
+        let coordinator = makeCoordinator(accounts: [a, b], factory: factory, recorder: recorder)
+        let first = try await collect(coordinator, route: route(firstRequest(), explicitID: "unplaced-limit"))
+        XCTAssertEqual(first, [.text("Continued on the backup."), .finished(.endTurn)])
+        XCTAssertEqual(recorder.cooldowns[a.id], reset)
+        let later = try await collect(coordinator, route: route(firstRequest("Again."), explicitID: "unplaced-later"))
+        XCTAssertEqual(later, [.text("Still on the backup."), .finished(.endTurn)])
+        let order = await factory.accountOrder
+        XCTAssertEqual(order, [a.id, b.id, b.id])
         _ = await coordinator.shutdown()
     }
 

@@ -90,7 +90,7 @@ public enum WarmUpPlanner {
     /// Whether `window` is a limit a warm-up starts that is not running now: its reset passed a
     /// moment ago or longer, or it reads 0% used with no reset or with its whole span ahead.
     public static func idle(_ window: QuotaWindow, at now: Date) -> Bool {
-        guard limits.contains(window.id), window.modelFamily == nil, window.state == .reported, window.observedAt <= now else { return false }
+        guard limits.contains(window.id), window.isGlobal, window.state == .reported, window.observedAt <= now else { return false }
         if let reset = window.resetsAt {
             if reset <= now.addingTimeInterval(-settle) { return true }
             return window.usedPercent == 0 && reset.timeIntervalSince(now) >= window.span - fresh

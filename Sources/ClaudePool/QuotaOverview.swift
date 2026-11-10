@@ -30,35 +30,29 @@ struct QuotaOverview: View {
     private func planRow(_ plan: PlanQuota) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(plan.title).font(.system(size: 12, weight: .semibold)).lineLimit(1).truncationMode(.middle)
+                Text(plan.title).font(.system(size: 12, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
                 Text(model.t("{0}/{1} usable", "\(plan.usableCount)", "\(plan.accountIDs.count)")).font(.system(size: 11)).foregroundStyle(.secondary)
                     .monospacedDigit()
                 Spacer(minLength: 4)
+                Group {
                 if let back = plan.nextRecovery, plan.usableCount < plan.accountIDs.count {
                     Text(model.t("Next back {0}", model.clockTime(back))).font(.system(size: 11)).foregroundStyle(PoolPalette.amber)
                         .help(model.exactTime(back))
                 }
+                }.multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true)
             }
             HStack(alignment: .top, spacing: 18) {
-                ForEach(plan.windows) { group in quotaCell(group) }
+                ForEach(plan.windows) { group in quotaCell(group, stacked: plan.windows.count > 2) }
             }
         }
     }
-    private func quotaCell(_ group: QuotaPoolGroup) -> some View {
+    /// Title, what is left and a bar; the next reset sits beside the title when it fits, under the bar when not.
+    private func quotaCell(_ group: QuotaPoolGroup, stacked: Bool) -> some View {
         Button { details = group } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(model.quotaTitle(group.windowID)).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
-                    if let reset = group.nextResetAt {
-                        Text(model.t("Resets {0}", model.clockTime(reset))).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
-                    }
-                    Spacer(minLength: 4)
-                    Text(group.averageRemainingPercent.map { model.t("{0}% left", "\(Int($0.rounded()))") } ?? model.t("Not read"))
-                        .font(.system(size: 12, weight: .medium)).monospacedDigit().foregroundStyle(PoolPalette.quota(group.averageRemainingPercent))
-                        .poolNumeric(group.averageRemainingPercent)
-                }
-                PoolGauge(value: group.averageRemainingPercent, height: 4)
-            }.frame(maxWidth: .infinity).contentShape(Rectangle())
+            QuotaLine(title: model.quotaTitle(group.windowID), reset: group.nextResetAt.map { model.t("Resets {0}", model.clockTime($0)) },
+                      valueText: group.averageRemainingPercent.map { model.t("{0}% left", "\(Int($0.rounded()))") } ?? model.t("Not read"),
+                      value: group.averageRemainingPercent, resetBelow: stacked)
+                .contentShape(Rectangle())
         }.buttonStyle(.plain).help(model.t("Quota details")).accessibilityElement(children: .combine)
     }
     private func quotaDetails(_ group: QuotaPoolGroup) -> some View {
@@ -112,5 +106,42 @@ private struct RefreshAllButton: View {
             .onHover { hovering = $0 }.poolAnimation(PoolMotion.quick, value: hovering)
             .disabled(model.isWorking || model.snapshot.accounts.isEmpty || !model.snapshot.executableReady)
             .accessibilityLabel(model.t("Refresh all")).accessibilityIdentifier("quota.refreshAll")
+    }
+}
+
+/// One limit: its title, what is left, a bar, and when it resets. The reset goes beside the title when
+/// the row has room and under the bar when it does not (or when asked), so no text is ever cut.
+struct QuotaLine: View {
+    let title: String
+    let reset: String?
+    let valueText: String
+    let value: Double?
+    var resetBelow = false
+    var barHeight: CGFloat = 4
+    var valueWeight: Font.Weight = .medium
+    var body: some View {
+        let figure = Text(valueText).font(.system(size: 12, weight: valueWeight)).monospacedDigit().foregroundStyle(PoolPalette.quota(value))
+            .lineLimit(1).fixedSize().poolNumeric(value)
+        let name = Text(title).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).layoutPriority(1)
+        let when = reset.map { Text($0).font(.system(size: 10)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true) }
+        ViewThatFits(in: .horizontal) {
+            if !resetBelow, let when {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) { name; when; Spacer(minLength: 4); figure }
+                    PoolGauge(value: value, height: barHeight)
+                }
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) { name; Spacer(minLength: 4); figure }
+                PoolGauge(value: value, height: barHeight)
+                if let when { when }
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                name
+                figure
+                PoolGauge(value: value, height: barHeight)
+                if let when { when }
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }

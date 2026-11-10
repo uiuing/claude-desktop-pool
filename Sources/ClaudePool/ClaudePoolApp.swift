@@ -72,6 +72,7 @@ private struct PoolStatusLabel: View {
         let figures = model.menuBarFigures
         Image(nsImage: MenuBarFigure.image(figures))
             .accessibilityLabel(figures.map { "Claude Pool, " + MenuBarFigure.accessibility($0, model: model) } ?? "Claude Pool")
+            .help(figures.map { MenuBarFigure.accessibility($0, model: model) } ?? "")
             // Limits renew at their reset while the menu is closed too; a coarse clock keeps the figures current.
             .task { await model.updateClock(every: 20) }
             .onAppear {

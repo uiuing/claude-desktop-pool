@@ -173,7 +173,7 @@ public struct PoolModel: Equatable, Sendable {
         PoolModel(id: "claude-sonnet", name: "Sonnet", cliAlias: "sonnet", listedID: "claude-sonnet-5-5", listedName: "Sonnet 5.5"),
         PoolModel(id: "claude-opus", name: "Opus", cliAlias: "opus", listedID: "claude-opus-5-5", listedName: "Opus 5.5"),
         PoolModel(id: "claude-haiku", name: "Haiku", cliAlias: "haiku", listedID: "claude-haiku-5-5", listedName: "Haiku 5.5"),
-        PoolModel(id: "claude-fable", name: "Fable", cliAlias: "fable", listedID: "claude-fable-5-1", listedName: "Fable 5.1")]
+        PoolModel(id: "claude-fable", name: "Fable", cliAlias: "fable", listedID: "claude-fable-5-2", listedName: "Fable 5.2")]
     /// The pool's models, each listed as the official client last reported the model its alias runs.
     public static func listing(_ reported: [ModelIdentity]) -> [PoolModel] {
         defaults.map { model in

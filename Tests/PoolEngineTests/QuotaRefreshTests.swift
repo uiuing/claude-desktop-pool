@@ -35,10 +35,10 @@ final class QuotaRefreshTests: XCTestCase {
 
     func testLoadedNativePanelPreservesDynamicWindowsAndResets() throws {
         let windows = try NativeUsageParser.parse(panel, plan: "Max 5x", observedAt: now)
-        XCTAssertEqual(windows.map(\.id), ["five_hour", "seven_day", "seven_day_fable"])
+        XCTAssertEqual(windows.map(\.id), ["five_hour", "seven_day", "seven_day_overage_included"])
         XCTAssertEqual(windows.map(\.usedPercent), [12, 9, 3])
         XCTAssertEqual(windows[0].resetsAt, now.addingTimeInterval(3 * 3600))
-        XCTAssertEqual(windows[2].modelFamily, "fable")
+        XCTAssertEqual(windows[2].scope, .models(["fable"]))
     }
     func testVerifiedUltraSessionAbsenceIsNotZeroQuota() throws {
         let text = "Settings Status Config Usage Stats\nCurrent week (all models) 17% used\nResets Nov 7 at 2pm (UTC)"
@@ -99,21 +99,47 @@ final class QuotaRefreshTests: XCTestCase {
         let text = "Settings Usage\nCurrent week (all models) 4% used\nCurrent week (Sonnet only) 100% used"
         let windows = try NativeUsageParser.parse(text, plan: "Pro", observedAt: now)
         XCTAssertEqual(windows[1].id, "seven_day_sonnet")
-        XCTAssertEqual(windows[1].modelFamily, "sonnet")
+        XCTAssertEqual(windows[1].scope, .models(["sonnet"]))
     }
-    func testUnknownWeeklyHeadingCannotBypassAnExhaustedAccountConstraint() throws {
-        for heading in ["Claude Code", "Sonnet and Opus"] {
+    /// A heading Pool cannot tie to one model family is shown and holds nothing back (design 2.1).
+    func testUnknownWeeklyHeadingIsShownButHoldsNothingBack() throws {
+        for heading in ["Claude Code", "Sonnet and Opus", "Opus and Sonnet"] {
             let text = "Settings Usage\nCurrent week (all models) 4% used\nCurrent week (\(heading)) 100% used\nResets Nov 7 at 2pm (UTC)"
             let windows = try NativeUsageParser.parse(text, plan: "Pro", observedAt: now)
             XCTAssertEqual(windows.count, 2)
-            XCTAssertNil(windows[1].modelFamily)
+            XCTAssertEqual(windows[1].scope, .other)
             XCTAssertEqual(windows[1].usedPercent, 100)
-            let account = PoolAccount(email: "a•••@gmail.com", plan: "Pro", state: .ready, windows: windows)
+            let account = PoolAccount(email: "user@example.com", plan: "Pro", state: .ready, windows: windows)
+            XCTAssertEqual(account.effectiveState(at: now), .ready)
+            XCTAssertFalse(account.isWeekUsedUp(at: now))
             for model in PoolModel.defaults {
-                XCTAssertTrue(windows[1].applies(to: model.cliAlias))
-                XCTAssertTrue(PoolRouting.candidates([account], model: model.cliAlias, now: now).isEmpty)
+                XCTAssertFalse(windows[1].applies(to: model.cliAlias))
+                XCTAssertFalse(PoolRouting.candidates([account], model: model.cliAlias, now: now).isEmpty)
             }
         }
+    }
+    func testPanelNamesOfOneModelFamilyAreScopedToIt() throws {
+        let cases: [(String, String, Set<String>)] = [
+            ("Fable", "seven_day_overage_included", ["fable"]), ("Fable 5", "seven_day_overage_included", ["fable"]),
+            ("Fable 5.1", "seven_day_overage_included", ["fable"]), ("Sonnet only", "seven_day_sonnet", ["sonnet"]),
+            ("Opus 4.1 only", "seven_day_opus", ["opus"])]
+        for (heading, id, models) in cases {
+            let text = "Settings Usage\nCurrent week (all models) 4% used\nCurrent week (\(heading)) 100% used\nResets Nov 7 at 2pm (UTC)"
+            let windows = try NativeUsageParser.parse(text, plan: "Pro", observedAt: now)
+            XCTAssertEqual(windows[1].id, id, heading)
+            XCTAssertEqual(windows[1].scope, .models(models), heading)
+        }
+    }
+    func testAnExhaustedFablePanelRowBlocksOnlyFableRequests() throws {
+        let text = "Settings Usage\nCurrent session 5% used\nCurrent week (all models) 9% used\nResets Nov 7 at 2pm (UTC)\nCurrent week (Fable 5.1) 100% used\nResets Nov 7 at 2pm (UTC)"
+        let windows = try NativeUsageParser.parse(text, plan: "Pro", observedAt: now)
+        XCTAssertEqual(windows.last?.id, "seven_day_overage_included")
+        let account = PoolAccount(email: "user@example.com", plan: "Pro", state: .ready, windows: windows)
+        XCTAssertTrue(PoolRouting.candidates([account], model: "claude-fable-5", now: now).isEmpty)
+        for model in ["claude-sonnet-5", "claude-opus-5"] {
+            XCTAssertFalse(PoolRouting.candidates([account], model: model, now: now).isEmpty)
+        }
+        XCTAssertEqual(account.effectiveState(at: now), .ready)
     }
     /// A client that lost its sign-in (11-06) shows API billing and a panel of costs without limits.
     func testASignedOutPanelAsksToSignInInsteadOfLoadingUntilTimeout() {

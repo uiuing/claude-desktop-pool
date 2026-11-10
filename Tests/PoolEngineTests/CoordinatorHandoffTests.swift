@@ -228,6 +228,28 @@ final class CoordinatorHandoffTests: XCTestCase {
         }
     }
 
+    /// A conversation that cannot be typed into Claude Code fails the same way on every new run.
+    /// The client asks again after a 502, so the second such failure in a row is a 400 the person
+    /// sees, not one more replay of the whole conversation; a turn that goes through starts over.
+    func testATypingFailureTwiceInARowIsShownInsteadOfAskedAgain() async throws {
+        let accounts = accounts()
+        func failing() -> HandoffWorker { HandoffWorker(steps: [.failure([], .compatibility)]) }
+        let factory = HandoffFactory(queues: [
+            accounts[0].id: [failing(), failing(), HandoffWorker(steps: [.reply([.text("Typed."), .finished(.endTurn)])]), failing()],
+            accounts[1].id: [failing(), failing(), HandoffWorker(steps: [.reply([.text("Typed."), .finished(.endTurn)])]), failing()]
+        ])
+        let coordinator = PoolCoordinator(accounts: accounts, factory: { account, _ in try await factory.make(account.id) })
+        do { _ = try await collect(coordinator, request()); XCTFail("The first typing failure was answered.") }
+        catch { XCTAssertEqual(error as? BridgeFailure, .compatibility) }
+        do { _ = try await collect(coordinator, request()); XCTFail("The second typing failure was answered.") }
+        catch { guard case BridgeFailure.unsupported = error else { return XCTFail("Expected a failure the client shows, got \(error).") } }
+        let typed = try await collect(coordinator, request())
+        XCTAssertEqual(typed.first, .text("Typed."))
+        do { _ = try await collect(coordinator, request()); XCTFail("A later typing failure was answered.") }
+        catch { XCTAssertEqual(error as? BridgeFailure, .compatibility) }
+        _ = await coordinator.shutdown()
+    }
+
     func testFailureBeforeResultAcceptanceDoesNotHandoff() async throws {
         let accounts = accounts()
         let first = HandoffWorker(steps: [.reply([.toolUse(call), .finished(.toolUse)]), .reject(limit)])

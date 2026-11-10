@@ -61,10 +61,10 @@ final class PresentationTests: XCTestCase {
         XCTAssertEqual(model.menuBarPlan?.id, "plan:Max 5x")
         // The 5-hour limit over the weekly one: what the plan's accounts have left on average. One
         // account's 5-hour limit came back at its reset and counts as full.
-        XCTAssertEqual(model.menuBarFigures, MenuBarFigures(session: 79, week: 70))
+        XCTAssertEqual([model.menuBarFigures?.session, model.menuBarFigures?.week], [79, 70])
         model.perform(.menuBarPlan("plan:Pro"))
         XCTAssertEqual(model.menuBarPlan?.id, "plan:Pro")
-        XCTAssertEqual(model.menuBarFigures, MenuBarFigures(session: 0, week: 39), "A plan at its 5-hour limit shows none left there, and its week")
+        XCTAssertEqual([model.menuBarFigures?.session, model.menuBarFigures?.week], [0, 39], "A plan at its 5-hour limit shows none left there, and its week")
     }
 
     func testWeeklyExhaustionIsExplainedAndCountedUntilReset() {
@@ -75,7 +75,7 @@ final class PresentationTests: XCTestCase {
         XCTAssertFalse(model.readyAccounts.contains { $0.id == account.id })
         XCTAssertEqual(account.standing(at: model.now), .weekUsed)
         XCTAssertTrue(model.accountStatus(account).hasPrefix("Week used up"), model.accountStatus(account))
-        XCTAssertEqual(model.menuBarFigures, MenuBarFigures(session: 29, week: 39), "The account whose week is used up still counts, with none of its week left and so none of its 5 hours")
+        XCTAssertEqual([model.menuBarFigures?.session, model.menuBarFigures?.week], [29, 39], "The account whose week is used up still counts, with none of its week left and so none of its 5 hours")
         let plan = model.menuBarPlan!
         XCTAssertEqual(plan.limitedCount, 1)
         XCTAssertEqual(plan.usableCount + plan.limitedCount + plan.unreadCount + plan.unavailableCount, plan.accountIDs.count,
@@ -211,11 +211,34 @@ final class PresentationTests: XCTestCase {
         XCTAssertNil(model.terminal)
     }
 
+    func testModelLimitsAreNamedSummarisedAndMarked() {
+        let model = PoolAppModel.demoModel()
+        XCTAssertEqual(model.quotaTitle(QuotaWindow.overageIncludedID), "Weekly · Fable")
+        XCTAssertEqual(model.quotaTitle("seven_day_opus"), "Weekly · Opus")
+        XCTAssertEqual(model.quotaTitle("seven_day_cowork"), "Additional limit")
+        XCTAssertEqual(model.limitShortName(QuotaWindow.overageIncludedID), "F")
+        XCTAssertEqual(model.limitShortName("seven_day_sonnet"), "S")
+        let plan = model.menuBarPlan!
+        XCTAssertEqual(plan.id, "plan:Max 5x")
+        XCTAssertEqual(model.modelLimitsText(plan), "Fable 72%", "The account whose panel was read without a Fable row is left out")
+        XCTAssertEqual(model.menuBarFigures?.model, "Fable")
+        XCTAssertEqual(model.menuBarFigures?.modelPercent, 72)
+        let index = model.snapshot.accounts.firstIndex { $0.id == model.snapshot.accounts[1].id }!
+        let fable = model.snapshot.accounts[index].windows.firstIndex { $0.id == QuotaWindow.overageIncludedID }!
+        model.snapshot.accounts[index].windows[fable].usedPercent = 100
+        // A used-up model shows as none left on the menu bar's lower line.
+        XCTAssertEqual(model.menuBarFigures?.modelPercent, 0)
+        let tight = model.tightestModelLimit(model.snapshot.accounts[index])
+        XCTAssertEqual(tight?.window.modelName, "Fable")
+        XCTAssertEqual(tight?.remaining, 0)
+        XCTAssertNil(model.tightestModelLimit(model.snapshot.accounts[3]))
+    }
+
     func testWeeklyOnlyAccountDoesNotGetInventedSessionQuota() {
         let model = PoolAppModel.demoModel()
         let account = model.snapshot.accounts[0]
         XCTAssertEqual(account.plan, "Ultra")
-        XCTAssertEqual(model.displayedWindows(account).map(\.id), ["seven_day"])
+        XCTAssertEqual(model.displayedWindows(account).map(\.id), ["seven_day", QuotaWindow.overageIncludedID], "The week, then its Fable limit; no 5-hour limit is invented")
         XCTAssertFalse(model.quotaSummary.groups.contains { $0.plan == "Ultra" && $0.windowID == "five_hour" })
         XCTAssertEqual(model.accountName(account.id), account.email)
     }
@@ -431,5 +454,25 @@ final class PresentationTests: XCTestCase {
         model.perform(.clearPrivacyPreview)
         XCTAssertEqual(model.privacyPreview, .init())
         XCTAssertEqual(model.privacy.phase, .ready)
+    }
+
+    // MARK: Menu bar figures
+
+    func testTheMenuBarShowsFiveHoursOverTheWeekWithTheModelLimitBeside() {
+        let model = PoolAppModel.demoModel()
+        let all = MenuBarFigures(session: 79, week: 70, model: "Fable", modelPercent: 72).layout
+        XCTAssertEqual(all.stacked, ["79%", "70%"]); XCTAssertEqual(all.beside, "F72%")
+        let used = MenuBarFigures(session: 79, week: 70, model: "Fable", modelPercent: 0).layout
+        XCTAssertEqual(used.beside, "F0%")
+        // Without a model limit: 5 hours over the week, nothing beside.
+        let plain = MenuBarFigures(session: 79, week: 70).layout
+        XCTAssertEqual(plain.stacked, ["79%", "70%"]); XCTAssertNil(plain.beside)
+        // Without a 5-hour limit (Ultra): the week, the model limit beside it.
+        let ultra = MenuBarFigures(session: nil, week: 64, model: "Fable", modelPercent: 90).layout
+        XCTAssertEqual(ultra.stacked, ["64%"]); XCTAssertEqual(ultra.beside, "F90%")
+        let figures = MenuBarFigures(session: 79, week: 70, model: "Fable", modelPercent: 12)
+        XCTAssertEqual(MenuBarFigure.accessibility(figures, model: model), "5 hours: 79% left, 7 days: 70% left, Fable 7 days: 12% left")
+        let zh = PoolAppModel.demoModel(language: "zh-Hans")
+        XCTAssertEqual(MenuBarFigure.accessibility(figures, model: zh), "5 小时：剩余 79%, 7 天：剩余 70%, Fable 7 天：剩余 12%")
     }
 }

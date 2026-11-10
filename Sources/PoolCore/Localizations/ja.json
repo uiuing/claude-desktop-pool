@@ -175,8 +175,8 @@
   "Installing…": "インストール中…",
   "Update Claude Code": "Claude Code をアップデート",
   "Try again": "再試行",
-  "Weekly · Opus": "週間 · Opus",
-  "Weekly · Sonnet": "週間 · Sonnet",
+  "Weekly · {0}": "週間 · {0}",
+  "{0} used up": "{0} は上限に達しました",
   "Additional limit": "追加の上限",
   "Not applicable": "該当なし",
   "{0}: not applicable": "{0}：該当なし",
@@ -686,5 +686,8 @@
   "Turn off sensitive data redaction?": "機密データのマスキングをオフにしますか？",
   "New requests go to Claude exactly as written, including any keys, passwords or personal details in them. You can turn redaction on again here at any time.": "以降の新しいリクエストは書かれたまま Claude に送られ、キー、パスワード、個人情報も置き換えられません。ここでいつでもオンに戻せます。",
   "Requests go to Claude exactly as written.": "リクエストは書かれたまま Claude に送られます。",
-  "Redaction is off": "マスキングはオフです"
+  "Redaction is off": "マスキングはオフです",
+  "{0} used up · back {1}": "{0} を使い切り · {1} に回復",
+  "{0} 7 days: {1}% left": "{0} 7 日間：残り {1}%",
+  "The menu bar shows this plan's limits and its tightest model limit.": "メニューバーには、このプランの上限と、残りが最も少ないモデルの上限を表示します。"
 }

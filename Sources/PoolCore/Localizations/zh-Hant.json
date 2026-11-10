@@ -175,8 +175,8 @@
   "Installing…": "安裝中…",
   "Update Claude Code": "更新 Claude Code",
   "Try again": "再試一次",
-  "Weekly · Opus": "每週額度 · Opus",
-  "Weekly · Sonnet": "每週額度 · Sonnet",
+  "Weekly · {0}": "每週額度 · {0}",
+  "{0} used up": "{0} 已用完",
   "Additional limit": "其他額度",
   "Not applicable": "不適用",
   "{0}: not applicable": "{0}：不適用",
@@ -686,5 +686,8 @@
   "Turn off sensitive data redaction?": "關閉敏感資訊遮蔽？",
   "New requests go to Claude exactly as written, including any keys, passwords or personal details in them. You can turn redaction on again here at any time.": "之後的新請求會以原文傳給 Claude，其中的金鑰、密碼和個人資訊都不會再被替換。你可以隨時在這裡重新開啟。",
   "Requests go to Claude exactly as written.": "請求會以原文傳給 Claude。",
-  "Redaction is off": "遮蔽已關閉"
+  "Redaction is off": "遮蔽已關閉",
+  "{0} used up · back {1}": "{0} 已用完 · {1} 恢復",
+  "{0} 7 days: {1}% left": "{0} 7 天：剩餘 {1}%",
+  "The menu bar shows this plan's limits and its tightest model limit.": "選單列顯示這個方案的額度和最緊的型號額度。"
 }

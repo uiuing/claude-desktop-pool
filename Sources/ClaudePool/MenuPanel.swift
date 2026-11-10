@@ -122,25 +122,34 @@ struct MenuPanel: View {
                     Picker(model.t("Plan"), selection: Binding(get: { plan.id }, set: { model.perform(.menuBarPlan($0)) })) {
                         ForEach(plans) { Text($0.title).tag($0.id) }
                     }.pickerStyle(.segmented).labelsHidden().controlSize(.small).frame(maxWidth: .infinity).accessibilityIdentifier("menu.plan")
+                        .help(model.t("The menu bar shows this plan's limits and its tightest model limit."))
                 }
                 HStack(alignment: .firstTextBaseline) {
                     Text(model.t("All {0} accounts", "\(plan.accountIDs.count)")).font(.system(size: 12, weight: .medium))
                     Spacer()
                     Text(model.planBreakdown(plan))
-                        .font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+                        .font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit().multilineTextAlignment(.trailing)
+                        .fixedSize(horizontal: false, vertical: true)
                         .help(model.t("Every account counts in these figures. Accounts that cannot be used are not read by themselves until they are fixed."))
                 }
-                let shown = [plan.session, plan.week].compactMap { $0 }
-                HStack(alignment: .top, spacing: 14) {
-                    ForEach(shown.isEmpty ? Array(plan.windows.prefix(2)) : shown) { limitColumn($0) }
+                // The 5-hour and weekly limits, then each model's weekly limit, in one two-column grid.
+                let shown = ([plan.session, plan.week].compactMap { $0 }).isEmpty ? Array(plan.windows.prefix(2)) : [plan.session, plan.week].compactMap { $0 }
+                let cells = shown + plan.modelLimits
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(Array(stride(from: 0, to: cells.count, by: 2)), id: \.self) { start in
+                        HStack(alignment: .top, spacing: 14) {
+                            limitColumn(cells[start])
+                            if start + 1 < cells.count { limitColumn(cells[start + 1]) } else { Color.clear.frame(maxWidth: .infinity, maxHeight: 1) }
+                        }
+                    }
                 }
                 // One short line each, so neither is cut; the process count is the dashboard's detail.
                 VStack(alignment: .leading, spacing: 4) {
                     Text(model.useSummaryText)
                         .help(model.runsInUseText + " · " + model.runsBreakdownText).accessibilityIdentifier("menu.runsInUse")
                     Text(model.newConversationText).foregroundStyle(model.newConversationAccount == nil ? PoolPalette.amber : .secondary)
-                        .truncationMode(.middle).accessibilityIdentifier("menu.next")
-                }.font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                        .accessibilityIdentifier("menu.next")
+                }.font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }.padding(12).background(PoolPalette.panelCard, in: RoundedRectangle(cornerRadius: 10))
         } else {
             Text(model.t(model.isReadingQuota ? "Reading quota…" : "Quota appears when Claude reports it."))
@@ -153,14 +162,14 @@ struct MenuPanel: View {
         let value = group.averageRemainingPercent
         return VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(model.limitName(group.windowID)).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                Text(model.limitName(group.windowID)).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 2)
                 Text(value.map { model.t("{0}% left", "\(Int($0.rounded()))") } ?? model.t("Not read"))
-                    .font(.system(size: 12, weight: .semibold)).monospacedDigit().lineLimit(1)
+                    .font(.system(size: 12, weight: .semibold)).monospacedDigit().lineLimit(1).fixedSize()
                     .foregroundStyle(PoolPalette.quota(value)).poolNumeric(value)
             }
             PoolGauge(value: value, height: 5)
-            Text(resetLine(group)).font(.system(size: 10)).foregroundStyle(.tertiary).monospacedDigit().lineLimit(1)
+            Text(resetLine(group)).font(.system(size: 10)).foregroundStyle(.tertiary).monospacedDigit().fixedSize(horizontal: false, vertical: true)
         }.frame(maxWidth: .infinity, alignment: .leading).accessibilityElement(children: .combine)
             .help(group.nextResetAt.map { model.t("Resets {0}", model.exactTime($0)) } ?? "")
     }
@@ -224,15 +233,17 @@ struct MenuAccountCard: View {
     var use: AccountUse?
     var body: some View {
         let standing = account.standing(at: model.now)
-        let windows = model.displayedWindows(account).filter { $0.modelFamily == nil }.prefix(2).map(\.id)
+        let windows = model.displayedWindows(account).filter { $0.isGlobal }.prefix(2).map(\.id)
         // An unread account keeps the rings' place, so its card does not grow when the first reading arrives.
         let limits = windows.isEmpty ? ["five_hour", "seven_day"] : Array(windows)
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 5) {
-                    Text(model.accountName(account.id)).font(.system(size: 12, weight: .medium)).lineLimit(1).truncationMode(.middle)
-                    if showsPlan, let plan = account.plan { chip(model.t(plan), color: .secondary) }
-                    AccountUseBadges(model: model, use: use)
+                Text(model.accountName(account.id)).font(.system(size: 12, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+                if (showsPlan && account.plan != nil) || (use?.conversations ?? 0) > 0 {
+                    HStack(spacing: 5) {
+                        if showsPlan, let plan = account.plan { chip(model.t(plan), color: .secondary) }
+                        AccountUseBadges(model: model, use: use)
+                    }
                 }
                 statusLine(standing)
             }
@@ -242,13 +253,20 @@ struct MenuAccountCard: View {
                     QuotaRing(value: standing == .unavailable ? nil : model.remaining(account, window: id), label: model.limitShortName(id))
                         .help(model.refusedNote(account, window: id) ?? "")
                 }
+                // The model limit with the least left, smaller than the two that apply to every model.
+                if let tight = model.tightestModelLimit(account) {
+                    QuotaRing(value: standing == .unavailable ? nil : tight.remaining, label: model.limitShortName(tight.window.id), size: 24)
+                        .help(model.modelLimitHelp(account, window: tight.window, remaining: tight.remaining))
+                }
             }.poolReading(model.quotaRefresh[account.id]?.phase == .refreshing)
-        }.padding(.horizontal, 11).padding(.vertical, 8)
+        }.padding(.horizontal, 12).padding(.vertical, 10)
             .background(PoolPalette.panelCard, in: RoundedRectangle(cornerRadius: 9))
             .opacity(standing.isInRotation ? 1 : 0.62)
             .poolAnimation(PoolMotion.quick, value: standing)
-            .help(model.lastQuotaUpdate(account).map { model.t("Last updated {0}", model.exactTime($0)) } ?? "")
+            .help(([model.lastQuotaUpdate(account).map { model.t("Last updated {0}", model.exactTime($0)) }, model.accountQuotaSummary(account)]
+                .compactMap { $0 }.filter { !$0.isEmpty }).joined(separator: "\n"))
             .accessibilityElement(children: .combine)
+            .accessibilityValue(model.accountQuotaSummary(account))
     }
     /// When the limits reset, why the account cannot be used and until when, or that its figures
     /// are hours old because reads have been failing. A 5-hour limit that isn't running can be
@@ -260,9 +278,11 @@ struct MenuAccountCard: View {
             : stale ? model.t("As of {0}", model.clockTime(model.lastQuotaUpdate(account) ?? model.now))
             : standing == .usable ? model.nextResetText(account) : model.accountStatus(account)
         let calm = (standing == .usable || standing == .unread) && !stale
-        return HStack(spacing: 6) {
-            Text(text).font(.system(size: 10)).monospacedDigit().lineLimit(1)
-                .foregroundStyle(calm ? AnyShapeStyle(.secondary) : AnyShapeStyle(stale ? PoolPalette.amber : model.accountColor(account)))
+        return VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 6) {
+            let tone: AnyShapeStyle = calm ? AnyShapeStyle(.secondary) : AnyShapeStyle(stale ? PoolPalette.amber : model.accountColor(account))
+            Text(text).foregroundStyle(tone)
+                .font(.system(size: 10)).monospacedDigit().fixedSize(horizontal: false, vertical: true)
                 .contentTransition(.opacity).poolReading(starting)
             if model.canWarmUp(account) {
                 Button(model.t("Start")) { model.perform(.warmUpNow(account.id)) }
@@ -270,6 +290,11 @@ struct MenuAccountCard: View {
                     .help(model.t("Start this account's 5-hour limit now with one short request."))
                     .accessibilityIdentifier("menu.warmUp")
             }
+        }
+        // A model used up while the account still serves the others.
+        if standing == .usable, let block = model.modelBlockText(account) {
+            Text(block).font(.system(size: 10)).foregroundStyle(PoolPalette.amber).fixedSize(horizontal: false, vertical: true)
+        }
         }
     }
     private func chip(_ title: String, color: Color) -> some View {
@@ -283,16 +308,17 @@ struct MenuAccountCard: View {
 struct QuotaRing: View {
     let value: Double?
     let label: String
+    var size: CGFloat = 30
     var body: some View {
         VStack(spacing: 2) {
             ZStack {
-                Circle().stroke(Color.primary.opacity(0.09), lineWidth: 3)
+                Circle().stroke(Color.primary.opacity(0.09), lineWidth: size < 30 ? 2.5 : 3)
                 Circle().trim(from: 0, to: CGFloat(min(100, max(0, value ?? 0))) / 100)
-                    .stroke(PoolPalette.level(value), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .stroke(PoolPalette.level(value), style: StrokeStyle(lineWidth: size < 30 ? 2.5 : 3, lineCap: .round))
                     .rotationEffect(.degrees(-90)).opacity(value == nil ? 0 : 1)
-                Text(value.map { "\(Int($0.rounded()))" } ?? "—").font(.system(size: 10, weight: .semibold)).monospacedDigit()
+                Text(value.map { "\(Int($0.rounded()))" } ?? "—").font(.system(size: size < 30 ? 9 : 10, weight: .semibold)).monospacedDigit()
                     .poolNumeric(value)
-            }.frame(width: 30, height: 30).poolAnimation(PoolMotion.value, value: value)
+            }.frame(width: size, height: size).frame(height: 30).poolAnimation(PoolMotion.value, value: value)
             Text(label).font(.system(size: 9)).foregroundStyle(.secondary)
         }
     }

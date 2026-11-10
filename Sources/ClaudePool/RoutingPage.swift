@@ -19,7 +19,8 @@ struct RoutingPage: View {
                         VStack(spacing: 10) {
                             ForEach(waitingAccounts) { account in
                                 HStack(spacing: 8) {
-                                    Text(model.accountName(account.id)).font(.system(size: 11)).lineLimit(1)
+                                    Text(model.accountName(account.id)).font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
+                                    brief(account)
                                     Spacer(minLength: 4)
                                     Text(recoveryText(account)).font(.system(size: 10)).foregroundStyle(PoolPalette.amber)
                                         .help(recoveryText(account, precise: true))
@@ -72,7 +73,8 @@ struct RoutingPage: View {
                     ForEach(Array(orderedAccounts.enumerated()), id: \.element.id) { index, account in
                         HStack(spacing: 7) {
                             Text("\(index + 1)").monospacedDigit().foregroundStyle(.tertiary).frame(width: 15)
-                            Text(model.accountName(account.id)).lineLimit(1)
+                            Text(model.accountName(account.id)).fixedSize(horizontal: false, vertical: true)
+                            brief(account)
                             Spacer(minLength: 3)
                             Button { model.moveRoutingAccount(account.id, by: -1) } label: { Image(systemName: "arrow.up") }
                                 .disabled(index == 0 || model.isWorking).accessibilityLabel(model.t("Move account up"))
@@ -86,10 +88,18 @@ struct RoutingPage: View {
             }
         }
     }
+    /// The account's tightest model limit, after its name.
+    @ViewBuilder private func brief(_ account: PoolAccount) -> some View {
+        if let text = model.accountBrief(account) {
+            Text(text).font(.system(size: 10)).foregroundStyle(.secondary).monospacedDigit().lineLimit(1).fixedSize()
+                .help(model.accountQuotaSummary(account))
+        }
+    }
     private func recoveryText(_ account: PoolAccount, precise: Bool = false) -> String {
         switch QuotaRecovery.account(account, model: PoolRouting.anyModel, now: model.now) {
         case .available: return model.stateTitle(account.effectiveState(at: model.now))
-        case .scheduled(let date): return model.t("Recovery: {0}", precise ? model.exactTime(date) : model.clockTime(date))
+        case .scheduled(let date):
+            return model.t("Recovery: {0}", precise ? model.exactTime(date) : model.clockTime(date))
         case .unknown: return model.t("Recovery time unknown")
         case .unavailable: return model.stateTitle(account.effectiveState(at: model.now))
         }
@@ -101,7 +111,7 @@ struct RoutingPage: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(model.routeReason(decision.reason)).font(.system(size: 11, weight: .medium))
                 Text([decision.accountID.map { model.accountName($0) }, decision.model].compactMap { $0 }.joined(separator: " · "))
-                    .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                    .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 3)
             Text(model.timeText(decision.timestamp)).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)

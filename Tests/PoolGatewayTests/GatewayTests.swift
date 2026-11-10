@@ -431,13 +431,13 @@ final class GatewayTests: XCTestCase {
         let router = try GatewayRouter(port: 18473, token: fixtureToken)
         guard case .response(let listed) = try router.route(.init(method: "GET", path: "/v1/models", headers: headers())) else { return XCTFail() }
         let rows = try JSONDecoder().decode(JSONValue.self, from: listed.body)["data"]?.arrayValue ?? []
-        XCTAssertEqual(rows.compactMap { $0["id"]?.stringValue }, ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-1"])
+        XCTAssertEqual(rows.compactMap { $0["id"]?.stringValue }, ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-2"])
         XCTAssertEqual(rows.compactMap { $0["anthropic_family_tier"]?.stringValue }, ["sonnet", "opus", "haiku", "fable"])
         XCTAssertEqual(rows.first?["display_name"], .string("Sonnet 5.5"))
         // What the client reports an alias runs on replaces the built-in id; old and new ids keep resolving.
         let newer = try XCTUnwrap(ModelIdentity(alias: "opus", id: "claude-opus-6", name: "Opus"))
         let models = PoolModel.listing([newer])
-        XCTAssertEqual(models.map(\.listedID), ["claude-sonnet-5-5", "claude-opus-6", "claude-haiku-5-5", "claude-fable-5-1"])
+        XCTAssertEqual(models.map(\.listedID), ["claude-sonnet-5-5", "claude-opus-6", "claude-haiku-5-5", "claude-fable-5-2"])
         XCTAssertEqual(models[1].listedName, "Opus 6")
         XCTAssertEqual(PoolModel.resolve("claude-opus-6", in: models)?.id, "claude-opus")
         XCTAssertEqual(PoolModel.resolve("claude-opus-5-5", in: models)?.id, "claude-opus")

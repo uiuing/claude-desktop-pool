@@ -175,8 +175,8 @@
   "Installing…": "Installing…",
   "Update Claude Code": "Update Claude Code",
   "Try again": "Try again",
-  "Weekly · Opus": "Weekly · Opus",
-  "Weekly · Sonnet": "Weekly · Sonnet",
+  "Weekly · {0}": "Weekly · {0}",
+  "{0} used up": "{0} used up",
   "Additional limit": "Additional limit",
   "Not applicable": "Not applicable",
   "{0}: not applicable": "{0}: not applicable",
@@ -686,5 +686,8 @@
   "Turn off sensitive data redaction?": "Turn off sensitive data redaction?",
   "New requests go to Claude exactly as written, including any keys, passwords or personal details in them. You can turn redaction on again here at any time.": "New requests go to Claude exactly as written, including any keys, passwords or personal details in them. You can turn redaction on again here at any time.",
   "Requests go to Claude exactly as written.": "Requests go to Claude exactly as written.",
-  "Redaction is off": "Redaction is off"
+  "Redaction is off": "Redaction is off",
+  "{0} used up · back {1}": "{0} used up · back {1}",
+  "{0} 7 days: {1}% left": "{0} 7 days: {1}% left",
+  "The menu bar shows this plan's limits and its tightest model limit.": "The menu bar shows this plan's limits and its tightest model limit."
 }

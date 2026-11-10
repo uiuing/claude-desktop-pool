@@ -140,7 +140,7 @@ public struct QuotaBurn: Equatable, Sendable {
     public init() {}
 
     public mutating func record(_ windows: [QuotaWindow]) {
-        for window in windows where window.modelFamily == nil && window.state == .reported {
+        for window in windows where window.isGlobal && window.state == .reported {
             guard let used = window.usedPercent, used.isFinite, (0...100).contains(used) else { continue }
             let next = Reading(used: used, at: window.observedAt, reset: window.resetsAt)
             guard let previous = readings[window.id] else { readings[window.id] = next; continue }
@@ -159,7 +159,7 @@ public struct QuotaBurn: Equatable, Sendable {
     /// until it runs out once already below. Nil without a measured, positive pace.
     public func secondsToReserve(_ account: PoolAccount, reserve: Double, now: Date) -> TimeInterval? {
         account.windows.compactMap { window -> TimeInterval? in
-            guard window.modelFamily == nil, let rate = rates[window.id], rate > 0,
+            guard window.isGlobal, let rate = rates[window.id], rate > 0,
                   let left = PoolRouting.remaining(window, in: account, now: now) else { return nil }
             return (left > reserve ? left - reserve : left) / rate
         }.min()
