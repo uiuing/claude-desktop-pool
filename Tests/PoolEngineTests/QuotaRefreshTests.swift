@@ -502,6 +502,37 @@ final class QuotaRefreshTests: XCTestCase {
         _ = await restarted.stop()
         _ = await service.stop()
     }
+    /// Refreshes of one account asked for close together are one read: the person's refresh
+    /// moments after a reading, and a confirmation asked for right after it, read nothing more;
+    /// once the reading is older, the person's refresh reads again.
+    func testRefreshesAskedCloseTogetherAreOneRead() async throws {
+        let workspace = try fixtureWorkspace(), read = expectation(description: "First read")
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel), clock = QuotaTestClock(), counter = QuotaEventCounter()
+        let service = makeService(workspace: workspace, fixture: fixture, now: { clock.value }) { update in
+            if case .status(_, let status) = update, status.phase == .idle, status.lastSuccessAt != nil, status.observerID == nil {
+                let count = await counter.increment(); if count == 1 { read.fulfill() }
+            }
+        }
+        let account = fixtureAccount()
+        try await service.start(); await service.setAccounts([account])
+        await service.requestRefresh(accountID: account.id)
+        await fulfillment(of: [read], timeout: 30)
+        let commands = { fixture.commands.filter { $0 == Data("/usage".utf8) }.count }
+        XCTAssertEqual(commands(), 1)
+        clock.advance(5)
+        await service.requestRefresh(accountID: account.id)
+        await service.requestRefresh(accountID: account.id, reason: .selected)
+        await service.setAvailability(enabled: true, awake: true, online: true)
+        XCTAssertEqual(commands(), 1, "Refreshes asked for seconds after a reading are answered by it")
+        let queued = await service.statuses()[account.id]?.phase
+        XCTAssertNotEqual(queued, .queued, "A merged refresh does not show as waiting")
+        clock.advance(20)
+        await service.requestRefresh(accountID: account.id)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(30))
+        while commands() < 2, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(commands(), 2, "The person's refresh reads again once the reading is older")
+        let stopped = await service.stop(); XCTAssertTrue(stopped)
+    }
     func testFastSingleConversationCanRefreshAtTenSeconds() async throws {
         let workspace = try fixtureWorkspace(), first = expectation(description: "First automatic read"), second = expectation(description: "Ten-second follow-up")
         let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel), clock = QuotaTestClock(), counter = QuotaEventCounter()

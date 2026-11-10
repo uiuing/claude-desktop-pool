@@ -113,7 +113,7 @@ public actor PrivacyBridge: BridgeBackend {
         let id: UUID
         do { id = try await contextID(request, alias: alias, results: ids) }
         catch { throw report(error) }
-        let context = contexts[id]!
+        guard let context = contexts[id] else { throw report(BridgeFailure.privacyUnavailable) }
         guard !context.busy else { throw BridgeFailure.busy }
         context.busy = true; context.cancelled = false; context.backendCancellationRequested = false
         context.backendReady = false

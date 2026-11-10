@@ -193,6 +193,12 @@ public actor QuotaRefreshService {
     static let resetGrace: TimeInterval = 60
     /// A reading this recent is trusted when an account starts being used.
     static let freshFor: TimeInterval = 600
+    /// Reads of one account this close together say the same thing: a request made within this
+    /// long of its last reading, or while one is under way, is answered by that reading. Timed
+    /// reads are paced by their own cadence instead, down to ten seconds for fast work.
+    static let mergeWindow: TimeInterval = 60
+    /// The person's own refresh is merged only with a reading taken moments ago.
+    static let manualMergeWindow: TimeInterval = 15
     /// Use stops counting as one stretch after this long without work.
     static let stretchGap: TimeInterval = 120
     private let workspace: OwnedWorkspace
@@ -412,6 +418,10 @@ public actor QuotaRefreshService {
         if reason == .initial, [.authentication, .needsAttention, .cancelled].contains(records[accountID]?.status.failure) {
             records[accountID]?.status.failure = nil; records[accountID]?.failures = 0
         }
+        if let merged = mergedRead(accountID, reason: reason) {
+            Diagnostics.record("quota.merged", ["account": Diagnostics.id(accountID), "reason": reason.rawValue, "into": merged])
+            await publish(accountID); return
+        }
         requested[accountID] = reason
         records[accountID]?.status.phase = .queued
         if records[accountID]?.status.failure == nil, reason != .periodic {
@@ -419,6 +429,21 @@ public actor QuotaRefreshService {
             records[accountID]?.status.nextAttemptAt = next
         }
         await publish(accountID); await tick()
+    }
+    /// What already answers a refresh of the account: a read under way ("running") or a reading
+    /// taken within the merge window ("recent"). A failed or first read is never merged, and a
+    /// timed read keeps its own pace, which already counts from the last reading.
+    private func mergedRead(_ id: UUID, reason: QuotaRefreshReason, now: Date? = nil) -> String? {
+        guard reason != .initial, let record = records[id], record.status.failure == nil, record.status.lastSuccessAt != nil else { return nil }
+        if refreshTasks[id] != nil { return "running" }
+        guard reason != .periodic else { return nil }
+        // The person's refresh is answered only by a read of Pool's own that has just succeeded;
+        // a reading that came with the account or with its work is not one they saw being taken.
+        let taken = reason == .manual
+            ? record.status.lastAttemptAt.flatMap { attempt in (record.status.lastSuccessAt ?? .distantPast) >= attempt ? record.status.lastSuccessAt : nil }
+            : record.status.lastSuccessAt
+        let window = reason == .manual ? Self.manualMergeWindow : Self.mergeWindow
+        return (now ?? self.now()).timeIntervalSince(taken ?? .distantPast) < window ? "recent" : nil
     }
     /// Quiesce before changing an account's authentication or removing its owned directory.
     public func suspend(accountID: UUID) async -> Bool {
@@ -539,9 +564,21 @@ public actor QuotaRefreshService {
             guard reason == .periodic else { return account.isInRotation(at: now) }
             return dueReason(account, record: record, now: now) == .periodic
         }
+        // A request queued before a read that has answered it since is merged into that read.
+        var merged: [(UUID, QuotaRefreshReason)] = []
+        requested = requested.filter { id, reason in
+            guard refreshTasks[id] == nil, mergedRead(id, reason: reason, now: now) != nil else { return true }
+            merged.append((id, reason)); return false
+        }
+        for (id, reason) in merged {
+            Diagnostics.record("quota.merged", ["account": Diagnostics.id(id), "reason": reason.rawValue, "into": "recent"])
+            if records[id]?.status.phase == .queued { records[id]?.status.phase = .idle }
+            await publish(id)
+        }
         if enabled {
             for account in accounts where account.state == .ready || account.state == .limited {
-                guard !suspended.contains(account.id), let record = records[account.id], let reason = dueReason(account, record: record, now: now) else { continue }
+                guard !suspended.contains(account.id), let record = records[account.id], let reason = dueReason(account, record: record, now: now),
+                      requested[account.id] != nil || mergedRead(account.id, reason: reason, now: now) == nil else { continue }
                 requested[account.id] = requested[account.id] ?? reason
             }
         }
@@ -560,8 +597,10 @@ public actor QuotaRefreshService {
         }
         guard let account = candidates.first else { return }
         if let warm, warm.account.id != account.id { guard await retireWarm() else { return } }
-        guard busyAccounts.count < Self.concurrentReads, !busyAccounts.contains(account.id) else { return }
-        let reason = requested.removeValue(forKey: account.id)!
+        // retiring the warm session waited: a tick that ran meanwhile may have started this read
+        // already, taking its request, so what was picked is checked again
+        guard busyAccounts.count < Self.concurrentReads, !busyAccounts.contains(account.id),
+              let reason = requested.removeValue(forKey: account.id) else { return }
         let generation = generations[account.id, default: 0]
         refreshTasks[account.id] = Task { [weak self] in await self?.perform(account, generation: generation, reason: reason); await self?.finishedTask(account.id) }
         // Reads start a second apart, so several clients do not all launch in the same instant.
