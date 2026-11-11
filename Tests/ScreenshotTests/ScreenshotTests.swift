@@ -246,6 +246,18 @@ final class ScreenshotTests: XCTestCase {
                               to: output.appendingPathComponent("quota-unknown-pool-\(language)-light.png"))
             try await capture(MainWindow(model: model), size: .init(width: 640, height: 520), dark: false,
                               to: output.appendingPathComponent("quota-unknown-narrow-\(language)-light.png"))
+
+            model.page = .accounts
+            model.quotaRefresh = [:]
+            let week = QuotaWindow(id: "seven_day", usedPercent: 0, observedAt: model.now, resetsAt: model.now.addingTimeInterval(3 * 86400))
+            let session = QuotaWindow(id: "five_hour", usedPercent: 0, observedAt: model.now)
+            let fable = QuotaWindow(id: "seven_day_overage_included", usedPercent: 0, observedAt: model.now, resetsAt: week.resetsAt)
+            model.snapshot.accounts[0].windows = [session, week, fable]
+            model.snapshot.accounts[1].windows = [session, week, fable]
+            model.snapshot.accounts[1].windows[1].usedPercent = 100
+            model.snapshot.accounts[1].state = .limited
+            try await capture(MainWindow(model: model), size: .init(width: 680, height: 560), dark: true,
+                              to: output.appendingPathComponent("quota-reset-\(language)-dark.png"))
         }
     }
 

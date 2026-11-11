@@ -300,6 +300,31 @@ final class QuotaRefreshTests: XCTestCase {
         XCTAssertEqual(restoredStatus?.nextAttemptAt, before?.nextAttemptAt)
         let restoredStopped = await restored.stop(); XCTAssertTrue(restoredStopped)
     }
+
+    func testManualRefreshOfLimitedAccountCanReadAResetAfterARecentReading() async throws {
+        let workspace = try fixtureWorkspace(), first = expectation(description: "First manual reading")
+        let restored = expectation(description: "Fresh reading after the reset")
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel)
+        let clock = QuotaTestClock(), finishedReads = QuotaEventCounter()
+        let service = makeService(workspace: workspace, fixture: fixture, now: { clock.value }) { update in
+            if case .status(_, let status) = update, status.phase == .idle, status.lastSuccessAt != nil,
+               await finishedReads.increment() == 1 { first.fulfill() }
+            if case .reading(_, let windows) = update, windows.first?.usedPercent == 0 { restored.fulfill() }
+        }
+        var account = fixtureAccount()
+        account.state = .limited
+        account.cooldownUntil = clock.value.addingTimeInterval(3600)
+        try await service.start()
+        await service.setAccounts([account])
+        await service.requestRefresh(accountID: account.id)
+        await fulfillment(of: [first], timeout: 30)
+        clock.advance(11)
+        fixture.panel = "Settings Status Config Usage Stats\nCurrent session 0% used\nCurrent week (all models) 0% used"
+        await service.requestRefresh(accountID: account.id)
+        await fulfillment(of: [restored], timeout: 30)
+        let stopped = await service.stop()
+        XCTAssertTrue(stopped)
+    }
     func testChangedPlanEmailOrOrganizationDiscardsPersistedFailureAndResetReceipts() async throws {
         for changedField in ["plan", "email", "organization"] {
             let workspace = try fixtureWorkspace(), failed = expectation(description: "Old scope failure persisted")

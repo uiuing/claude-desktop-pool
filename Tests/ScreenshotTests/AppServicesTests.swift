@@ -56,7 +56,7 @@ final class AppServicesTests: XCTestCase {
 
     private func application(accounts: [PoolAccount] = [], installed: Bool = true, connected: Bool = false, desktop: AppDesktopFixture? = nil,
                              privacy: AppPrivacyModel = AppPrivacyModel(), workerFactory: PoolCoordinator.WorkerFactory? = nil,
-                             quotaTrust: Bool? = nil,
+                             quotaTrust: Bool? = nil, quotaPanel: String = AppQuotaFixture.defaultPanel,
                              clock: AppTestClock? = nil, automaticUpdates: Bool = false) async throws -> FixtureApplication {
         let workspace = try fixture(), downloads = AppReleaseDownloads(), auth = try AppAuthFixture(workspace: workspace)
         try await downloads.publish("2.1.300")
@@ -78,7 +78,7 @@ final class AppServicesTests: XCTestCase {
         dependencies.workerFactory = workerFactory
         dependencies.gatewayPort = 0
         dependencies.desktop = desktop.control
-        let quota = quotaTrust.map { AppQuotaFixture(workspace: workspace, needsTrust: $0) }
+        let quota = quotaTrust.map { AppQuotaFixture(workspace: workspace, needsTrust: $0, panel: quotaPanel) }
         if let quota { dependencies.quotaLaunch = { try quota.launch($0) } }
         let model = PoolAppModel(), services = AppServices(model: model, workspace: workspace, dependencies: dependencies)
         await services.load()
@@ -577,6 +577,31 @@ final class AppServicesTests: XCTestCase {
         XCTAssertEqual(app.model.terminal?.isRunning, false)
         let saved = try await PoolStore(workspace: app.workspace).load()
         XCTAssertEqual(saved.accounts.first?.windows, app.model.snapshot.accounts.first?.windows)
+    }
+
+    func testRefreshingAfterAResetClearsSavedSessionAndWeeklyCooldowns() async throws {
+        let now = Date(), old = now.addingTimeInterval(-60)
+        let weekReset = now.addingTimeInterval(4 * 86400)
+        let idle = QuotaWindow(id: "five_hour", usedPercent: 0, observedAt: old)
+        let week = QuotaWindow(id: "seven_day", usedPercent: 0, observedAt: old, resetsAt: weekReset)
+        let short = PoolAccount(email: "short@example.com", plan: "Pro", state: .limited, windows: [idle, week],
+                                cooldownUntil: now.addingTimeInterval(3600))
+        let weekly = PoolAccount(email: "week@example.com", plan: "Pro", state: .limited, windows: [idle, week],
+                                 cooldownUntil: weekReset)
+        let app = try await application(accounts: [short, weekly], quotaTrust: false,
+            quotaPanel: "Settings Status Config Usage Stats\r\nCurrent session 0% used\r\nCurrent week (all models) 0% used\r\nCurrent week (Fable) 0% used")
+        await app.services.handle(.refreshQuota(nil))
+        await eventually("Official reset did not release both accounts") {
+            app.model.snapshot.accounts.allSatisfy { $0.state == .ready && $0.cooldownUntil == nil }
+        }
+        app.model.referenceDate = Date()
+        XCTAssertEqual(Set(app.model.readyAccounts.map(\.id)), Set([short.id, weekly.id]))
+        for account in app.model.snapshot.accounts {
+            XCTAssertEqual(app.model.quotaText(account, window: "seven_day"), "100%")
+            XCTAssertEqual(app.model.accountStatus(account), app.model.t("{0}% left", "100"))
+        }
+        let saved = try await PoolStore(workspace: app.workspace).load()
+        XCTAssertTrue(saved.accounts.allSatisfy { $0.state == .ready && $0.cooldownUntil == nil })
     }
 
     func testNeverReadAccountGetsItsFirstReadingAtLaunchWithoutStartingThePool() async throws {
@@ -1309,7 +1334,9 @@ private actor AppWorker: SessionWorker {
 }
 
 private final class AppQuotaFixture: @unchecked Sendable {
+    static let defaultPanel = "Settings Status Config Usage Stats\r\nCurrent session 25% used\r\nCurrent week (all models) 10% used"
     private let lock = NSLock(), workspace: OwnedWorkspace
+    private let panel: String
     private var needsTrust: Bool
     private var launches = 0
     private var interrupts = 0
@@ -1317,7 +1344,9 @@ private final class AppQuotaFixture: @unchecked Sendable {
     var launchCount: Int { lock.withLock { launches } }
     var interruptCount: Int { lock.withLock { interrupts } }
     var inputs: [Data] { lock.withLock { sent } }
-    init(workspace: OwnedWorkspace, needsTrust: Bool) { self.workspace = workspace; self.needsTrust = needsTrust }
+    init(workspace: OwnedWorkspace, needsTrust: Bool, panel: String) {
+        self.workspace = workspace; self.needsTrust = needsTrust; self.panel = panel
+    }
     func launch(_ plan: SessionLaunch) throws -> SessionTransport {
         lock.withLock { launches += 1 }
         let events = AsyncStream<PTYEvent>.makeStream()
@@ -1337,7 +1366,7 @@ private final class AppQuotaFixture: @unchecked Sendable {
             } else if data == Data("/usage".utf8) {
                 events.continuation.yield(.output(Data("\r> /usage".utf8)))
             } else if data == Data([13]) {
-                events.continuation.yield(.output(Data("\u{1b}[2J\u{1b}[HSettings Status Config Usage Stats\r\nCurrent session 25% used\r\nCurrent week (all models) 10% used".utf8)))
+                events.continuation.yield(.output(Data("\u{1b}[2J\u{1b}[H\(self.panel)".utf8)))
             } else if data.first == 27 {
                 events.continuation.yield(.output(Data("\u{1b}[2J\u{1b}[H> ".utf8)))
             }

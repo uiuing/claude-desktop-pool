@@ -436,11 +436,17 @@ public actor QuotaRefreshService {
     /// taken within the merge window ("recent"). A failed or first read is never merged, and a
     /// timed read keeps its own pace, which already counts from the last reading.
     private func mergedRead(_ id: UUID, reason: QuotaRefreshReason, now: Date? = nil) -> String? {
+        // The person may have just used a reset card on a limited account. A new manual request
+        // needs another reading, unless the current read is still taking it.
+        if reason == .manual, accounts.contains(where: { $0.id == id && $0.state == .limited }) {
+            guard refreshTasks[id] != nil, let status = records[id]?.status else { return nil }
+            let readTaken = status.lastAttemptAt.map { (status.lastSuccessAt ?? .distantPast) >= $0 } == true
+            return readTaken || status.failure != nil ? nil : "running"
+        }
         guard reason != .initial, let record = records[id], record.status.failure == nil, record.status.lastSuccessAt != nil else { return nil }
         if refreshTasks[id] != nil { return "running" }
         guard reason != .periodic else { return nil }
-        // The person's refresh is answered only by a read of Pool's own that has just succeeded;
-        // a reading that came with the account or with its work is not one they saw being taken.
+        // A manual request on a usable account is only coalesced with Pool's own recent read.
         let taken = reason == .manual
             ? record.status.lastAttemptAt.flatMap { attempt in (record.status.lastSuccessAt ?? .distantPast) >= attempt ? record.status.lastSuccessAt : nil }
             : record.status.lastSuccessAt

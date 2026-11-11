@@ -1356,8 +1356,9 @@ final class AppServices {
             // Refresh service already owns this observation; avoid feeding it back into itself.
             do { try await mutate { next in
                 scope.applyObservation(to: &next.accounts) { account in
-                    account.absorb(windows, replacingSnapshot: true)
-                    Self.reconcileQuotaState(&account, observed: windows)
+                    let now = Date()
+                    account.absorbUsagePanel(windows, at: now)
+                    Self.reconcileQuotaState(&account, observed: windows, now: now)
                 }
             } } catch { report(error) }
         case .terminal(let scope, let observerID, let data):

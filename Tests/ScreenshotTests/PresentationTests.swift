@@ -5,6 +5,22 @@ import ViewInspector
 
 @MainActor
 final class PresentationTests: XCTestCase {
+    func testAccountStatusNamesOnlyTheLimitThatIsBlockingIt() {
+        let model = PoolAppModel.demoModel(language: "zh-Hans")
+        let reset = model.now.addingTimeInterval(3 * 86400), back = model.clockTime(reset)
+        var account = PoolAccount(email: "user@example.com", plan: "Pro", state: .limited, windows: [
+            .init(id: "five_hour", usedPercent: 0, observedAt: model.now),
+            .init(id: "seven_day", usedPercent: 98, observedAt: model.now, resetsAt: reset)
+        ], cooldownUntil: reset)
+        XCTAssertEqual(model.accountStatus(account), model.t("Week used up · back {0}", back))
+        XCTAssertEqual(model.quotaText(account, window: "five_hour"), "100%")
+        XCTAssertEqual(model.quotaText(account, window: "seven_day"), "0%")
+
+        account.windows[1].usedPercent = 0
+        XCTAssertEqual(model.accountStatus(account), model.t("Limit reached · back {0}", back))
+        XCTAssertEqual(model.quotaText(account, window: "seven_day"), "100%")
+    }
+
     func testUnknownQuotaIsNotZeroAndAReadingHoldsForItsCycle() {
         let model = PoolAppModel.demoModel()
         var account = model.snapshot.accounts[0]

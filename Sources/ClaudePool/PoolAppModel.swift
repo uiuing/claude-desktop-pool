@@ -626,20 +626,15 @@ final class PoolAppModel {
     func displayedWindows(_ account: PoolAccount) -> [QuotaWindow] {
         account.windows.filter { !$0.isNotApplicable(at: now) }.sorted { quotaWindowOrder($0.id) < quotaWindowOrder($1.id) }
     }
-    /// What a limit has left as shown: none while Claude refuses the account at it, whatever the
-    /// last reading said (`readRemaining` keeps that reading).
+    /// What a limit has left, including any confirmed refusal at that limit.
     func remaining(_ account: PoolAccount, window: String) -> Double? {
         guard let reading = account.windows.first(where: { $0.id == window }) else { return nil }
-        if account.isRefused(reading, at: now) { return 0 }
         return PoolRouting.remaining(reading, in: account, now: now)
-    }
-    func readRemaining(_ account: PoolAccount, window: String) -> Double? {
-        account.windows.first { $0.id == window }.flatMap { PoolRouting.remaining($0, in: account, now: now) }
     }
     /// For a limit Claude refused the account at though its reading had room left: what the reading said.
     func refusedNote(_ account: PoolAccount, window: String) -> String? {
         guard let reading = account.windows.first(where: { $0.id == window }), account.isRefused(reading, at: now),
-              let left = readRemaining(account, window: window) else { return nil }
+              let left = reading.recordedRemaining(at: now) else { return nil }
         return t("Claude refused at this limit · usage showed {0}% left", "\(Int(left.rounded()))")
     }
     func quotaText(_ account: PoolAccount, window: String) -> String {
@@ -751,7 +746,10 @@ final class PoolAppModel {
             if let block = modelBlockText(account) { text += " · " + block }
         case .unread: text = quotaRefresh[account.id]?.busy == true ? t("Reading quota…") : t("Quota not read yet")
         case .limited:
-            text = backAt(account).map { t("5-hour limit reached · back {0}", clockTime($0)) } ?? t("Limit reached")
+            let sessionBlocked = account.windows.contains { $0.id == "five_hour" && account.isBlocked($0, at: now) }
+            text = backAt(account).map {
+                sessionBlocked ? t("5-hour limit reached · back {0}", clockTime($0)) : t("Limit reached · back {0}", clockTime($0))
+            } ?? t("Limit reached")
         case .weekUsed:
             text = backAt(account).map { t("Week used up · back {0}", clockTime($0)) } ?? t("Week used up")
         case .unavailable: text = stateTitle(account.effectiveState(at: now))

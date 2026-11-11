@@ -248,8 +248,12 @@ public struct PoolAccount: Codable, Equatable, Sendable, Identifiable {
     /// panel can show room a turn still does not fit in, so until then the window has none.
     public func isRefused(_ window: QuotaWindow, at now: Date) -> Bool {
         guard effectiveState(at: now) == .limited, window.isGlobal, let cooldownUntil, cooldownUntil > now,
-              let reset = window.resetsAt, abs(reset.timeIntervalSince(cooldownUntil)) < 60 else { return false }
+              let left = window.recordedRemaining(at: now), left > 0, left < 100,
+              let reset = window.resetsAt, reset > now, abs(reset.timeIntervalSince(cooldownUntil)) < 60 else { return false }
         return !window.isExhausted(at: now)
+    }
+    public func isBlocked(_ window: QuotaWindow, at now: Date) -> Bool {
+        window.isExhausted(at: now) || isRefused(window, at: now)
     }
     /// How usable the account is now. Lists put better standing first; pool figures count only
     /// accounts that can serve this week.
@@ -263,7 +267,7 @@ public struct PoolAccount: Codable, Equatable, Sendable, Identifiable {
     }
     /// A limit longer than the 5-hour one, for every model, is used up until its reset.
     public func isWeekUsedUp(at now: Date) -> Bool {
-        windows.contains { $0.isGlobal && $0.id != "five_hour" && $0.isExhausted(at: now) }
+        windows.contains { $0.isGlobal && $0.id != "five_hour" && isBlocked($0, at: now) }
     }
     /// Worth reading without being asked: it can serve now or within hours. A used-up week comes
     /// back only at its reset, and an unusable account only once it is fixed.
@@ -284,11 +288,56 @@ public struct PoolAccount: Codable, Equatable, Sendable, Identifiable {
         for reading in readings {
             let old = windows.first { $0.id == reading.id }
             if let old, old.observedAt > reading.observedAt { continue }
-            let window = reading.carrying(old, at: now)
+            // A fresh /usage panel showing a full model allowance can confirm an early reset.
+            // A status-line reading or a panel that still shows usage carries the refusal.
+            let resetModel = replacingSnapshot && reading.scope.isModels && reading.recordedRemaining(at: now) == 100
+                && old.map { reading.observedAt > $0.observedAt } == true
+            let window = reading.carrying(resetModel ? nil : old, at: now)
             windows.removeAll { $0.id == window.id }
             windows.append(window); taken.append(window)
         }
         return taken
+    }
+
+    /// Takes a settled /usage panel. A reset card can refill a window before its old deadline,
+    /// and the weekly reset date can stay the same.
+    public mutating func absorbUsagePanel(_ readings: [QuotaWindow], at now: Date) {
+        let previous = windows
+        let taken = absorb(readings, replacingSnapshot: true, at: now)
+        guard state == .limited, let cooldown = cooldownUntil, cooldown > now,
+              !windows.contains(where: { $0.scope == .other && $0.holdsRefusal(at: now) }) else { return }
+        let fresh = taken.filter { reading in
+            let old = previous.first { $0.id == reading.id }
+            return reading.observedAt <= now && old.map { reading.observedAt > $0.observedAt } != false
+        }
+        let session = fresh.first { $0.id == "five_hour" }
+        let previousSession = previous.first { $0.id == "five_hour" }
+        let sessionRefilled = session?.recordedRemaining(at: now) == 100
+        let sessionReset = sessionRefilled && previousSession?.resetsAt.map { oldReset in
+            oldReset > now && (session?.resetsAt.map { abs($0.timeIntervalSince(oldReset)) > 60 } ?? true)
+        } == true
+        let fableReset = fresh.contains { reading in
+            reading.id == "seven_day_overage_included" && reading.recordedRemaining(at: now) == 100 &&
+                previous.contains { $0.id == reading.id && ($0.usedPercent ?? 0) > 0 }
+        }
+        let matching = previous.filter { $0.isGlobal && abs($0.recoversAt.timeIntervalSince(cooldown)) <= 60 }
+        if matching.isEmpty {
+            // Older builds could save the cooldown after already replacing its session window.
+            // A refilled or restarted session can retire that detached short hold.
+            let restarted = session.map { reading in
+                (reading.recordedRemaining(at: now) ?? 0) > 0 &&
+                    reading.resetsAt.map { $0 > cooldown.addingTimeInterval(60) && $0 <= reading.observedAt.addingTimeInterval(reading.span + 60) } == true
+            } == true
+            if cooldown.timeIntervalSince(now) <= 5 * 3600 && (sessionRefilled || restarted) { cooldownUntil = nil }
+        } else if matching.allSatisfy({ old in
+            guard let reading = fresh.first(where: { $0.id == old.id }) else { return false }
+            if reading.isNotApplicable(at: now) { return true }
+            guard let left = reading.recordedRemaining(at: now), left > 0 else { return false }
+            if left == 100 || reading.resetsAt.map({ $0 > old.recoversAt.addingTimeInterval(60) }) == true { return true }
+            return old.id == "seven_day" && old.isExhausted(at: now) && (sessionReset || fableReset)
+        }) {
+            cooldownUntil = nil
+        }
     }
 }
 
@@ -552,7 +601,7 @@ public struct QuotaPoolSummary: Equatable, Sendable {
                     // spent week counts as nothing left, not as full. What a week has left under a spent 5-hour
                     // limit is real and comes back at that limit's reset.
                     if window.isGlobal,
-                       account.windows.contains(where: { $0.isGlobal && $0.span > window.span && $0.isExhausted(at: now) }) { amount = 0 }
+                       account.windows.contains(where: { $0.isGlobal && $0.span > window.span && account.isBlocked($0, at: now) }) { amount = 0 }
                     // Percent sums stay exact for the whole-number readings Claude shows.
                     known += 1; remaining += amount
                     if account.effectiveState(at: now) == .ready, account.cooldownUntil.map({ $0 <= now }) ?? true,
@@ -801,7 +850,7 @@ public enum PoolRouting {
         let windows = account.windows.filter { $0.applies(to: model) }
         guard !windows.isEmpty else { return .init(state: .unknown) }
         // A confirmed exhausted window stays blocked until its stated reset, even if the reading is stale.
-        if windows.contains(where: { $0.isExhausted(at: now) }) { return .init(state: .exhausted) }
+        if windows.contains(where: { account.isBlocked($0, at: now) }) { return .init(state: .exhausted) }
         let applicable = windows.filter { !$0.isNotApplicable(at: now) }
         guard !applicable.isEmpty else { return .init(state: .notApplicable) }
         let values = applicable.compactMap { remaining($0, in: account, now: now) }
@@ -809,7 +858,7 @@ public enum PoolRouting {
         return .init(state: .available, headroom: values.min())
     }
     public static func remaining(_ window: QuotaWindow, in account: PoolAccount, now: Date = Date()) -> Double? {
-        window.remaining(at: now)
+        account.isRefused(window, at: now) ? 0 : window.remaining(at: now)
     }
     /// Use only between user turns. Pending client tools must stay on the worker that issued them.
     /// Moving a conversation to another account writes its whole context there once, so a move costs what

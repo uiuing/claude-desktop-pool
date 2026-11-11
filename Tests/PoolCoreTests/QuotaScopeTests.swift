@@ -168,6 +168,63 @@ final class QuotaScopeTests: XCTestCase {
         XCTAssertNil(window.refused().refusedUntil)
     }
 
+    func testARefilledSessionClearsADetachedCooldownButDoesNotRefillTheWeek() {
+        let oldSession = QuotaWindow(id: "five_hour", usedPercent: 0, observedAt: now.addingTimeInterval(-60))
+        var a = account([oldSession, week(100)])
+        a.state = .limited
+        a.cooldownUntil = now.addingTimeInterval(3600)
+        let session = QuotaWindow(id: "five_hour", usedPercent: 0, observedAt: now)
+
+        a.absorbUsagePanel([session, week(100)], at: now)
+
+        XCTAssertNil(a.cooldownUntil)
+        XCTAssertEqual(a.standing(at: now), .weekUsed)
+        XCTAssertTrue(PoolRouting.candidates([a], model: "claude-sonnet-5", now: now).isEmpty)
+    }
+
+    func testAFableResetCanRestoreWeeklyHeadroomWithoutChangingTheResetDate() {
+        let previous = now.addingTimeInterval(-600)
+        let reset = now.addingTimeInterval(4 * 86400)
+        let spentWeek = QuotaWindow(id: "seven_day", usedPercent: 100, observedAt: previous, resetsAt: reset)
+        var a = account([spentWeek, fable(100, at: previous).refused()])
+        a.state = .limited
+        a.cooldownUntil = reset
+        let restoredWeek = week(60)
+
+        a.absorbUsagePanel([restoredWeek, fable(0)], at: now)
+
+        XCTAssertEqual(a.windows.first { $0.id == "seven_day" }, restoredWeek)
+        XCTAssertNil(a.cooldownUntil)
+        XCTAssertEqual(a.standing(at: now), .usable)
+        XCTAssertEqual(PoolRouting.candidates([a], model: "claude-fable-5", now: now).map(\.id), [a.id])
+    }
+
+    func testAnOlderOrPartialReadingWithoutResetEvidenceKeepsTheWeeklyRefusal() {
+        let reset = now.addingTimeInterval(4 * 86400)
+        var a = account([week(100)])
+        a.state = .limited
+        a.cooldownUntil = reset
+        let stale = QuotaWindow(id: "seven_day", usedPercent: 0, observedAt: now.addingTimeInterval(-60), resetsAt: reset)
+        a.absorbUsagePanel([stale], at: now)
+        XCTAssertEqual(a.windows.first?.usedPercent, 100)
+        XCTAssertEqual(a.cooldownUntil, reset)
+        let later = now.addingTimeInterval(60)
+        let partial = QuotaWindow(id: "seven_day", usedPercent: 98, observedAt: later, resetsAt: reset)
+        a.absorbUsagePanel([partial], at: later)
+        XCTAssertEqual(a.cooldownUntil, reset)
+        XCTAssertEqual(a.standing(at: later), .weekUsed)
+    }
+
+    func testAFullUsagePanelDoesNotClearARefusalAtAnUnplacedLimit() {
+        let limit = QuotaWindow(id: "overage", usedPercent: 100, observedAt: now, resetsAt: now.addingTimeInterval(3600)).refused()
+        var a = account([limit])
+        a.state = .limited
+        a.cooldownUntil = limit.resetsAt
+        a.absorbUsagePanel([.init(id: "five_hour", usedPercent: 0, observedAt: now), week(0)], at: now)
+        XCTAssertEqual(a.cooldownUntil, limit.resetsAt)
+        XCTAssertEqual(a.windows.first { $0.id == limit.id }, limit)
+    }
+
     func testOtherWindowsNeverHoldAnythingBack() {
         let windows = [QuotaWindow(id: "five_hour", usedPercent: 5, observedAt: now, resetsAt: now.addingTimeInterval(3600)), week(10),
                        QuotaWindow(id: "seven_day_cowork", usedPercent: 100, observedAt: now, resetsAt: now.addingTimeInterval(86400)),
