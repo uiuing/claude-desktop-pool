@@ -4,6 +4,13 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-11-11
+
+### Fixed
+
+- A refresh after using a limit reset clears old holds for restored quota. Eligible accounts return to routing, and account cards identify whether the 5-hour or weekly limit is exhausted.
+- A manual refresh of a limited account reads its quota again even if a recent reading succeeded.
+
 ## [0.2.5] - 2026-11-10
 
 ### Fixed
@@ -198,7 +205,8 @@ First public release.
 - Update checks against GitHub Releases with verified one-click install.
 - Option to hide email addresses throughout the app.
 
-[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.6...HEAD
+[0.2.6]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.5...v0.2.6
 [0.2.0]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.9...v0.2.0
 [0.1.9]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/uiuing/claude-desktop-pool/compare/v0.1.7...v0.1.8
