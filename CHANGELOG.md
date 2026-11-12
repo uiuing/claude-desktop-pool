@@ -4,6 +4,12 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-11-12
+
+### Changed
+
+- Settings › About says how the pool places work: each conversation, subagent and task goes to the account best placed for it, by what its limits have left, when they reset and what the work costs there.
+
 ## [0.2.8] - 2026-11-12
 
 ### Fixed
@@ -239,7 +245,8 @@ First public release.
 - Update checks against GitHub Releases with verified one-click install.
 - Option to hide email addresses throughout the app.
 
-[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.8...HEAD
+[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.9...HEAD
+[0.2.9]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.5...v0.2.6
