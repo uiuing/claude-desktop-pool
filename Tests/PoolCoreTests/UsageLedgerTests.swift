@@ -201,4 +201,46 @@ final class UsageLedgerTests: XCTestCase {
         XCTAssertNil(old.tokensPerSecond)
         XCTAssertEqual(old.output, 412)
     }
+
+    func testEffortSplitsRowsAndDrillsDownWithinAModel() {
+        var ledger = UsageLedger()
+        let opus = "claude-opus-5-5"
+        ledger.record(turn(), accountID: alpha, model: opus, name: "Opus 5.5", effort: "high", at: at(5, 9), calendar: calendar)
+        ledger.record(turn(), accountID: alpha, model: opus, name: "Opus 5.5", effort: "HIGH", at: at(5, 10), calendar: calendar)
+        ledger.record(turn(2), accountID: alpha, model: opus, name: "Opus 5.5", effort: "max", at: at(5, 11), calendar: calendar)
+        ledger.record(turn(), accountID: alpha, model: opus, name: "Opus 5.5", at: at(5, 12), calendar: calendar)
+        ledger.record(turn(), accountID: beta, model: "claude-sonnet-5-5", name: "Sonnet 5.5", effort: "low", at: at(5, 12), calendar: calendar)
+        XCTAssertEqual(ledger.days[0].entries.count, 4, "One row per account, model and effort.")
+        XCTAssertEqual(ledger.effortKeys(), ["low", "high", "max", UsageEffort.clientDefault])
+        XCTAssertEqual(ledger.effortKeys(model: opus), ["high", "max", UsageEffort.clientDefault])
+
+        let summary = ledger.summary(.today, now: at(5, 18), calendar: calendar)
+        let drill = summary.modelEfforts[opus] ?? []
+        XCTAssertEqual(drill.map(\.id), ["high", "max", UsageEffort.clientDefault], "Low to max, then the client's default.")
+        XCTAssertEqual(drill.map(\.tally.replies), [2, 1, 1])
+        XCTAssertEqual(drill.reduce(TokenTally()) { $0 + $1.tally }, summary.models.first { $0.id == opus }?.tally)
+        XCTAssertEqual(summary.efforts.map(\.id), ["low", "high", "max", UsageEffort.clientDefault])
+
+        let narrowed = ledger.summary(.today, filter: .init(model: opus, effort: "max"), now: at(5, 18), calendar: calendar)
+        XCTAssertEqual(narrowed.totals.replies, 1)
+        XCTAssertEqual(narrowed.totals.total, total(turn(2)))
+
+        let byEffort = ledger.summary(.today, grouping: .effort, now: at(5, 18), calendar: calendar)
+        XCTAssertEqual(byEffort.series.map(\.id), ["low", "high", "max", UsageEffort.clientDefault])
+        XCTAssertEqual(byEffort.buckets[11].parts["max"]?.tokens, total(turn(2)))
+    }
+
+    func testRowsWrittenBeforeEffortsWereKeptReadAsUnrecorded() throws {
+        // A row as the previous ledger wrote it, without "ef".
+        let old = #"{"version":2,"days":[{"d":"2026-11-05","e":[{"a":"0A1B2C3D-1111-4AAA-8BBB-000000000001","m":"claude-opus-5-5","nm":"Opus 5.5","t":{"i":10,"o":20,"n":1}}]}]}"#
+        var ledger = try JSONDecoder().decode(UsageLedger.self, from: Data(old.utf8))
+        XCTAssertNil(ledger.days[0].entries[0].effort)
+        ledger.record(turn(), accountID: alpha, model: "claude-opus-5-5", name: "Opus 5.5", at: at(5, 9), calendar: calendar)
+        XCTAssertEqual(ledger.days[0].entries.count, 2, "A new reply never joins a row whose effort is unknown.")
+        XCTAssertEqual(ledger.effortKeys(), [UsageEffort.clientDefault, UsageEffort.unrecorded])
+        let unrecorded = ledger.summary(.today, filter: .init(effort: UsageEffort.unrecorded), now: at(5, 18), calendar: calendar)
+        XCTAssertEqual(unrecorded.totals.total, 30)
+        let decoded = try JSONDecoder().decode(UsageLedger.self, from: JSONEncoder().encode(ledger))
+        XCTAssertEqual(decoded, ledger)
+    }
 }

@@ -61,17 +61,37 @@ extension PoolAppModel {
         guard let uuid = UUID(uuidString: id), snapshot.accounts.contains(where: { $0.id == uuid }) else { return t("Removed account") }
         return accountName(uuid)
     }
+    /// An effort as the ledger keys it (`UsageEffort`), as the reader sees it.
+    func usageEffortName(_ key: String) -> String {
+        switch key {
+        case "low": return t("Low")
+        case "medium": return t("Medium")
+        case "high": return t("High")
+        case "xhigh": return t("Extra high")
+        case "max": return t("Max")
+        case UsageEffort.clientDefault: return t("Default effort")
+        case UsageEffort.unrecorded: return t("Effort not recorded")
+        default: return key
+        }
+    }
+    /// Narrows to a model, or to all of them; an effort that model never ran at is let go.
+    func setUsageModel(_ id: String?) {
+        usageFilter.model = id
+        if let id, let effort = usageFilter.effort, !usage.effortKeys(model: id).contains(effort) { usageFilter.effort = nil }
+    }
     func usagePlanName(_ plan: String) -> String { plan.isEmpty ? t("Plan not reported") : t(plan) }
     func usageSeriesName(_ share: UsageShare, grouping: UsageGrouping) -> String {
         if share.id == UsageSummary.other {
             switch grouping {
             case .model: return t("Other models")
+            case .effort: return t("Other efforts")
             case .plan: return t("Other plans")
             case .account: return t("Other accounts")
             }
         }
         switch grouping {
         case .model: return share.name
+        case .effort: return usageEffortName(share.id)
         case .plan: return usagePlanName(share.id)
         case .account: return usageAccountName(share.id)
         }
@@ -174,15 +194,25 @@ private struct UsageFilterBar: View {
             }.buttonStyle(.plain).popover(isPresented: $picking, arrowEdge: .bottom) { UsageAccountPicker(model: model) }
                 .accessibilityIdentifier("usage.accountFilter")
             Menu {
-                Button(model.t("All models")) { model.usageFilter.model = nil }
+                Button(model.t("All models")) { model.setUsageModel(nil) }
                 Divider()
                 ForEach(model.usage.modelNames.sorted { $0.value < $1.value }, id: \.key) { id, name in
-                    Button(name) { model.usageFilter.model = id }
+                    Button(name) { model.setUsageModel(id) }
                 }
             } label: {
                 chip(model.usageFilter.model.flatMap { model.usage.modelNames[$0] } ?? model.t("All models"), symbol: "cpu",
                      active: model.usageFilter.model != nil)
             }.menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize().accessibilityIdentifier("usage.modelFilter")
+            Menu {
+                Button(model.t("All efforts")) { model.usageFilter.effort = nil }
+                Divider()
+                ForEach(model.usage.effortKeys(model: model.usageFilter.model), id: \.self) { key in
+                    Button(model.usageEffortName(key)) { model.usageFilter.effort = key }
+                }
+            } label: {
+                chip(model.usageFilter.effort.map(model.usageEffortName) ?? model.t("All efforts"), symbol: "gauge.with.dots.needle.67percent",
+                     active: model.usageFilter.effort != nil)
+            }.menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize().accessibilityIdentifier("usage.effortFilter")
             if !model.usageFilter.isEmpty {
                 Button(model.t("Clear")) { model.usageFilter = .init() }.buttonStyle(.plain)
                     .font(.system(size: 11)).foregroundStyle(PoolPalette.accent).accessibilityIdentifier("usage.clearFilter")
@@ -378,6 +408,7 @@ private struct UsageTrend: View {
                     Spacer(minLength: 4)
                     Picker(model.t("Group by"), selection: $model.usageGrouping) {
                         Text(model.t("Model")).tag(UsageGrouping.model)
+                        Text(model.t("Effort")).tag(UsageGrouping.effort)
                         Text(model.t("Plan")).tag(UsageGrouping.plan)
                         Text(model.t("Account")).tag(UsageGrouping.account)
                     }.pickerStyle(.segmented).labelsHidden().controlSize(.small).fixedSize().accessibilityIdentifier("usage.grouping")
@@ -590,58 +621,117 @@ private struct UsageTableHeader: View {
 private struct UsageModels: View {
     let model: PoolAppModel
     let summary: UsageSummary
+    /// The models opened to their efforts; the one the page is narrowed to is always open.
+    @State private var opened: Set<String> = []
+    private static let columns: [CGFloat] = [40, 68, 48, 52, 58]
     var body: some View {
         let total = model.usageValue(summary.totals)
         PoolCard(padding: 0) {
             VStack(alignment: .leading, spacing: 0) {
-                UsageTableHeader(title: model.t("Models"), columns: [(model.t("Replies"), 40), (model.t("Speed"), 68), (model.t("Cache hits"), 48),
-                                                                    (model.t("Tokens"), 52), (model.t("Cost"), 58)])
+                UsageTableHeader(title: model.t("Models"), columns: zip([model.t("Replies"), model.t("Speed"), model.t("Cache hits"),
+                                                                         model.t("Tokens"), model.t("Cost")], Self.columns).map { ($0, $1) })
                 if summary.models.isEmpty {
                     Text(model.t("No replies in this period")).font(.system(size: 11)).foregroundStyle(.secondary).padding(.horizontal, 12).padding(.bottom, 12)
                 }
                 ForEach(summary.models) { share in
+                    let efforts = summary.modelEfforts[share.id] ?? []
+                    let open = isOpen(share.id)
                     Divider().padding(.leading, 12)
-                    row(share, total: total)
+                    row(share, total: total, efforts: efforts, open: open)
+                    if open {
+                        ForEach(efforts) { effort in
+                            Divider().padding(.leading, 34)
+                            effortRow(effort, of: share)
+                        }
+                    }
                 }
             }
-        }.accessibilityIdentifier("usage.models")
+        }.accessibilityIdentifier("usage.models").poolAnimation(PoolMotion.quick, value: opened)
     }
-    private func row(_ share: UsageShare, total: Double) -> some View {
+    private func isOpen(_ id: String) -> Bool { opened.contains(id) || model.usageFilter.model == id }
+    private func row(_ share: UsageShare, total: Double, efforts: [UsageShare], open: Bool) -> some View {
         let value = model.usageValue(share.tally)
         let fraction = total > 0 ? value / total : 0
         let color = summary.grouping == .model ? UsagePalette.color(of: share.id, in: summary.series) ?? UsagePalette.other : PoolPalette.accent.opacity(0.75)
         let selected = model.usageFilter.model == share.id
-        return Button { model.usageFilter.model = selected ? nil : share.id } label: {
-            HStack(spacing: 8) {
-                Circle().fill(color).frame(width: 7, height: 7)
-                VStack(alignment: .leading, spacing: 4) {
-                    ViewThatFits(in: .horizontal) {
+        return HStack(spacing: 0) {
+            // Opens the model to its efforts; closed again unless the page is narrowed to it.
+            Button {
+                if opened.contains(share.id) { opened.remove(share.id) } else { opened.insert(share.id) }
+            } label: {
+                Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold)).foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(open ? 90 : 0)).frame(width: 22, height: 28).contentShape(Rectangle())
+            }.buttonStyle(.plain).padding(.leading, 4).disabled(efforts.isEmpty || model.usageFilter.model == share.id)
+                .help(model.t(open ? "Hide efforts" : "Show by effort")).accessibilityIdentifier("usage.modelEfforts")
+            Button {
+                // Narrowed to one of its efforts, the model's row widens back to the whole model; otherwise it toggles.
+                let whole = selected && model.usageFilter.effort == nil
+                model.usageFilter.effort = nil
+                model.setUsageModel(whole ? nil : share.id)
+            } label: {
+                HStack(spacing: 8) {
+                    Circle().fill(color).frame(width: 7, height: 7)
+                    VStack(alignment: .leading, spacing: 4) {
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 6) {
+                                Text(share.name).font(.system(size: 11, weight: .medium)).lineLimit(1).fixedSize()
+                                priceText(share.id)
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(share.name).font(.system(size: 11, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+                                priceText(share.id)
+                            }
+                        }
                         HStack(spacing: 6) {
-                            Text(share.name).font(.system(size: 11, weight: .medium)).lineLimit(1).fixedSize()
-                            priceText(share.id)
+                            UsageShareBar(fraction: fraction, color: color)
+                            Text(model.percentText(fraction)).font(.system(size: 10)).foregroundStyle(.secondary).frame(width: 34, alignment: .trailing)
                         }
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(share.name).font(.system(size: 11, weight: .medium)).fixedSize(horizontal: false, vertical: true)
-                            priceText(share.id)
-                        }
-                    }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    figures(share.tally, priced: ModelPricing.price(for: share.id) != nil)
+                }
+                .padding(.trailing, 12).padding(.leading, 2).padding(.vertical, 8).contentShape(Rectangle())
+            }.buttonStyle(.plain).help(model.t(selected ? "Show all models" : "Show only this model"))
+                .accessibilityElement(children: .combine)
+        }
+        .font(.system(size: 11)).monospacedDigit()
+        .background(selected ? PoolPalette.accent.opacity(0.06) : .clear)
+    }
+    /// One effort of a model: its share of that model's use, and the same figures as the model's row.
+    private func effortRow(_ share: UsageShare, of parent: UsageShare) -> some View {
+        let whole = model.usageValue(parent.tally)
+        let fraction = whole > 0 ? model.usageValue(share.tally) / whole : 0
+        let color = summary.grouping == .effort ? UsagePalette.color(of: share.id, in: summary.series) ?? UsagePalette.other
+            : PoolPalette.accent.opacity(0.5)
+        let selected = model.usageFilter.model == parent.id && model.usageFilter.effort == share.id
+        return Button {
+            if selected { model.usageFilter.effort = nil } else { model.usageFilter.model = parent.id; model.usageFilter.effort = share.id }
+        } label: {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(model.usageEffortName(share.id)).font(.system(size: 11)).foregroundStyle(share.id == UsageEffort.unrecorded ? .secondary : .primary)
+                        .fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 6) {
                         UsageShareBar(fraction: fraction, color: color)
                         Text(model.percentText(fraction)).font(.system(size: 10)).foregroundStyle(.secondary).frame(width: 34, alignment: .trailing)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
-                Text(share.tally.replies.formatted(.number.locale(model.locale))).foregroundStyle(.secondary).frame(width: 40, alignment: .trailing)
-                Text(share.tally.tokensPerSecond.map { model.t("{0} tok/s", $0.formatted(.number.precision(.fractionLength($0 < 10 ? 1 : 0)).locale(model.locale))) } ?? "—")
-                    .foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8).frame(width: 68, alignment: .trailing)
-                    .help(model.t("Output tokens per second of generation, from replies that reported a time. Tool waits are not counted."))
-                Text(share.tally.cacheHitRate.map(model.percentText) ?? "—").foregroundStyle(.secondary).frame(width: 48, alignment: .trailing)
-                Text(model.tokenText(share.tally.total)).foregroundStyle(.secondary).frame(width: 52, alignment: .trailing)
-                Text(ModelPricing.price(for: share.id) == nil ? "—" : model.costText(share.tally.cost)).fontWeight(.medium).frame(width: 58, alignment: .trailing)
+                figures(share.tally, priced: ModelPricing.price(for: parent.id) != nil)
             }
-            .font(.system(size: 11)).monospacedDigit().padding(.horizontal, 12).padding(.vertical, 8)
-            .background(selected ? PoolPalette.accent.opacity(0.06) : .clear).contentShape(Rectangle())
-        }.buttonStyle(.plain).help(model.t(selected ? "Show all models" : "Show only this model"))
-            .accessibilityElement(children: .combine)
+            .font(.system(size: 11)).monospacedDigit().padding(.leading, 41).padding(.trailing, 12).padding(.vertical, 6)
+            .background(selected ? PoolPalette.accent.opacity(0.1) : Color.primary.opacity(0.02)).contentShape(Rectangle())
+        }.buttonStyle(.plain)
+            .help(share.id == UsageEffort.unrecorded ? model.t("Replies counted before Pool kept the effort.")
+                  : model.t(selected ? "Show every effort of this model" : "Show only this effort"))
+            .accessibilityElement(children: .combine).accessibilityIdentifier("usage.effort.\(share.id)")
+    }
+    @ViewBuilder private func figures(_ tally: TokenTally, priced: Bool) -> some View {
+        Text(tally.replies.formatted(.number.locale(model.locale))).foregroundStyle(.secondary).frame(width: Self.columns[0], alignment: .trailing)
+        Text(tally.tokensPerSecond.map { model.t("{0} tok/s", $0.formatted(.number.precision(.fractionLength($0 < 10 ? 1 : 0)).locale(model.locale))) } ?? "—")
+            .foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8).frame(width: Self.columns[1], alignment: .trailing)
+            .help(model.t("Output tokens per second of generation, from replies that reported a time. Tool waits are not counted."))
+        Text(tally.cacheHitRate.map(model.percentText) ?? "—").foregroundStyle(.secondary).frame(width: Self.columns[2], alignment: .trailing)
+        Text(model.tokenText(tally.total)).foregroundStyle(.secondary).frame(width: Self.columns[3], alignment: .trailing)
+        Text(priced ? model.costText(tally.cost) : "—").fontWeight(.medium).frame(width: Self.columns[4], alignment: .trailing)
     }
     @ViewBuilder private func priceText(_ id: String) -> some View {
         if let price = ModelPricing.price(for: id) {

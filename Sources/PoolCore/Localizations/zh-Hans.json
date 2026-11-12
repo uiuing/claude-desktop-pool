@@ -699,5 +699,20 @@
   "Each conversation stays on its account to read its prompt cache, and moves only when that costs less.": "每个对话尽量留在原账号上读取缓存，只在换号更省时才换。",
   "A conversation's subagents run on different accounts at once, by what each has left and how busy it is.": "一个对话的多个子代理同时跑在不同账号上，按各账号的剩余额度和忙碌程度分配。",
   "When every account is at its limit, Desktop is told when the first is back, and you get a notification.": "所有账号都达到上限时，会告诉 Desktop 第一个账号何时恢复，并发通知提醒你。",
-  "Keys, passwords and personal info are hidden on this Mac before anything is sent.": "密钥、密码和个人信息先在本机隐藏，再发送出去。"
+  "Keys, passwords and personal info are hidden on this Mac before anything is sent.": "密钥、密码和个人信息先在本机隐藏，再发送出去。",
+  "Low": "低",
+  "Medium": "中",
+  "High": "高",
+  "Extra high": "超高",
+  "Max": "最高",
+  "Default effort": "默认推理",
+  "Effort not recorded": "未记录推理",
+  "Other efforts": "其他推理程度",
+  "All efforts": "全部推理程度",
+  "Effort": "推理程度",
+  "Replies counted before Pool kept the effort.": "Pool 开始记录推理程度之前的回复。",
+  "Hide efforts": "收起推理程度",
+  "Show by effort": "按推理程度展开",
+  "Show every effort of this model": "显示这个模型的全部推理程度",
+  "Show only this effort": "只看这个推理程度"
 }

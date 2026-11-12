@@ -1119,7 +1119,9 @@ public actor PoolCoordinator: BridgeBackend {
                             // Generating time of this request, as the quota progress counts it; tool waits are not in it.
                             let date = now(), current = bindings[id] ?? binding
                             let seconds = current.generationDuration + (current.generationBeganAt.map { max(0, date.timeIntervalSince($0)) } ?? 0)
-                            onUpdate(.usage(scope: AccountScope(binding.accountAtStart), model: model.listedID, name: model.listedName, usage: usage, at: date,
+                            // The run's own effort: the one it was started with, which every call of it keeps.
+                            onUpdate(.usage(scope: AccountScope(binding.accountAtStart), model: model.listedID, name: model.listedName,
+                                            effort: current.request.effort, usage: usage, at: date,
                                             generationSeconds: seconds > 0 ? seconds : nil))
                             if request.messages.count == 1, !replay, !binding.session.isOneOff {
                                 measureOpening(model: request.model, tokens: max(0, usage.cacheReadInputTokens ?? 0))

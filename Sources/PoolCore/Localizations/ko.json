@@ -699,5 +699,20 @@
   "Each conversation stays on its account to read its prompt cache, and moves only when that costs less.": "대화는 캐시를 읽을 수 있도록 같은 계정에 머물고, 옮기는 편이 더 저렴할 때만 옮깁니다.",
   "A conversation's subagents run on different accounts at once, by what each has left and how busy it is.": "대화의 서브에이전트는 각 계정의 남은 양과 바쁜 정도에 따라 여러 계정에서 동시에 실행됩니다.",
   "When every account is at its limit, Desktop is told when the first is back, and you get a notification.": "모든 계정이 한도에 도달하면 첫 계정이 언제 복구되는지 Desktop에 알리고, 알림으로도 알려 드립니다.",
-  "Keys, passwords and personal info are hidden on this Mac before anything is sent.": "키, 비밀번호, 개인 정보는 보내기 전에 이 Mac에서 가려집니다."
+  "Keys, passwords and personal info are hidden on this Mac before anything is sent.": "키, 비밀번호, 개인 정보는 보내기 전에 이 Mac에서 가려집니다.",
+  "Low": "낮음",
+  "Medium": "중간",
+  "High": "높음",
+  "Extra high": "매우 높음",
+  "Max": "최대",
+  "Default effort": "기본 추론",
+  "Effort not recorded": "추론 기록 없음",
+  "Other efforts": "기타 추론 수준",
+  "All efforts": "모든 추론 수준",
+  "Effort": "추론 수준",
+  "Replies counted before Pool kept the effort.": "Pool이 추론 수준을 기록하기 전의 응답입니다.",
+  "Hide efforts": "추론 수준 숨기기",
+  "Show by effort": "추론 수준별 보기",
+  "Show every effort of this model": "이 모델의 모든 추론 수준 보기",
+  "Show only this effort": "이 추론 수준만 보기"
 }

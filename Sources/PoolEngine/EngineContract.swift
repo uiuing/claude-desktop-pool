@@ -14,7 +14,7 @@ public enum EngineUpdate: Sendable {
     case terminal(sessionID: UUID, data: Data)
     case route(RouteDecision)
     /// A reply's tokens as the official client reported them, once per reply, for the usage ledger.
-    case usage(scope: AccountScope, model: String, name: String, usage: BridgeUsage, at: Date, generationSeconds: TimeInterval?)
+    case usage(scope: AccountScope, model: String, name: String, effort: String?, usage: BridgeUsage, at: Date, generationSeconds: TimeInterval?)
     /// What a model alias runs on now, as a session on it reported.
     case model(ModelIdentity)
 }

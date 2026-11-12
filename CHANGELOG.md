@@ -4,6 +4,10 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+### Added
+
+- The Usage page goes down to reasoning effort. Each model in the models table opens to the efforts its replies ran at, with their replies, speed, cache hits, tokens and cost; a filter narrows the page to one effort, and the chart can stack by effort. Replies counted before this version show as "Effort not recorded".
+
 ## [0.2.9] - 2026-11-12
 
 ### Changed

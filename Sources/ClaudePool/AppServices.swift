@@ -1147,9 +1147,9 @@ final class AppServices {
             var changed = false
             do { try await mutate { next in changed = next.record(identity) } } catch { report(error) }
             if changed { await server?.updateModels(PoolModel.listing(library.reportedModels ?? [])) }
-        case .usage(let scope, let id, let name, let usage, let at, let seconds):
+        case .usage(let scope, let id, let name, let effort, let usage, let at, let seconds):
             guard library.accounts.contains(where: scope.matches) else { return }
-            model.usage.record(usage, accountID: scope.accountID, model: id, name: name, at: at, seconds: seconds)
+            model.usage.record(usage, accountID: scope.accountID, model: id, name: name, effort: effort, at: at, seconds: seconds)
             scheduleUsageSave()
         case .route(let decision):
             model.recordRoute(decision)

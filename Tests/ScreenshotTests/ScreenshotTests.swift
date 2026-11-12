@@ -91,9 +91,12 @@ final class ScreenshotTests: XCTestCase {
                         model.usage = PoolAppModel.demoUsage(ids: model.snapshot.accounts.map(\.id), now: date)
                     }
                     model.page = .usage
-                    for (name, grouping, metric) in [("model", UsageGrouping.model, UsageMetric.tokens), ("account", .account, .cost), ("plan", .plan, .tokens)] {
+                    for (name, grouping, metric) in [("model", UsageGrouping.model, UsageMetric.tokens), ("account", .account, .cost), ("plan", .plan, .tokens),
+                                                     ("effort", .effort, .cost)] {
                         if count == 4 && name == "plan" { continue }
                         model.usageGrouping = grouping; model.usageMetric = metric
+                        // By effort, narrowed to one model, so its row is open to its efforts.
+                        model.usageFilter = name == "effort" ? .init(model: "claude-opus-5-5") : .init()
                         try await capture(MainWindow(model: model), size: .init(width: 680, height: 1900), dark: dark,
                                           to: output.appendingPathComponent("usage-\(count)-\(name)-\(suffix).png"))
                     }

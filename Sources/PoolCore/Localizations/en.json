@@ -699,5 +699,20 @@
   "Each conversation stays on its account to read its prompt cache, and moves only when that costs less.": "Each conversation stays on its account to read its prompt cache, and moves only when that costs less.",
   "A conversation's subagents run on different accounts at once, by what each has left and how busy it is.": "A conversation's subagents run on different accounts at once, by what each has left and how busy it is.",
   "When every account is at its limit, Desktop is told when the first is back, and you get a notification.": "When every account is at its limit, Desktop is told when the first is back, and you get a notification.",
-  "Keys, passwords and personal info are hidden on this Mac before anything is sent.": "Keys, passwords and personal info are hidden on this Mac before anything is sent."
+  "Keys, passwords and personal info are hidden on this Mac before anything is sent.": "Keys, passwords and personal info are hidden on this Mac before anything is sent.",
+  "Low": "Low",
+  "Medium": "Medium",
+  "High": "High",
+  "Extra high": "Extra high",
+  "Max": "Max",
+  "Default effort": "Default effort",
+  "Effort not recorded": "Effort not recorded",
+  "Other efforts": "Other efforts",
+  "All efforts": "All efforts",
+  "Effort": "Effort",
+  "Replies counted before Pool kept the effort.": "Replies counted before Pool kept the effort.",
+  "Hide efforts": "Hide efforts",
+  "Show by effort": "Show by effort",
+  "Show every effort of this model": "Show every effort of this model",
+  "Show only this effort": "Show only this effort"
 }

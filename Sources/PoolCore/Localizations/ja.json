@@ -699,5 +699,20 @@
   "Each conversation stays on its account to read its prompt cache, and moves only when that costs less.": "会話はキャッシュを読めるよう同じアカウントにとどまり、移る方が安いときだけ移ります。",
   "A conversation's subagents run on different accounts at once, by what each has left and how busy it is.": "会話のサブエージェントは、各アカウントの残りと混み具合に応じて、複数のアカウントで同時に動きます。",
   "When every account is at its limit, Desktop is told when the first is back, and you get a notification.": "すべてのアカウントが上限に達すると、最初のアカウントがいつ回復するかを Desktop に伝え、通知でもお知らせします。",
-  "Keys, passwords and personal info are hidden on this Mac before anything is sent.": "キー、パスワード、個人情報は送信前にこの Mac 上で隠されます。"
+  "Keys, passwords and personal info are hidden on this Mac before anything is sent.": "キー、パスワード、個人情報は送信前にこの Mac 上で隠されます。",
+  "Low": "低",
+  "Medium": "中",
+  "High": "高",
+  "Extra high": "超高",
+  "Max": "最大",
+  "Default effort": "既定の推論",
+  "Effort not recorded": "推論未記録",
+  "Other efforts": "その他の推論レベル",
+  "All efforts": "すべての推論レベル",
+  "Effort": "推論レベル",
+  "Replies counted before Pool kept the effort.": "Pool が推論レベルを記録する前の返信です。",
+  "Hide efforts": "推論レベルを隠す",
+  "Show by effort": "推論レベル別に表示",
+  "Show every effort of this model": "このモデルのすべての推論レベルを表示",
+  "Show only this effort": "この推論レベルのみ表示"
 }

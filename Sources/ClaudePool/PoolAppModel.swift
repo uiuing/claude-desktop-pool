@@ -1077,7 +1077,10 @@ final class PoolAppModel {
                                         cacheReadInputTokens: 30_000 + next(160_000), cacheCreationInputTokens: write,
                                         oneHourCacheWrites: next(5) == 0 ? 0 : write)
                 let speed = Double(30 + next(60))
-                ledger.record(usage, accountID: account, model: model.0, name: model.1, at: at, seconds: Double(usage.outputTokens) / speed)
+                // Most turns at the client's default or high, a few lower or higher.
+                let effort = [nil, nil, nil, "high", "high", "medium", "xhigh", "max", "low"][next(9)]
+                ledger.record(usage, accountID: account, model: model.0, name: model.1, effort: effort, at: at,
+                              seconds: Double(usage.outputTokens) / speed)
             }
         }
         return ledger

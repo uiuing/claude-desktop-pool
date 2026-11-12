@@ -100,20 +100,44 @@ public struct TokenTally: Codable, Equatable, Sendable {
     }
 }
 
-/// One account and model's replies on one day.
+/// The effort a reply ran at, as the ledger keeps it: one of the official client's `--effort` levels,
+/// `default` when the client named none and the run kept Claude Code's own, or `unrecorded` for rows
+/// written before Pool kept the effort.
+public enum UsageEffort {
+    public static let levels = ["low", "medium", "high", "xhigh", "max"]
+    public static let clientDefault = "default"
+    public static let unrecorded = "unrecorded"
+    /// What the ledger stores for a run's effort.
+    public static func key(_ effort: String?) -> String {
+        guard let effort = effort?.lowercased(), levels.contains(effort) else { return clientDefault }
+        return effort
+    }
+    /// Low to max, then the client's default, then rows without one.
+    public static func rank(_ key: String) -> Int {
+        if let index = levels.firstIndex(of: key) { return index }
+        return key == clientDefault ? levels.count : levels.count + 1
+    }
+}
+
+/// One account, model and effort's replies on one day.
 public struct UsageEntry: Codable, Equatable, Sendable {
     public var accountID: UUID
     /// The model id the official client reported (`claude-opus-5-5`); the key prices and filters use.
     public var model: String
     /// Its name as the client lists it (`Opus 5.5`).
     public var name: String
+    /// The effort the run went at; nil in rows written before Pool kept it.
+    public var effort: String?
     public var tally: TokenTally
     /// Tokens by local hour, 24 values; kept for today and yesterday only.
     public var hours: [Int]?
-    public init(accountID: UUID, model: String, name: String, tally: TokenTally = .init(), hours: [Int]? = Array(repeating: 0, count: 24)) {
-        self.accountID = accountID; self.model = model; self.name = name; self.tally = tally; self.hours = hours
+    public init(accountID: UUID, model: String, name: String, effort: String? = nil, tally: TokenTally = .init(),
+                hours: [Int]? = Array(repeating: 0, count: 24)) {
+        self.accountID = accountID; self.model = model; self.name = name; self.effort = effort; self.tally = tally; self.hours = hours
     }
-    private enum CodingKeys: String, CodingKey { case accountID = "a", model = "m", name = "nm", tally = "t", hours = "hr" }
+    /// The effort as the page groups and filters it.
+    public var effortKey: String { effort ?? UsageEffort.unrecorded }
+    private enum CodingKeys: String, CodingKey { case accountID = "a", model = "m", name = "nm", effort = "ef", tally = "t", hours = "hr" }
 }
 
 public struct UsageDay: Codable, Equatable, Sendable {
@@ -132,18 +156,23 @@ public enum UsageRange: String, CaseIterable, Codable, Sendable, Identifiable {
 
 /// What the trend chart stacks.
 public enum UsageGrouping: String, CaseIterable, Sendable, Identifiable {
-    case model, plan, account
+    case model, effort, plan, account
     public var id: String { rawValue }
 }
 
-/// The accounts and model the page is narrowed to; nil is all.
+/// The accounts, model and effort the page is narrowed to; nil is all. The effort is a ledger key
+/// (`UsageEffort`), so `unrecorded` narrows to rows written before Pool kept it.
 public struct UsageFilter: Hashable, Sendable {
     public var accounts: Set<UUID>?
     public var model: String?
-    public init(accounts: Set<UUID>? = nil, model: String? = nil) { self.accounts = accounts; self.model = model }
-    public var isEmpty: Bool { accounts == nil && model == nil }
+    public var effort: String?
+    public init(accounts: Set<UUID>? = nil, model: String? = nil, effort: String? = nil) {
+        self.accounts = accounts; self.model = model; self.effort = effort
+    }
+    public var isEmpty: Bool { accounts == nil && model == nil && effort == nil }
     func keeps(_ entry: UsageEntry) -> Bool {
         (accounts.map { $0.contains(entry.accountID) } ?? true) && (model.map { $0 == entry.model } ?? true)
+            && (effort.map { $0 == entry.effortKey } ?? true)
     }
 }
 
@@ -184,6 +213,10 @@ public struct UsageSummary: Equatable, Sendable {
     public var series: [UsageShare] = []
     /// Largest first. Model ids, plan names ("" when not reported), account UUID strings.
     public var models: [UsageShare] = []
+    /// Each model's replies by effort, keyed by model id; low to max, then default and unrecorded.
+    public var modelEfforts: [String: [UsageShare]] = [:]
+    /// The range's replies by effort across the models shown, in the same order.
+    public var efforts: [UsageShare] = []
     public var plans: [UsageShare] = []
     public var accounts: [UsageShare] = []
     public var activeDays = 0
@@ -217,7 +250,10 @@ public struct UsageLedger: Codable, Equatable, Sendable {
 
     public var isEmpty: Bool { days.isEmpty }
 
-    public mutating func record(_ usage: BridgeUsage, accountID: UUID, model: String, name: String, at date: Date, seconds: TimeInterval? = nil, calendar: Calendar = .current) {
+    /// `effort` is the run's `--effort`, nil when the client named none and the run kept Claude Code's own.
+    public mutating func record(_ usage: BridgeUsage, accountID: UUID, model: String, name: String, effort: String? = nil, at date: Date,
+                                seconds: TimeInterval? = nil, calendar: Calendar = .current) {
+        let effort = UsageEffort.key(effort)
         let tally = TokenTally(usage, price: ModelPricing.price(for: model), seconds: seconds)
         guard tally.total > 0 else { return }
         let key = Self.key(date, calendar: calendar), hour = calendar.component(.hour, from: date)
@@ -229,14 +265,14 @@ public struct UsageLedger: Codable, Equatable, Sendable {
             index = days.firstIndex { $0.day > key } ?? days.endIndex
             days.insert(UsageDay(day: key), at: index)
             compact(now: date, calendar: calendar)
-            return record(usage, accountID: accountID, model: model, name: name, at: date, seconds: seconds, calendar: calendar)
+            return record(usage, accountID: accountID, model: model, name: name, effort: effort, at: date, seconds: seconds, calendar: calendar)
         }
-        if let entry = days[index].entries.firstIndex(where: { $0.accountID == accountID && $0.model == model }) {
+        if let entry = days[index].entries.firstIndex(where: { $0.accountID == accountID && $0.model == model && $0.effort == effort }) {
             days[index].entries[entry].tally += tally
             days[index].entries[entry].name = name
             if days[index].entries[entry].hours != nil { days[index].entries[entry].hours?[hour] += tally.total }
         } else {
-            var entry = UsageEntry(accountID: accountID, model: model, name: name, tally: tally)
+            var entry = UsageEntry(accountID: accountID, model: model, name: name, effort: effort, tally: tally)
             entry.hours?[hour] = tally.total
             days[index].entries.append(entry)
         }
@@ -263,6 +299,14 @@ public struct UsageLedger: Codable, Equatable, Sendable {
         return names
     }
 
+    /// The efforts seen, ledger keys low to max then default and unrecorded: what the page's effort filter
+    /// offers; only those of `model` when one is given.
+    public func effortKeys(model: String? = nil) -> [String] {
+        var keys = Set<String>()
+        for day in days { for entry in day.entries where model == nil || entry.model == model { keys.insert(entry.effortKey) } }
+        return keys.sorted { UsageEffort.rank($0) < UsageEffort.rank($1) }
+    }
+
     public func summary(_ range: UsageRange, filter: UsageFilter = .init(), grouping: UsageGrouping = .model,
                         plans: [UUID: String] = [:], now: Date, calendar: Calendar = .current) -> UsageSummary {
         var summary = UsageSummary(range: range, grouping: grouping)
@@ -271,10 +315,11 @@ public struct UsageLedger: Codable, Equatable, Sendable {
         for day in days { byKey[day.day] = day.entries.filter(filter.keeps) }
         var models: [String: TokenTally] = [:], names: [String: String] = [:]
         var planTotals: [String: TokenTally] = [:], accounts: [UUID: TokenTally] = [:], trends: [UUID: [Int]] = [:]
-        var groups: [String: TokenTally] = [:]
+        var groups: [String: TokenTally] = [:], modelEfforts: [String: [String: TokenTally]] = [:], efforts: [String: TokenTally] = [:]
         func groupKey(_ entry: UsageEntry) -> String {
             switch grouping {
             case .model: return entry.model
+            case .effort: return entry.effortKey
             case .plan: return plans[entry.accountID] ?? ""
             case .account: return entry.accountID.uuidString
             }
@@ -282,6 +327,8 @@ public struct UsageLedger: Codable, Equatable, Sendable {
         func take(_ entry: UsageEntry) {
             summary.totals += entry.tally
             models[entry.model, default: .init()] += entry.tally; names[entry.model] = entry.name
+            modelEfforts[entry.model, default: [:]][entry.effortKey, default: .init()] += entry.tally
+            efforts[entry.effortKey, default: .init()] += entry.tally
             planTotals[plans[entry.accountID] ?? "", default: .init()] += entry.tally
             accounts[entry.accountID, default: .init()] += entry.tally
             groups[groupKey(entry), default: .init()] += entry.tally
@@ -348,11 +395,18 @@ public struct UsageLedger: Codable, Equatable, Sendable {
                 .sorted { ($0.tally.total, $1.id) > ($1.tally.total, $0.id) }
         }
         summary.models = ranked(models) { names[$0] ?? $0 }
+        func byEffort(_ values: [String: TokenTally]) -> [UsageShare] {
+            values.map { UsageShare(id: $0.key, name: $0.key, tally: $0.value) }.sorted { UsageEffort.rank($0.id) < UsageEffort.rank($1.id) }
+        }
+        summary.modelEfforts = modelEfforts.mapValues(byEffort)
+        summary.efforts = byEffort(efforts)
         summary.plans = ranked(planTotals) { $0 }
         summary.accounts = accounts.map { UsageShare(id: $0.key.uuidString, name: "", tally: $0.value, trend: trends[$0.key] ?? []) }
             .sorted { ($0.tally.total, $1.id) > ($1.tally.total, $0.id) }
         // The chart colors the largest few series; the rest are stacked together as one.
-        let series = ranked(groups) { grouping == .model ? names[$0] ?? $0 : $0 }
+        var series = ranked(groups) { grouping == .model ? names[$0] ?? $0 : $0 }
+        // Efforts keep their order, low to max, whatever each used.
+        if grouping == .effort { series.sort { UsageEffort.rank($0.id) < UsageEffort.rank($1.id) } }
         if series.count > Self.seriesLimit + 1 {
             let kept = Set(series.prefix(Self.seriesLimit).map(\.id))
             var other = UsageShare(id: UsageSummary.other, name: "", tally: .init())

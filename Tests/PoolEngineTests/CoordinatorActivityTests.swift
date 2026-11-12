@@ -8,7 +8,8 @@ final class CoordinatorActivityTests: XCTestCase {
         let account = PoolAccount(email: "po•••olive@example.com", plan: "Pro", state: .ready)
         let worker = ActivityWorker(), updates = ActivityUpdates(), date = Date(timeIntervalSince1970: 1_800_000_000)
         let pool = PoolCoordinator(accounts: [account], now: { date }, factory: { _, _ in worker }, onUpdate: { updates.record($0) })
-        let stream = try await pool.events(for: request(), conversationID: "activity")
+        var first = request(); first.effort = "high"
+        let stream = try await pool.events(for: first, conversationID: "activity")
         let response = Task { for try await _ in stream {} }
         try await activityWait { await worker.started }
         XCTAssertTrue(updates.progresses.isEmpty)
@@ -29,6 +30,7 @@ final class CoordinatorActivityTests: XCTestCase {
         XCTAssertEqual(updates.ledger.first?.scope, AccountScope(account))
         XCTAssertEqual(updates.ledger.first?.at, date)
         XCTAssertFalse(updates.ledger.first?.model.isEmpty ?? true)
+        XCTAssertEqual(updates.ledger.first?.effort, "high", "The ledger takes the effort the run went at.")
         XCTAssertTrue(updates.states.allSatisfy { $0.scope == AccountScope(account) && $0.sessionID == worker.id })
 
         var continued = request()
@@ -41,6 +43,7 @@ final class CoordinatorActivityTests: XCTestCase {
         try await nextResponse.value
         XCTAssertEqual(Set(updates.progresses.map { $0.progress.requestID }).count, 2, "Each measured attempt has a distinct deduplication identity.")
         XCTAssertEqual(updates.ledger.count, 2)
+        XCTAssertEqual(updates.ledger.last?.effort, "high", "A turn that names no effort is counted at the run's own.")
         let closed = await pool.shutdown(); XCTAssertTrue(closed)
     }
 
@@ -141,7 +144,7 @@ private final class ActivityUpdates: @unchecked Sendable {
     private let lock = NSLock()
     private var progressStorage: [Progress] = []
     private var stateStorage: [State] = []
-    struct Ledger { var scope: AccountScope; var model: String; var at: Date }
+    struct Ledger { var scope: AccountScope; var model: String; var effort: String?; var at: Date }
     private var ledgerStorage: [Ledger] = []
     var ledger: [Ledger] { lock.withLock { ledgerStorage } }
     var progresses: [Progress] { lock.withLock { progressStorage } }
@@ -150,7 +153,9 @@ private final class ActivityUpdates: @unchecked Sendable {
         lock.withLock {
             if case .progress(let scope, let id, let progress) = update { progressStorage.append(.init(scope: scope, sessionID: id, progress: progress)) }
             if case .workState(let scope, let id, let state, _) = update { stateStorage.append(.init(scope: scope, sessionID: id, state: state)) }
-            if case .usage(let scope, let model, _, _, let at, _) = update { ledgerStorage.append(.init(scope: scope, model: model, at: at)) }
+            if case .usage(let scope, let model, _, let effort, _, let at, _) = update {
+                ledgerStorage.append(.init(scope: scope, model: model, effort: effort, at: at))
+            }
         }
     }
 }
