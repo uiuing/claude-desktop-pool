@@ -4,6 +4,31 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+### Fixed
+
+- The menu bar panel and the main window do far less at each change while many conversations work. Every request and every change of a session had the panel sized again, card by card, and the main window laid its whole page out several times over to size itself.
+- A request that finds every account at its limit is told so, with when the first account is back, instead of "No account is available" as a moment's overload. Claude Code set to wait for a limit's reset now waits and goes on by itself.
+- A new conversation no longer goes to an account about to reach its 5-hour limit because that limit resets within hours.
+- A conversation's own task that is told again goes back to the account it was on, so it reads that account's prompt cache instead of being written whole on another.
+- A conversation is no longer written to the prompt cache whole after Claude Code's own request between turns (its next-prompt suggestion), or when Claude Code compacts in the middle of a turn. The session is cut where that turn began and goes on from there, so the next reply reads the cache.
+- A long conversation no longer goes from account to account, written to the prompt cache whole on each. Writing it whole was taken for what its turns cost, so it left every account with a tenth or more still there.
+- A conversation with very many images is no longer refused when it is told again in a new session.
+- Sessions shelved before a forced quit or a crash are found again at the next launch.
+- Starting several subagents at once no longer waits a second and a half each on local redaction.
+
+### Added
+
+- The reasoning effort chosen in Claude Desktop is used by the session.
+- Claude's thinking is shown in Claude Desktop as it streams.
+- A notification when the whole pool reaches its limit, with when the first account is back, and when an account is available again.
+- The app log says when the app stopped responding, for how long, and where in the code its main thread was (`ui.stall`, `ui.stalled`, `ui.stack`): code positions only.
+
+### Changed
+
+- When a conversation leaves an account that is running low is decided by what its turns were measured to cost there, not by a fixed share alone; the switch threshold in Settings is the least kept back, and counts for less the longer a conversation is, since a long one costs more to move than it leaves behind. Pools of Pro accounts, where one turn can take a tenth of an account, are served by what they have left.
+- Old session files, leftover session folders, removed accounts' folders and unused Claude Code versions are removed by themselves.
+- Tool results reach the session sooner, large requests are read once, and animations pause while their window is hidden.
+
 ## [0.2.6] - 2026-11-11
 
 ### Fixed
