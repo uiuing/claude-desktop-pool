@@ -158,6 +158,47 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(body["content"]?.arrayValue?[1]["id"], .string("tool_fixture"))
         XCTAssertThrowsError(try encoder.encode(.text("Late event")))
     }
+    /// Thinking is a block of its own, closed before the words open, its indexes running on with
+    /// theirs and the call's; the whole body keeps it only with its signature.
+    func testThinkingIsItsOwnBlockClosedBeforeTheWords() throws {
+        var encoder = MessageResponseEncoder(model: "claude-sonnet", id: "msg_fixture")
+        var chunks = try encoder.encode(.usage(.init(inputTokens: 3, outputTokens: 1)))
+        chunks += try encoder.encode(.thinking("Weighing"))
+        chunks += try encoder.encode(.thinking(" the file"))
+        chunks += try encoder.encode(.thinkingSignature("c2lnLXN5bnRoZXRpYw=="))
+        chunks += try encoder.encode(.text("Reading"))
+        chunks += try encoder.encode(.toolUse(.init(id: "toolu_fixture", name: "read_file", input: .object(["path": .string("a")]))))
+        chunks += try encoder.encode(.finished(.toolUse))
+        let events = try Self.events(chunks)
+        let blocks = events.filter { ($0["type"]?.stringValue ?? "").hasPrefix("content_block") }
+            .map { "\($0["type"]!.stringValue!):\(Int($0["index"]?.doubleValue ?? -1)):" + ($0["content_block"]?["type"]?.stringValue ?? $0["delta"]?["type"]?.stringValue ?? "") }
+        XCTAssertEqual(blocks, ["content_block_start:0:thinking", "content_block_delta:0:thinking_delta", "content_block_delta:0:thinking_delta",
+                                "content_block_delta:0:signature_delta", "content_block_stop:0:",
+                                "content_block_start:1:text", "content_block_delta:1:text_delta", "content_block_stop:1:",
+                                "content_block_start:2:tool_use", "content_block_delta:2:input_json_delta", "content_block_stop:2:"])
+        XCTAssertEqual(events.first { $0["type"] == .string("content_block_start") }?["content_block"],
+                       .object(["type": .string("thinking"), "thinking": .string(""), "signature": .string("")]))
+        let body = try JSONDecoder().decode(JSONValue.self, from: encoder.completeBody())
+        XCTAssertEqual(body["content"]?.arrayValue?.map { $0["type"]?.stringValue ?? "" }, ["thinking", "text", "tool_use"])
+        XCTAssertEqual(body["content"]?.arrayValue?.first,
+                       .object(["type": .string("thinking"), "thinking": .string("Weighing the file"), "signature": .string("c2lnLXN5bnRoZXRpYw==")]))
+    }
+    /// Thinking cut off before its signature is shown as it streamed but left out of the whole body,
+    /// so the client never sends it back unsigned.
+    func testUnsignedThinkingIsLeftOutOfTheWholeBody() throws {
+        var encoder = MessageResponseEncoder(model: "claude-sonnet", id: "msg_fixture")
+        var chunks = try encoder.encode(.thinking("Weighing"))
+        chunks += try encoder.encode(.text("Answer"))
+        chunks += try encoder.encode(.finished(.endTurn))
+        let starts = try Self.events(chunks).filter { $0["type"] == .string("content_block_start") }
+        XCTAssertEqual(starts.map { Int($0["index"]?.doubleValue ?? -1) }, [0, 1])
+        let body = try JSONDecoder().decode(JSONValue.self, from: encoder.completeBody())
+        XCTAssertEqual(body["content"]?.arrayValue, [.object(["type": .string("text"), "text": .string("Answer")])])
+    }
+    private static func events(_ chunks: [Data]) throws -> [JSONValue] {
+        try String(decoding: chunks.reduce(Data(), +), as: UTF8.self).components(separatedBy: "\n")
+            .filter { $0.hasPrefix("data: ") }.map { try JSONDecoder().decode(JSONValue.self, from: Data($0.dropFirst(6).utf8)) }
+    }
     /// What the request read, told before the reply, is in `message_start` as Anthropic's is: Claude
     /// Code counts the conversation's context from it, and from `message_delta` only the output.
     func testMessageStartSaysWhatTheRequestRead() throws {
@@ -359,6 +400,15 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(limited.status, 429)
         XCTAssertEqual(limited.headers["Retry-After"].flatMap(Int.init).map { (119...121).contains($0) }, true)
         XCTAssertNil(GatewayJSON.failure(BridgeFailure.rateLimited(nil)).headers["Retry-After"])
+        // The pool at its limit: a 429 said as Anthropic says a subscription's, with its reset.
+        let back = Date().addingTimeInterval(3600)
+        let pool = GatewayJSON.failure(BridgeFailure.poolLimited(back))
+        XCTAssertEqual(pool.status, 429)
+        XCTAssertEqual(pool.headers["Retry-After"].flatMap(Int.init).map { (3599...3601).contains($0) }, true)
+        XCTAssertEqual(pool.headers["anthropic-ratelimit-unified-status"], "rejected")
+        XCTAssertEqual(pool.headers["anthropic-ratelimit-unified-reset"], String(Int(back.timeIntervalSince1970.rounded(.up))))
+        XCTAssertEqual(GatewayJSON.reason(BridgeFailure.poolLimited(back)), "poolLimited")
+        XCTAssertNil(GatewayJSON.failure(BridgeFailure.poolLimited(nil)).headers["anthropic-ratelimit-unified-reset"])
     }
 
     func testDesktopConnectionCheckIsAnsweredWithoutASession() async throws {

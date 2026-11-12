@@ -14,6 +14,9 @@ public struct MessageResponseEncoder {
     private var index = 0
     private var textOpen = false
     private var text = ""
+    private var thinkingOpen = false
+    private var thinkingText = ""
+    private var thinkingSignature = ""
     private var content: [JSONValue] = []
     private var usage: BridgeUsage?
     private var reason: BridgeStopReason?
@@ -31,15 +34,34 @@ public struct MessageResponseEncoder {
             usage = value
             return []
         }
-        if case .text(let delta) = event, delta.isEmpty { return [] }
+        switch event {
+        case .text(let delta), .thinking(let delta), .thinkingSignature(let delta): if delta.isEmpty { return [] }
+        default: break
+        }
         var output: [Data] = []
         if !started {
             output.append(sse("message_start", ["type": .string("message_start"), "message": .object(message(empty: true))]))
             started = true
         }
         switch event {
+        case .thinking(let delta):
+            try reserve(delta.utf8.count)
+            // a signed block is whole: more thinking is a block of its own
+            if thinkingOpen, !thinkingSignature.isEmpty { closeThinking(into: &output) }
+            openThinking(into: &output)
+            thinkingText += delta
+            output.append(sse("content_block_delta", ["type": .string("content_block_delta"), "index": .number(Double(index)),
+                "delta": .object(["type": .string("thinking_delta"), "thinking": .string(delta)])]))
+        case .thinkingSignature(let signature):
+            try reserve(signature.utf8.count)
+            if thinkingOpen, !thinkingSignature.isEmpty { closeThinking(into: &output) }
+            openThinking(into: &output)
+            thinkingSignature += signature
+            output.append(sse("content_block_delta", ["type": .string("content_block_delta"), "index": .number(Double(index)),
+                "delta": .object(["type": .string("signature_delta"), "signature": .string(signature)])]))
         case .text(let delta):
             try reserve(delta.utf8.count)
+            closeThinking(into: &output)
             if !textOpen {
                 output.append(sse("content_block_start", ["type": .string("content_block_start"), "index": .number(Double(index)),
                     "content_block": .object(["type": .string("text"), "text": .string("")])]))
@@ -51,7 +73,7 @@ public struct MessageResponseEncoder {
         case .toolUse(let call):
             let input = String(decoding: try call.input.encoded(), as: UTF8.self)
             try reserve(input.utf8.count + call.id.utf8.count + call.name.utf8.count)
-            closeText(into: &output)
+            closeThinking(into: &output); closeText(into: &output)
             output.append(sse("content_block_start", ["type": .string("content_block_start"), "index": .number(Double(index)),
                 "content_block": .object(["type": .string("tool_use"), "id": .string(call.id), "name": .string(call.name), "input": .object([:])])]))
             output.append(sse("content_block_delta", ["type": .string("content_block_delta"), "index": .number(Double(index)),
@@ -60,7 +82,7 @@ public struct MessageResponseEncoder {
             content.append(.object(["type": .string("tool_use"), "id": .string(call.id), "name": .string(call.name), "input": call.input]))
             index += 1
         case .finished(let stop):
-            closeText(into: &output); reason = stop; finished = true
+            closeThinking(into: &output); closeText(into: &output); reason = stop; finished = true
             output.append(sse("message_delta", ["type": .string("message_delta"),
                 "delta": .object(["stop_reason": .string(stop.rawValue), "stop_sequence": .null]),
                 "usage": .object(usageFields())]))
@@ -82,6 +104,23 @@ public struct MessageResponseEncoder {
     public static func errorEvent(_ error: Error) -> Data {
         let response = GatewayJSON.failure(error)
         return Data("event: error\ndata: ".utf8) + response.body + Data("\n\n".utf8)
+    }
+    private mutating func openThinking(into output: inout [Data]) {
+        guard !thinkingOpen else { return }
+        closeText(into: &output)
+        output.append(sse("content_block_start", ["type": .string("content_block_start"), "index": .number(Double(index)),
+            "content_block": .object(["type": .string("thinking"), "thinking": .string(""), "signature": .string("")])]))
+        thinkingOpen = true
+    }
+    /// A thinking block ends before anything after it opens. Only a signed one is kept in the
+    /// whole body, so a client never sends back thinking without its signature.
+    private mutating func closeThinking(into output: inout [Data]) {
+        guard thinkingOpen else { return }
+        output.append(sse("content_block_stop", ["type": .string("content_block_stop"), "index": .number(Double(index))]))
+        if !thinkingSignature.isEmpty {
+            content.append(.object(["type": .string("thinking"), "thinking": .string(thinkingText), "signature": .string(thinkingSignature)]))
+        }
+        thinkingText = ""; thinkingSignature = ""; thinkingOpen = false; index += 1
     }
     private mutating func closeText(into output: inout [Data]) {
         guard textOpen else { return }

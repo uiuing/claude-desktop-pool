@@ -69,6 +69,134 @@ final class CoordinatorHandoffTests: XCTestCase {
         _ = await coordinator.shutdown()
     }
 
+    // MARK: What a turn costs, and what a move costs
+
+    /// A real pool (11-12): a conversation of 430,000 tokens written whole on an account took 16 to 28
+    /// percent of its five hours, was measured as what its turns cost, and so left each account with
+    /// a tenth or more still there, to be written whole on the next: three accounts in ten minutes.
+    /// A turn that wrote the conversation whole is not a turn's cost, and the conversation stays.
+    func testATurnThatWroteTheConversationWholeIsNotMeasuredAsATurn() async throws {
+        let lines = LoggedLines()
+        Diagnostics.install { lines.add($0) }
+        defer { Diagnostics.install(nil) }
+        let date = Date()
+        func quota(_ used: Double) -> [QuotaWindow] { [.init(id: "five_hour", usedPercent: used, observedAt: date, resetsAt: date.addingTimeInterval(3600))] }
+        var accounts = accounts()
+        accounts[0].windows = quota(20); accounts[1].windows = quota(30)
+        let worker = HandoffWorker(steps: [.hold([]), .reply([.text("Synthetic follow-up."), .finished(.endTurn)])], cacheRead: 430_000)
+        let other = HandoffWorker(steps: [.reply([.text("Synthetic follow-up."), .finished(.endTurn)])], cacheRead: 9_000)
+        let factory = HandoffFactory(queues: [accounts[0].id: [worker], accounts[1].id: [other]])
+        let coordinator = PoolCoordinator(accounts: accounts, routingPolicy: .init(reservePercent: 0), now: { date },
+                                          factory: { account, _ in try await factory.make(account.id) })
+        var told = request()
+        told.messages += [.init(role: "assistant", content: .string("Synthetic reply.")), .init(role: "user", content: .string("Go on."))]
+        let stream = try await coordinator.events(for: told, conversationID: "desktop-long#main")
+        let answering = Task { for try await _ in stream {} }
+        try await handoffWait { await worker.holding }
+        // the reading after the conversation was written whole: a fifth of the account
+        accounts[0].windows = quota(42)
+        await coordinator.updateAccounts(accounts)
+        await worker.release([.text("Synthetic reply."), .finished(.endTurn)], read: 30_000, written: 400_000)
+        try await answering.value
+        XCTAssertTrue(lines.all.contains { $0.contains("event=coordinator.turn_cost") && $0.contains("skipped=whole") }, lines.all.joined(separator: "\n"))
+
+        // 15% left: by a fifth a turn it would leave now; its turns read the cache, and it stays
+        accounts[0].windows = quota(85)
+        await coordinator.updateAccounts(accounts)
+        var next = told
+        next.messages += [.init(role: "assistant", content: .string("Synthetic reply.")), .init(role: "user", content: .string("And then?"))]
+        _ = try await collect(coordinator, next, id: "desktop-long#main")
+        let order = await factory.order, turns = await worker.regularRequests.count
+        XCTAssertEqual(order, [accounts[0].id], "The conversation keeps its account and its cache")
+        XCTAssertEqual(turns, 2)
+        XCTAssertFalse(lines.all.contains { $0.contains("reason=lowQuota") })
+        _ = await coordinator.shutdown()
+    }
+
+    /// The account's readings come a while after the work they count: a turn that begins on a
+    /// reading taken before a whole write, or just after it, is not measured, as the readings that
+    /// follow count that write. Once a reading taken later is the turn's first, its cost is measured.
+    func testATurnBegunOnAReadingOlderThanAWholeWriteIsNotMeasured() async throws {
+        let lines = LoggedLines()
+        Diagnostics.install { lines.add($0) }
+        defer { Diagnostics.install(nil) }
+        // readings are valid by the real time: the fixture's clock runs a little behind it
+        let clock = HandoffClock(Date().addingTimeInterval(-400))
+        func quota(_ used: Double, at offset: TimeInterval) -> [QuotaWindow] {
+            [.init(id: "five_hour", usedPercent: used, observedAt: clock.start.addingTimeInterval(offset), resetsAt: clock.start.addingTimeInterval(7200))]
+        }
+        var accounts = [accounts()[0]]
+        accounts[0].windows = quota(20, at: 0)
+        let worker = HandoffWorker(steps: [.hold([]), .hold([]), .hold([])])
+        let factory = HandoffFactory(queues: [accounts[0].id: [worker]])
+        let coordinator = PoolCoordinator(accounts: accounts, routingPolicy: .init(reservePercent: 0), now: { clock.now },
+                                          factory: { account, _ in try await factory.make(account.id) })
+        var conversation = request()
+        conversation.messages += [.init(role: "assistant", content: .string("Synthetic reply.")), .init(role: "user", content: .string("Go on."))]
+        /// A turn that ends at `ends`, a reading having come during it.
+        func turn(written: Int, reading: (Double, TimeInterval), ends: TimeInterval) async throws {
+            let stream = try await coordinator.events(for: conversation, conversationID: "desktop-long#main")
+            let answering = Task { for try await _ in stream {} }
+            try await handoffWait { await worker.holding }
+            clock.set(ends)
+            accounts[0].windows = quota(reading.0, at: reading.1)
+            await coordinator.updateAccounts(accounts)
+            await worker.release([.text("Synthetic reply."), .finished(.endTurn)], read: 400_000, written: written)
+            try await answering.value
+            conversation.messages += [.init(role: "assistant", content: .string("Synthetic reply.")), .init(role: "user", content: .string("Go on."))]
+        }
+        // told whole at 10 s; no reading shows it yet
+        clock.set(10)
+        try await turn(written: 500_000, reading: (20, 5), ends: 20)
+        // the next turn begins on the reading of 5 s, and the write is counted in a reading during it
+        clock.set(30)
+        try await turn(written: 900, reading: (40, 35), ends: 40)
+        XCTAssertTrue(lines.all.contains { $0.contains("event=coordinator.turn_cost") && $0.contains("skipped=stale") }, lines.all.joined(separator: "\n"))
+        XCTAssertFalse(lines.all.contains { $0.contains("event=coordinator.turn_cost") && $0.contains("cost=20.0") }, "The write was not taken for the turn")
+        // a turn that begins on a reading taken well after the write is measured: two percent
+        accounts[0].windows = quota(40, at: 100)
+        await coordinator.updateAccounts(accounts)
+        clock.set(110)
+        try await turn(written: 900, reading: (42, 120), ends: 125)
+        XCTAssertTrue(lines.all.contains { $0.contains("event=coordinator.turn_cost") && $0.contains("cost=2.0") }, lines.all.joined(separator: "\n"))
+        _ = await coordinator.shutdown()
+    }
+
+    /// The reserve is what a conversation leaves behind when it moves, and a long conversation costs
+    /// far more to move than it leaves: with a tenth kept back, one of 80,000 tokens leaves an account
+    /// at 8% and one of 400,000 stays, reading its cache, until 2%.
+    func testALongConversationStaysBelowTheReserveAndAShortOneLeaves() async throws {
+        let date = Date()
+        func quota(_ used: Double) -> [QuotaWindow] { [.init(id: "five_hour", usedPercent: used, observedAt: date, resetsAt: date.addingTimeInterval(3600))] }
+        var accounts = accounts()
+        accounts[0].windows = quota(20); accounts[1].windows = quota(45)
+        let reply: [BridgeEvent] = [.text("Synthetic reply."), .finished(.endTurn)]
+        let short = HandoffWorker(steps: [.reply(reply)], cacheRead: 80_000)
+        let long = HandoffWorker(steps: [.reply(reply), .reply(reply)], cacheRead: 400_000)
+        let moved = HandoffWorker(steps: [.reply(reply)], cacheRead: 9_000), later = HandoffWorker(steps: [.reply(reply)], cacheRead: 9_000)
+        let factory = HandoffFactory(queues: [accounts[0].id: [short, long], accounts[1].id: [moved, later]])
+        let coordinator = PoolCoordinator(accounts: accounts, routingPolicy: .init(reservePercent: 10), now: { date },
+                                          factory: { account, _ in try await factory.make(account.id) })
+        _ = try await collect(coordinator, request(), id: "desktop-short#main")
+        _ = try await collect(coordinator, request(), id: "desktop-long#main")
+        accounts[0].windows = quota(92)
+        await coordinator.updateAccounts(accounts)
+        var next = request()
+        next.messages += [.init(role: "assistant", content: .string("Synthetic reply.")), .init(role: "user", content: .string("Go on."))]
+        _ = try await collect(coordinator, next, id: "desktop-short#main")
+        _ = try await collect(coordinator, next, id: "desktop-long#main")
+        var order = await factory.order
+        XCTAssertEqual(order, [accounts[0].id, accounts[0].id, accounts[1].id], "Only the short conversation left at 8%")
+        accounts[0].windows = quota(98)
+        await coordinator.updateAccounts(accounts)
+        next.messages += [.init(role: "assistant", content: .string("Synthetic reply.")), .init(role: "user", content: .string("And then?"))]
+        _ = try await collect(coordinator, next, id: "desktop-long#main")
+        order = await factory.order
+        XCTAssertEqual(order.count, 4, "At 2% the long conversation leaves too")
+        XCTAssertEqual(order.last, accounts[1].id)
+        _ = await coordinator.shutdown()
+    }
+
     /// A side request of a Desktop conversation (a title, asked with
     /// other tools under the same client session) goes to the account its conversation is on, while a new
     /// conversation still goes where routing puts it. One conversation uses one account.
@@ -319,10 +447,12 @@ final class CoordinatorHandoffTests: XCTestCase {
                                           onUpdate: { updates.record($0) })
         let other = Task { try await self.collect(coordinator, self.request(), id: "fixture-waiting") }
         try await handoffWait { await waiting.regularRequests.count == 1 }
-        // with no other account to move to, each ends at the limit or as no account left
+        // with no other account to move to, each ends at the limit: the account's own, or the pool's
+        // with when its first account is back, never as a moment's "no account"
         func movedOnOrLimited(_ error: Error) -> Bool {
             if case BridgeFailure.quotaLimited = error { return true }
-            return error as? BridgeFailure == .unavailable
+            if case BridgeFailure.poolLimited(let back?) = error { return back > Date() }
+            return false
         }
         do { _ = try await collect(coordinator, request(), id: "fixture-refused"); XCTFail("Expected the limit.") }
         catch { XCTAssertTrue(movedOnOrLimited(error), "\(error)") }
@@ -408,6 +538,22 @@ final class CoordinatorHandoffTests: XCTestCase {
         _ = try await collect(coordinator, next)
         let order = await factory.order
         XCTAssertEqual(order, [account.id, account.id])
+        _ = await coordinator.shutdown()
+    }
+
+    /// Thinking shown before the account's limit is not the answer: the reply still moves to another
+    /// account, which answers in full, and both are told in the order they came.
+    func testALimitAfterThinkingBeforeAnyWordsStillMovesToAnotherAccount() async throws {
+        let accounts = accounts()
+        let first = HandoffWorker(steps: [.failure([.thinking("Weighing the note"), .thinkingSignature("c2lnLXN5bnRoZXRpYw==")], limit)])
+        let backup = HandoffWorker(steps: [.reply([.thinking("Reading it"), .text("The note is complete."), .finished(.endTurn)])])
+        let factory = HandoffFactory(queues: [accounts[0].id: [first], accounts[1].id: [backup]])
+        let coordinator = PoolCoordinator(accounts: accounts, factory: { account, _ in try await factory.make(account.id) })
+        let answer = try await collect(coordinator, request())
+        XCTAssertEqual(answer, [.thinking("Weighing the note"), .thinkingSignature("c2lnLXN5bnRoZXRpYw=="), .thinking("Reading it"),
+                                .text("The note is complete."), .finished(.endTurn)])
+        let order = await factory.order, closes = await first.closeCount
+        XCTAssertEqual(order, accounts.map(\.id)); XCTAssertEqual(closes, 1)
         _ = await coordinator.shutdown()
     }
 
@@ -526,6 +672,12 @@ private actor HandoffWorker: SessionWorker {
     init(steps: [Step], cancelError: BridgeFailure = .cancelled, cacheRead: Int? = nil) {
         self.steps = steps; self.cancelError = cancelError; self.cacheRead = cacheRead
     }
+    /// Ends a held reply with its usage and `events`.
+    func release(_ events: [BridgeEvent], read: Int, written: Int) {
+        held?.yield(.usage(.init(inputTokens: 20, outputTokens: 5, cacheReadInputTokens: read, cacheCreationInputTokens: written)))
+        events.forEach { held?.yield($0) }; held?.finish(); held = nil
+    }
+    var holding: Bool { held != nil }
     func events(for request: BridgeRequest) throws -> AsyncThrowingStream<BridgeEvent, Error> {
         regularRequests.append(request); return try next()
     }
@@ -555,6 +707,14 @@ private actor HandoffWorker: SessionWorker {
     func accountLimited(_ failure: BridgeFailure, until: Date) {
         limitedCalls.append(failure); held?.finish(throwing: failure); held = nil
     }
+}
+private final class HandoffClock: @unchecked Sendable {
+    let start: Date
+    private let lock = NSLock()
+    private var offset: TimeInterval = 0
+    init(_ start: Date) { self.start = start }
+    var now: Date { lock.withLock { start.addingTimeInterval(offset) } }
+    func set(_ seconds: TimeInterval) { lock.withLock { offset = seconds } }
 }
 private final class HandoffUpdates: @unchecked Sendable {
     private let lock = NSLock()

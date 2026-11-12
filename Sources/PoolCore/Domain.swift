@@ -780,7 +780,9 @@ public enum PoolRouting {
     }
     /// How well an account suits a new conversation, from 0 to about 100. Nothing decides alone:
     /// what is left of the 5-hour limit and of the week weigh about the same; a 5-hour limit that is
-    /// about to renew counts for a little more than it reads; a week within two days of its reset
+    /// about to renew (`sessionSoon`) counts for a little more than it reads, and one nearly used up
+    /// (`sessionSpent`) ranks behind every account that is not, since a conversation started on it meets
+    /// the limit within a turn or two and is then written whole on another account; a week within two days of its reset
     /// counts what it has used less and less, as that comes back, and its unused share is worth spending first; and each conversation already on the account weighs against it.
     /// A week nearly used up caps the 5-hour limit: below `weekCaps` percent left, the 5-hour share
     /// counts only in proportion, since the account stops when its week does, however full the 5 hours.
@@ -789,7 +791,36 @@ public enum PoolRouting {
     public static let weekCaps = 25.0
     /// How long before its reset a week starts to count as coming back, and its unused share as lapsing.
     public static let weekSoon: TimeInterval = 2 * 86400
-    public static func score(_ account: PoolAccount, model: String, now: Date = Date(), load: Int = 0) -> Double? {
+    /// How long before its reset a 5-hour limit starts to count as coming back. Until then what it has
+    /// used is of no use to a conversation starting now: the limit stops it first.
+    public static let sessionSoon: TimeInterval = 600
+    /// 5-hour percent left under which an account takes a new conversation only when no other can,
+    /// when nothing was measured. A percent says little by itself: a turn that is a rounding error on
+    /// a large plan is a tenth of a Pro account's five hours. So the pool measures what a turn costs
+    /// where it runs (`turnNeed`) and asks whether what is left covers one; this figure and the
+    /// person's reserve are only the floor under that.
+    public static let sessionSpent = 5.0
+    /// What a turn should find left, from what turns were measured to cost: a quarter more than
+    /// the cost, at most `turnNeedMost`, so one very long turn does not empty an account of its conversations.
+    public static let turnNeedMost = 20.0
+    /// The most the measured cost raises the share under which an account takes new work last: past it
+    /// most of a busy pool would rank last together and new work would crowd onto the few that do not.
+    public static let spentBelowMost = 10.0
+    public static func turnNeed(cost: Double?) -> Double { min(turnNeedMost, max(0, cost ?? 0) * 1.25) }
+    /// What the person's reserve keeps back of an account for a conversation that holds `tokens`
+    /// (Pool's own): all of it up to `reserveFullTokens`, and in proportion less for a longer one.
+    /// Leaving an account writes the conversation whole on the next, and measured on Pro accounts a
+    /// conversation of 400,000 tokens written once takes a fifth of an account's five hours: moved
+    /// with a tenth still left where it was, it spends twice what it leaves behind, when its next
+    /// turns there would have read the cache for about a hundredth each. A conversation of unknown
+    /// size keeps the whole reserve.
+    public static let reserveFullTokens = 100_000
+    public static func reserve(_ percent: Double, tokens: Int?) -> Double {
+        guard let tokens, tokens > reserveFullTokens else { return percent }
+        return percent * Double(reserveFullTokens) / Double(tokens)
+    }
+    static let spentPenalty = 100.0
+    public static func score(_ account: PoolAccount, model: String, now: Date = Date(), load: Int = 0, spentBelow: Double = sessionSpent) -> Double? {
         guard assessment(account, model: model, now: now).state == .available else { return nil }
         let windows = account.windows.filter { $0.applies(to: model) && !$0.isNotApplicable(at: now) }
         func left(_ id: String) -> (Double, TimeInterval?)? {
@@ -802,8 +833,8 @@ public enum PoolRouting {
         guard session != nil || week != nil else { return nil }
         var sessionValue = session?.0 ?? week!.0
         if let (value, until) = session, let until {
-            // Up to half of what is used comes back in the score as the reset nears.
-            sessionValue = value + (100 - value) * 0.5 * max(0, 1 - until / (5 * 3600))
+            // Up to half of what is used comes back in the score over the last minutes before the reset.
+            sessionValue = value + (100 - value) * 0.5 * max(0, 1 - until / sessionSoon)
         }
         if let (value, _) = week { sessionValue *= min(1, max(0, value) / weekCaps) }
         var weekValue = week?.0 ?? sessionValue
@@ -813,7 +844,8 @@ public enum PoolRouting {
         }
         var expiring = 0.0
         if let (value, until) = week, let until { expiring = value * max(0, 1 - until / weekSoon) }
-        let total = 0.45 * sessionValue + 0.40 * weekValue + 0.15 * expiring - 8 * Double(max(0, load))
+        var total = 0.45 * sessionValue + 0.40 * weekValue + 0.15 * expiring - 8 * Double(max(0, load))
+        if let (value, _) = session, value < max(sessionSpent, spentBelow) { total -= spentPenalty }
         return total
     }
     /// Points a warm prompt cache adds to an account's score: one per `warmTokensPerPoint` tokens of
@@ -826,19 +858,26 @@ public enum PoolRouting {
     /// `bonus`: points added to an account's score, for what it already has cached of the request.
     public static func candidates(_ accounts: [PoolAccount], model: String, preferred: UUID? = nil,
                                   excluding: Set<UUID> = [], now: Date = Date(), policy: RoutingPolicy = .init(),
-                                  load: [UUID: Int] = [:], bonus: [UUID: Double] = [:]) -> [PoolAccount] {
+                                  load: [UUID: Int] = [:], bonus: [UUID: Double] = [:], spentBelow: Double = sessionSpent) -> [PoolAccount] {
         let originalOrder = Dictionary(accounts.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
         let configuredOrder = Dictionary(policy.accountOrder.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: { first, _ in first })
         func rank(_ id: UUID) -> Int { configuredOrder[id] ?? (policy.accountOrder.count + (originalOrder[id] ?? accounts.count)) }
-        return accounts.filter { account in
+        let able = accounts.filter { account in
             guard !excluding.contains(account.id), account.email?.isEmpty == false, account.effectiveState(at: now) == .ready,
                   account.cooldownUntil.map({ $0 <= now }) ?? true else { return false }
             return assessment(account, model: model, now: now).state != .exhausted
-        }.sorted { a, b in
+        }
+        // Each account is scored once, not at every comparison of the sort.
+        var scores: [UUID: Double] = [:]
+        if policy.strategy == .mostHeadroom {
+            for account in able {
+                scores[account.id] = score(account, model: model, now: now, load: load[account.id] ?? 0, spentBelow: spentBelow).map { $0 + (bonus[account.id] ?? 0) }
+            }
+        }
+        return able.sorted { a, b in
             if (a.id == preferred) != (b.id == preferred) { return a.id == preferred }
             if policy.strategy == .mostHeadroom {
-                let qa = score(a, model: model, now: now, load: load[a.id] ?? 0).map { $0 + (bonus[a.id] ?? 0) }
-                let qb = score(b, model: model, now: now, load: load[b.id] ?? 0).map { $0 + (bonus[b.id] ?? 0) }
+                let qa = scores[a.id], qb = scores[b.id]
                 if (qa == nil) != (qb == nil) { return qa != nil }
                 if let qa, let qb, qa != qb { return qa > qb }
             }
@@ -877,8 +916,12 @@ public enum PoolRouting {
         return candidates(accounts, model: model, excluding: [currentID], now: now, policy: policy)
             .first { (assessment($0, model: model, now: now).headroom ?? -1) >= headroom + smallMoveGain }
     }
+    /// `need`: what the conversation's next turn should find left, measured (`turnNeed`). The account is
+    /// left at a new turn when it has no more than that, or than the reserve as it counts for a
+    /// conversation of `contextTokens` (`reserve`), for an account that has more than the whole reserve.
     public static func handoff(_ accounts: [PoolAccount], model: String, currentID: UUID,
-                               policy: RoutingPolicy = .init(), now: Date = Date()) -> RoutingHandoff? {
+                               policy: RoutingPolicy = .init(), now: Date = Date(), need: Double = 0,
+                               contextTokens: Int? = nil) -> RoutingHandoff? {
         guard policy.isValid, let current = accounts.first(where: { $0.id == currentID }) else { return nil }
         let backups = candidates(accounts, model: model, excluding: [currentID], now: now, policy: policy)
         let currentQuota = assessment(current, model: model, now: now)
@@ -887,8 +930,11 @@ public enum PoolRouting {
         if !eligible, let backup = backups.first {
             return .init(account: backup, reason: currentQuota.state == .exhausted ? .quotaExhausted : .accountUnavailable)
         }
-        guard let currentHeadroom = currentQuota.headroom, currentHeadroom <= policy.reservePercent,
-              let backup = backups.first(where: { (assessment($0, model: model, now: now).headroom ?? -1) > policy.reservePercent }) else { return nil }
+        let threshold = max(reserve(policy.reservePercent, tokens: contextTokens), need)
+        // where it goes has more than the whole reserve: the conversation is written there whole
+        let room = max(policy.reservePercent, need)
+        guard let currentHeadroom = currentQuota.headroom, currentHeadroom <= threshold,
+              let backup = backups.first(where: { (assessment($0, model: model, now: now).headroom ?? -1) > room }) else { return nil }
         return .init(account: backup, reason: .lowQuota)
     }
 }

@@ -46,19 +46,48 @@ public struct ShelvedSession: Sendable {
     /// words after them): the run that resumes it goes on from a copy of the session up to those
     /// calls, and the session itself stays as it is. Nil: the session whole.
     public let cut: Set<String>?
+    /// Where the session's last turn began: how many of the client's messages it held then, and
+    /// how long its transcript was, in bytes.
+    public struct Turn: Sendable, Equatable {
+        public let held: Int
+        public let bytes: Int
+        public init(held: Int, bytes: Int) { self.held = held; self.bytes = bytes }
+    }
+    /// The session's last turn, when the run that had it knew where it began. A client asks a turn of
+    /// its own after a reply (Claude Code's next-prompt suggestion, its compaction) and then goes on
+    /// from the conversation before that turn: the session can be cut there (`beforeTurn`).
+    public let turn: Turn?
+    /// The length the session's transcript is cut to, in bytes, for a conversation that goes on from
+    /// before its last turn. Nil: the session whole.
+    public let cutAt: Int?
+    /// How it is cut: a session whose run has ended is cut where it is and resumed under its own id,
+    /// so what Claude Code keeps beside it (large tool results, by path) stays; one a run still has is
+    /// left whole and the run that resumes it goes on from a copy that long, under its own id.
+    public let cutCopies: Bool
     /// Removes the session's files, once its conversation is not coming back for it.
     public let discard: @Sendable () -> Void
-    public init(session: String, accountID: UUID, held: Int? = nil, cut: Set<String>? = nil, discard: @escaping @Sendable () -> Void) {
-        self.session = session; self.accountID = accountID; self.held = held; self.cut = cut; self.discard = discard
+    public init(session: String, accountID: UUID, held: Int? = nil, cut: Set<String>? = nil, turn: Turn? = nil, cutAt: Int? = nil,
+                cutCopies: Bool = false, discard: @escaping @Sendable () -> Void) {
+        self.session = session; self.accountID = accountID; self.held = held; self.cut = cut; self.turn = turn; self.cutAt = cutAt
+        self.cutCopies = cutCopies; self.discard = discard
     }
     /// The same session, holding `count` of the client's messages.
     public func holding(_ count: Int) -> ShelvedSession {
-        ShelvedSession(session: session, accountID: accountID, held: count, cut: cut, discard: discard)
+        ShelvedSession(session: session, accountID: accountID, held: count, cut: cut, turn: turn, discard: discard)
     }
     /// A copy of the session cut before `calls`, holding `count` of the client's messages: the
     /// session's own files stay with it, so the copy discards nothing.
     public func forking(_ count: Int, before calls: Set<String>) -> ShelvedSession {
-        ShelvedSession(session: session, accountID: accountID, held: count, cut: calls, discard: {})
+        ShelvedSession(session: session, accountID: accountID, held: count, cut: calls, turn: turn, discard: {})
+    }
+    /// The session cut where its last turn began, holding the messages it held then: the session
+    /// itself, cut where it is, once its run has ended; or a copy when a run still has it (`keeping`),
+    /// which then discards nothing. Nil when the session does not know where its last turn began.
+    public func beforeTurn(keeping: Bool = false) -> ShelvedSession? {
+        guard let turn, turn.held > 0, turn.bytes > 0 else { return nil }
+        let kept: @Sendable () -> Void = {}
+        return ShelvedSession(session: session, accountID: accountID, held: turn.held, cutAt: turn.bytes, cutCopies: keeping,
+                              discard: keeping ? kept : discard)
     }
 }
 
@@ -82,6 +111,11 @@ public protocol SessionWorker: Sendable {
     /// turn is not one it can be told) as `close`, else the client's interrupt, ends it, and keeps its
     /// session for the run that takes the turn; nil when it could not be kept, the run then still to be ended.
     func shelveEnding() async -> ShelvedSession?
+    /// The run's session as it is now, the run left as it is, with where its last turn began when the
+    /// run knows it: what a conversation that goes another way is resumed from a copy of, cut before
+    /// that turn (`ShelvedSession.beforeTurn`) or before one of its calls (`forking`). It discards
+    /// nothing: the session is the run's. Nil when the run has no session to go on from, or a reply open.
+    func liveSession() async -> ShelvedSession?
     /// Before its first request: the run goes on from a shelved session of its account (unshelve), and
     /// is then told only what came since the conversation's last reply. False when it cannot.
     func resume(from saved: ShelvedSession) async -> Bool
@@ -100,6 +134,7 @@ public extension SessionWorker {
     func shelve() async -> ShelvedSession? { nil }
     func shelveCalls() async -> ShelvedSession? { nil }
     func shelveEnding() async -> ShelvedSession? { nil }
+    func liveSession() async -> ShelvedSession? { nil }
     func resume(from saved: ShelvedSession) async -> Bool { false }
     func accountLimited(_ failure: BridgeFailure, until: Date) async {}
 }

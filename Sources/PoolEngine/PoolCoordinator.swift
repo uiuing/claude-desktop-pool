@@ -24,6 +24,19 @@ public actor PoolCoordinator: BridgeBackend {
         var toolsDigest: String?
         /// What the conversation holds as of the run's last reply, in tokens: what moving it would write.
         var contextTokens: Int?
+        /// What its account had left when the run's turn began, and what its last turns cost of it, in
+        /// percent of the account's tightest limit: whether the account can take one more (`PoolRouting.turnNeed`).
+        var turnBeganLeft: Double?
+        var turnBeganAt: Date?
+        var turnCost: Double?
+        /// When the reading the turn began with was taken, and whether a reply of the turn wrote the
+        /// conversation to the cache whole: such a turn's cost is the move's, not a turn's (`measureTurn`).
+        var turnBeganRead: Date?
+        var turnWroteWhole = false
+        /// The conversation the run had when its last turn began, by its key and length (Pool's own):
+        /// a client that asks a turn of its own after a reply (Claude Code's next-prompt suggestion)
+        /// goes on from this afterwards, not from that turn's reply (`forkBeforeTurn`).
+        var before: (key: String, count: Int)?
         var busy = false
         var workState: QuotaWorkState = .idle
         var generationBeganAt: Date?
@@ -91,6 +104,12 @@ public actor PoolCoordinator: BridgeBackend {
     private var retirementTask: Task<Void, Never>?
     /// Accounts that refused for an unconfirmed limit rest briefly while their usage is read.
     private var resting: [UUID: Date] = [:]
+    /// What a turn costs an account in this pool, measured and moving (`measureTurn`).
+    private var typicalTurnCost: Double?
+    /// When a run last wrote a conversation to each account's cache whole: a reading taken before
+    /// that, or just after, does not show it yet (`measureTurn`).
+    private var wholeWriteAt: [UUID: Date] = [:]
+    static let wholeWriteSettle: TimeInterval = 60
     /// The shelf: the saved sessions of runs let go while they
     /// waited for their conversation's next turn, by that conversation, kept as long as the run would
     /// have waited, 64 at most.
@@ -104,6 +123,15 @@ public actor PoolCoordinator: BridgeBackend {
         /// Where the session can be cut for a conversation that went another way at one of its calls:
         /// the conversation before each call, by the start of its key (`forkKeys`).
         var forks: Set<String> = []
+        /// The shelf's key of the conversation before the session's last turn, when the session can be
+        /// cut there: a conversation that goes on from before that turn takes a copy cut to it.
+        var turnKey: String?
+        /// The session holds a stopped turn after the conversation it is kept for (`shelveStopped`):
+        /// the run that resumes it never has it cut where its own turn begins, which is after that turn.
+        var trailing = false
+        /// What the conversation held when its session was let go, in tokens: what writing it whole
+        /// elsewhere would cost, which the reserve is weighed by (`PoolRouting.reserve`).
+        var tokens: Int?
         /// Only a conversation's own turns are shelved and taken: none with a tool choice, search or schema.
         func plain(_ request: BridgeRequest) -> Bool { request.toolChoice == nil && !request.webSearch && request.answerSchema == nil }
     }
@@ -176,7 +204,8 @@ public actor PoolCoordinator: BridgeBackend {
         var warm: [String: [String: Date]]?; var openingRead: [String: Read]?
         struct Read: Codable { var tokens: Int; var until: Date }
         struct Entry: Codable { var account: UUID; var until: Date }
-        struct Saved: Codable { var session: String; var account: UUID; var held: Int?; var model: String; var context: String; var until: Date; var forks: [String]? } }
+        struct Saved: Codable { var session: String; var account: UUID; var held: Int?; var model: String; var context: String; var until: Date; var forks: [String]?
+            var turnKey: String?; var turnHeld: Int?; var turnBytes: Int?; var trailing: Bool?; var tokens: Int? } }
     /// Removes a saved session's files by its account and session id, for a shelf restored after a restart.
     private var savedSessionDiscard: (@Sendable (UUID, String) -> Void)?
     public func rememberedAccounts() -> Data? {
@@ -187,7 +216,9 @@ public actor PoolCoordinator: BridgeBackend {
         }
         let shelved = shelf.filter { $0.value.until > date }.mapValues {
             Remembered.Saved(session: $0.saved.session, account: $0.saved.accountID, held: $0.saved.held, model: $0.model,
-                             context: $0.context, until: $0.until, forks: $0.forks.sorted())
+                             context: $0.context, until: $0.until, forks: $0.forks.sorted(),
+                             turnKey: $0.turnKey, turnHeld: $0.saved.turn?.held, turnBytes: $0.saved.turn?.bytes,
+                             trailing: $0.trailing ? true : nil, tokens: $0.tokens)
         }
         let warm = warmAccounts.mapValues { accounts in
             Dictionary(uniqueKeysWithValues: accounts.filter { $0.value > date }.map { ($0.key.uuidString, $0.value) })
@@ -207,8 +238,11 @@ public actor PoolCoordinator: BridgeBackend {
             let account = entry.account, session = entry.session
             // The session's files are removed, and resumed, only by an id of Claude Code's own shape.
             guard entry.until > date, known.contains(account), shelf[key] == nil else { discard(account, session); continue }
-            shelf[key] = Shelved(saved: ShelvedSession(session: session, accountID: account, held: entry.held, discard: { discard(account, session) }),
-                                 model: entry.model, context: entry.context, until: entry.until, forks: Set(entry.forks ?? []))
+            let turn = entry.turnHeld.flatMap { held in entry.turnBytes.map { ShelvedSession.Turn(held: held, bytes: $0) } }
+            shelf[key] = Shelved(saved: ShelvedSession(session: session, accountID: account, held: entry.held, turn: turn,
+                                                       discard: { discard(account, session) }),
+                                 model: entry.model, context: entry.context, until: entry.until, forks: Set(entry.forks ?? []),
+                                 turnKey: turn == nil ? nil : entry.turnKey, trailing: entry.trailing ?? false, tokens: entry.tokens)
         }
         if saved.shelf?.isEmpty == false {
             Diagnostics.record("coordinator.route", ["decision": "shelf_restored", "sessions": String(shelf.count)])
@@ -342,6 +376,9 @@ public actor PoolCoordinator: BridgeBackend {
         }
         guard !request.messages.isEmpty else { throw BridgeFailure.invalidRequest("The conversation is empty.") }
         let requestAlias = conversationID ?? "request:\(UUID().uuidString)"
+        // A turn that names no effort keeps its conversation's, in this run and any run after it.
+        var request = request
+        if request.effort == nil, let existing = aliases[requestAlias], let effort = bindings[existing]?.request.effort { request.effort = effort }
         let results = try RequestContent.resultIDs(request)
         guard Set(results).count == results.count else { throw BridgeFailure.invalidRequest("A tool result was supplied more than once.") }
         if closing || (paused && results.isEmpty) { route(model: model.id, reason: .paused); throw BridgeFailure.paused }
@@ -384,7 +421,7 @@ public actor PoolCoordinator: BridgeBackend {
                         Diagnostics.record("coordinator.route", ["decision": "calls_unshelved", "conversation": Diagnostics.tag(requestAlias),
                                                                  "messages": String(request.messages.count), "held": String(entry.saved.held ?? 0)])
                     } else { entry.saved.discard() }
-                } else if let fork = await takeForkShelf(request, model: model) {
+                } else if let fork = await takeForkShelf(request, model: model, conversation: Self.conversationTag(requestAlias)) {
                     // A conversation that went another way at its calls goes on from a copy of a
                     // session told it up to them, on that session's account; else as any new run
                     do { bindingID = try await create(request: request, model: model, generation: generation, continuing: true, only: fork.accountID) }
@@ -420,10 +457,16 @@ public actor PoolCoordinator: BridgeBackend {
                 Diagnostics.record("coordinator.route", ["decision": "busy_replaced",
                     "why": !binding.pending.isEmpty ? "pending_calls" : binding.busy ? "serving" : "retiring",
                     "conversation": Diagnostics.tag(requestAlias), "messages": String(request.messages.count)])
-                bindingID = try await create(request: request, model: model, generation: generation)
+                // the turn the run waits on was the client's own, after the reply this goes on from
+                if !binding.pending.isEmpty, let forked = try await forkBeforeTurn(existing, request: request, model: model,
+                                                                                generation: generation, ending: false) {
+                    bindingID = forked
+                } else { bindingID = try await create(request: request, model: model, generation: generation) }
             } else {
                 let lowQuota = shouldHandoff(binding, model: model)
                 let turn = compatible(binding, request: request) ? nextTurn(of: binding, request: request, alias: requestAlias) : nil
+                // another effort: the run's session goes on in a run started with it
+                if Self.effortChanged(binding.request, request) { recordEffortChange(binding, request, alias: requestAlias) }
                 if binding.session.state != .idle {
                     Diagnostics.record("coordinator.route", ["decision": "run_not_idle", "state": binding.session.state.rawValue,
                         "conversation": Diagnostics.tag(requestAlias), "messages": String(request.messages.count)])
@@ -433,6 +476,7 @@ public actor PoolCoordinator: BridgeBackend {
                 if !typed { Diagnostics.record("coordinator.route", ["decision": "turn_untyped", "conversation": Diagnostics.tag(requestAlias)]) }
                 if binding.session.state == .idle, let turn, typed, eligible(binding, model: model), !lowQuota {
                     bindingID = existing; workerRequest = turn
+                    noteTurn(existing, told: turn)
                     route(id: existing, model: model.id, reason: .sessionAffinity)
                 } else {
                     if lowQuota { recordMove(binding, model: model); route(id: existing, model: model.id, reason: .lowQuota) }
@@ -443,19 +487,23 @@ public actor PoolCoordinator: BridgeBackend {
         } else {
             var turns: [UUID: BridgeRequest] = [:]
             for (id, binding) in bindings where !binding.busy && !binding.retiring && !binding.stopped && binding.pending.isEmpty &&
-                binding.session.state == .idle && compatible(binding, request: request) && !binding.history.isEmpty {
+                binding.session.state == .idle && compatible(binding, request: request, ignoringEffort: true) && !binding.history.isEmpty {
                 if let turn = nextTurn(of: binding, request: request, alias: requestAlias) { turns[id] = turn }
             }
             if turns.count == 1, let (only, turn) = turns.first, let candidate = bindings[only] {
                 let lowQuota = shouldHandoff(candidate, model: model)
                 let typed = ClaudePrompt.typeableTurn(turn)
-                if eligible(candidate, model: model) && !lowQuota && typed {
-                    bindingID = only; workerRequest = turn; route(id: only, model: model.id, reason: .sessionAffinity)
+                let effortChanged = Self.effortChanged(candidate.request, request)
+                if eligible(candidate, model: model) && !lowQuota && typed && !effortChanged {
+                    bindingID = only; workerRequest = turn; noteTurn(only, told: turn)
+                    route(id: only, model: model.id, reason: .sessionAffinity)
                 }
                 else {
                     if lowQuota { recordMove(candidate, model: model) }
                     if lowQuota || !eligible(candidate, model: model) {
                         route(id: only, model: model.id, reason: lowQuota ? .lowQuota : unavailableReason(candidate, model: model))
+                    } else if effortChanged {
+                        recordEffortChange(candidate, request, alias: requestAlias)
                     } else {
                         Diagnostics.record("coordinator.route", ["decision": "turn_untyped", "conversation": Diagnostics.tag(requestAlias)])
                     }
@@ -472,8 +520,10 @@ public actor PoolCoordinator: BridgeBackend {
                 if bindings[bindingID]?.session.accountID == entry.saved.accountID,
                    await resumeRun(bindingID, from: entry.saved) {
                     workerRequest = turn
+                    if !entry.trailing { noteTurn(bindingID, told: turn) }
                     Diagnostics.record("coordinator.route", ["decision": "unshelved", "conversation": Diagnostics.tag(requestAlias),
-                                                             "messages": String(request.messages.count)])
+                                                             "messages": String(request.messages.count),
+                                                             "cut": entry.saved.cutAt == nil ? "-" : "turn"])
                 } else { entry.saved.discard() }
             } else { bindingID = try await create(request: request, model: model, generation: generation) }
         }
@@ -489,7 +539,16 @@ public actor PoolCoordinator: BridgeBackend {
         binding.lastActive = now()
         binding.parkedAt = nil; binding.parkEnds = nil; binding.released = false
         binding.serving = generation
+        // A turn begins at the person's message; its calls and their results are the same turn.
+        if results.isEmpty {
+            binding.turnBeganLeft = PoolRouting.assessment(account(of: binding), model: model.cliAlias, now: now()).headroom
+            binding.turnBeganAt = now()
+            binding.turnBeganRead = account(of: binding).windows.map(\.observedAt).max()
+            binding.turnWroteWhole = false
+        }
+        let effort = binding.request.effort
         binding.request = request
+        if request.effort == nil { binding.request.effort = effort } // the run's own, still
         bindings[bindingID] = binding; aliases[requestAlias] = bindingID
         active[generation]?.binding = bindingID
         handedOff = true
@@ -519,16 +578,28 @@ public actor PoolCoordinator: BridgeBackend {
         if paused { throw BridgeFailure.paused }
         let date = now(), resting = restingAccounts()
         guard PoolRouting.candidates(accounts, model: model.cliAlias, excluding: resting, now: date, policy: routingPolicy).isEmpty else { return }
-        // Every account that could serve is at a limit: say when the first is back.
+        if let limit = poolLimit(model: model, restingCounts: true) { throw BridgeFailure.rateLimited(limit.back) }
+        throw BridgeFailure.unavailable
+    }
+    /// When no account can take a request for `model`: whether that is because every account that
+    /// could serve is at a limit, and when the first of them is back (the earliest, not the last).
+    /// Nil when it is for another reason (none signed in, none usable).
+    /// `restingCounts`: an account resting a minute after an unproven refusal counts as limited (the
+    /// connection check's answer). A request does not count it: with one only resting, the pool is not
+    /// at its limit, and the request is a moment's wait the client asks again on.
+    private func poolLimit(model: PoolModel, restingCounts: Bool = false) -> (back: Date?, limited: Int)? {
+        let date = now(), resting = restingAccounts()
+        if !restingCounts, accounts.contains(where: { resting.contains($0.id) && $0.email?.isEmpty == false &&
+            $0.effectiveState(at: date) == .ready && PoolRouting.assessment($0, model: model.cliAlias, now: date).state != .exhausted }) { return nil }
         var back: [Date] = self.resting.filter { resting.contains($0.key) }.map(\.value)
-        var atLimit = !back.isEmpty
+        var limited = back.count
         for account in accounts where account.email?.isEmpty == false && [.ready, .limited].contains(account.effectiveState(at: date)) {
             guard account.effectiveState(at: date) == .limited ||
                   PoolRouting.assessment(account, model: model.cliAlias, now: date).state == .exhausted else { continue }
-            atLimit = true
+            limited += 1
             if case .scheduled(let at) = QuotaRecovery.account(account, model: model.cliAlias, now: date) { back.append(at) }
         }
-        throw atLimit ? BridgeFailure.rateLimited(back.min()) : BridgeFailure.unavailable
+        return limited > 0 ? (back.filter { $0 > date }.min(), limited) : nil
     }
 
     /// Waits up to `duplicateWait` for the conversation's other requests to end; true when one is still on.
@@ -640,7 +711,7 @@ public actor PoolCoordinator: BridgeBackend {
         let key = shelfKey(binding.history, model: binding.request.model)
         shelf.removeValue(forKey: key)?.saved.discard()
         shelf[key] = Shelved(saved: saved, model: binding.request.model, context: Self.context(binding.request),
-                             until: binding.lastActive.addingTimeInterval(idleTimeout), forks: Self.forkKeys(binding.history))
+                             until: binding.lastActive.addingTimeInterval(idleTimeout), forks: Self.forkKeys(binding.history), trailing: true, tokens: binding.contextTokens)
         while shelf.count > Self.shelfMost, let oldest = shelf.min(by: { $0.value.until < $1.value.until }) {
             shelf.removeValue(forKey: oldest.key)?.saved.discard()
         }
@@ -686,12 +757,23 @@ public actor PoolCoordinator: BridgeBackend {
     }
 
     /// The model, instructions and tools, and
-    /// what a turn may call, whether it searches and its answer's schema, which a run is started with.
-    private func compatible(_ binding: Binding, request: BridgeRequest, allowingToolChanges: Bool = false) -> Bool {
+    /// what a turn may call, whether it searches and its answer's schema, which a run is started with,
+    /// and the effort a turn names (a run's calls finish at the effort they began with).
+    private func compatible(_ binding: Binding, request: BridgeRequest, allowingToolChanges: Bool = false,
+                            ignoringEffort: Bool = false) -> Bool {
         binding.request.model == request.model && binding.request.system == request.system &&
             (allowingToolChanges || binding.request.tools == request.tools) &&
             binding.request.webSearch == request.webSearch && binding.request.answerSchema == request.answerSchema &&
-            (allowingToolChanges || binding.request.toolChoice == request.toolChoice)
+            (allowingToolChanges || binding.request.toolChoice == request.toolChoice) &&
+            (allowingToolChanges || ignoringEffort || !Self.effortChanged(binding.request, request))
+    }
+    /// The turn names an effort other than the run's; one that names none keeps the run's.
+    static func effortChanged(_ run: BridgeRequest, _ turn: BridgeRequest) -> Bool {
+        turn.effort != nil && turn.effort != run.effort
+    }
+    private func recordEffortChange(_ binding: Binding, _ request: BridgeRequest, alias: String) {
+        Diagnostics.record("coordinator.route", ["decision": "effort_changed", "from": binding.request.effort ?? "-",
+            "to": request.effort ?? "-", "conversation": Diagnostics.tag(alias)])
     }
     private func eligible(_ binding: Binding, model: PoolModel) -> Bool {
         sameIdentity(binding) && PoolRouting.candidates(accounts, model: model.cliAlias, excluding: restingAccounts(), policy: routingPolicy)
@@ -715,8 +797,45 @@ public actor PoolCoordinator: BridgeBackend {
             current.identityFingerprint == binding.accountAtStart.identityFingerprint
     }
     private func shouldHandoff(_ binding: Binding, model: PoolModel) -> Bool {
-        PoolRouting.handoff(accounts, model: model.cliAlias, currentID: binding.session.accountID, policy: routingPolicy)?.reason == .lowQuota ||
+        PoolRouting.handoff(accounts, model: model.cliAlias, currentID: binding.session.accountID, policy: routingPolicy,
+                            need: PoolRouting.turnNeed(cost: binding.turnCost), contextTokens: binding.contextTokens)?.reason == .lowQuota ||
             smallMove(binding, model: model) != nil
+    }
+    private func account(of binding: Binding) -> PoolAccount {
+        accounts.first { $0.id == binding.session.accountID } ?? binding.accountAtStart
+    }
+    /// A turn ended: what it cost its account, from the account's readings at its beginning and now.
+    /// The readings are the whole account's, so a turn is measured only when it is this run's alone:
+    /// no other run of the account worked during it, and it was no longer than `turnMeasuredMost` (a
+    /// long turn waits on sub-agents and tools, and what the account lost meanwhile is not its cost).
+    /// Counting others' work as the turn's would move the conversation, and write it whole, for nothing.
+    /// A run keeps the larger of this and half of what it had, so one light turn after heavy ones does
+    /// not forget them; the pool keeps a moving figure for work that has no turn of its own yet.
+    static let turnMeasuredMost: TimeInterval = 300
+    private func measureTurn(_ id: UUID, model: PoolModel) {
+        guard let binding = bindings[id], !binding.session.isOneOff, let began = binding.turnBeganLeft,
+              let left = PoolRouting.assessment(account(of: binding), model: model.cliAlias, now: now()).headroom else { return }
+        bindings[id]?.turnBeganLeft = nil
+        // More left than at the beginning is a new cycle: it says nothing of the turn.
+        guard left <= began else { return }
+        let beganAt = binding.turnBeganAt ?? now(), accountID = binding.session.accountID
+        let shared = bindings.contains { $0.key != id && $0.value.session.accountID == accountID && ($0.value.busy || $0.value.lastActive >= beganAt) }
+        // A whole write on the account that the reading the turn began with does not show yet is
+        // counted in the readings after it: an earlier turn's, or another run's that has ended since.
+        let stale = wholeWriteAt[accountID].map { (binding.turnBeganRead ?? .distantPast) < $0.addingTimeInterval(Self.wholeWriteSettle) } ?? false
+        let skipped = shared ? "shared" : now().timeIntervalSince(beganAt) > Self.turnMeasuredMost ? "long"
+            : binding.turnWroteWhole ? "whole" : stale ? "stale" : nil
+        if let skipped {
+            Diagnostics.record("coordinator.turn_cost", ["account": Diagnostics.id(accountID), "cost": "-",
+                "skipped": skipped, "conversation": binding.session.conversation ?? "-"])
+            return
+        }
+        let cost = began - left
+        bindings[id]?.turnCost = max(cost, (binding.turnCost ?? 0) / 2)
+        typicalTurnCost = typicalTurnCost.map { $0 + (cost - $0) * 0.2 } ?? cost
+        Diagnostics.record("coordinator.turn_cost", ["account": Diagnostics.id(binding.session.accountID), "cost": String(format: "%.1f", cost),
+            "left": String(format: "%.0f", left), "kept": String(format: "%.1f", bindings[id]?.turnCost ?? 0),
+            "typical": String(format: "%.1f", typicalTurnCost ?? 0), "conversation": binding.session.conversation ?? "-"])
     }
     /// The account a small conversation on a nearly used-up account moves to at this turn (PoolRouting.moveWhileSmall).
     private func smallMove(_ binding: Binding, model: PoolModel) -> PoolAccount? {
@@ -727,7 +846,8 @@ public actor PoolCoordinator: BridgeBackend {
     /// Logs why a conversation leaves its account at this turn.
     private func recordMove(_ binding: Binding, model: PoolModel) {
         guard let to = smallMove(binding, model: model),
-              PoolRouting.handoff(accounts, model: model.cliAlias, currentID: binding.session.accountID, policy: routingPolicy)?.reason != .lowQuota,
+              PoolRouting.handoff(accounts, model: model.cliAlias, currentID: binding.session.accountID, policy: routingPolicy,
+                                  contextTokens: binding.contextTokens)?.reason != .lowQuota,
               let current = accounts.first(where: { $0.id == binding.session.accountID }) else { return }
         Diagnostics.record("coordinator.route", ["decision": "moved_while_small", "conversation": binding.session.conversation ?? "-",
             "tokens": String(binding.contextTokens ?? 0), "from": Diagnostics.id(current.id), "to": Diagnostics.id(to.id),
@@ -800,7 +920,9 @@ public actor PoolCoordinator: BridgeBackend {
             "same_account": lowQuota ? "no" : "tried", "conversation": Diagnostics.tag(alias)])
         if lowQuota {
             return try await create(request: request, model: model, generation: generation,
-                                    excluding: [account], minimumHeadroom: routingPolicy.reservePercent)
+                                    excluding: [account],
+                                    // the same share the move was decided by: never to an account with no more left
+                                    minimumHeadroom: max(routingPolicy.reservePercent, PoolRouting.turnNeed(cost: binding.turnCost)))
         }
         do { return try await create(request: request, model: model, generation: generation, only: account) }
         catch BridgeFailure.unavailable { return try await create(request: request, model: model, generation: generation) }
@@ -828,7 +950,10 @@ public actor PoolCoordinator: BridgeBackend {
         let parallel = !Self.isOneOff(request) && conversation.map { tag in
             bindings.values.contains { $0.session.conversation == tag && $0.busy }
         } == true
-        let lead = parallel ? nil
+        // A task that already had a reply is another matter: told again (its run replaced, its results
+        // come when no run waits), it goes back to the account it was on, by its own first exchange, where
+        // its instructions and what it has said are cached. Elsewhere it is written whole.
+        let lead = parallel ? (Self.isOneOff(request) ? nil : openingAccount(of: request))
             : conversation.flatMap { leadAccount(of: $0) } ?? (Self.isOneOff(request) ? nil : openingAccount(of: request))
         // A new conversation leans toward an account whose cache already holds its instructions and tools.
         let bonus = lead == nil && only == nil ? warmBonus(request) : [:]
@@ -836,7 +961,8 @@ public actor PoolCoordinator: BridgeBackend {
             guard !Task.isCancelled, !cancelledGenerations.contains(generation) else { throw BridgeFailure.cancelled }
             guard !blocked() else { throw BridgeFailure.paused }
             var candidates = PoolRouting.candidates(accounts, model: model.cliAlias, excluding: excluded.union(restingAccounts()), now: now(),
-                                                    policy: routingPolicy, load: conversationLoad(), bonus: bonus)
+                                                    policy: routingPolicy, load: conversationLoad(), bonus: bonus,
+                                                    spentBelow: min(PoolRouting.spentBelowMost, PoolRouting.turnNeed(cost: typicalTurnCost)))
                 .filter { only == nil || $0.id == only }
             // A side request of a conversation (a title, a summary) goes to the account the conversation is on
             // while that account would take a new conversation, so one conversation uses one account.
@@ -847,7 +973,15 @@ public actor PoolCoordinator: BridgeBackend {
             guard let account = candidates.first(where: { candidate in
                 guard let minimumHeadroom else { return true }
                 return PoolRouting.assessment(candidate, model: model.cliAlias).headroom.map { $0 > minimumHeadroom } ?? false
-            }) else { route(model: model.id, reason: .noAvailableAccount); throw BridgeFailure.unavailable }
+            }) else {
+                route(model: model.id, reason: .noAvailableAccount)
+                // A request held to one account, or to accounts with room to spare, falls back to any
+                // account when this fails: only a request any account could have taken says the pool's limit.
+                guard only == nil, minimumHeadroom == nil, let limit = poolLimit(model: model) else { throw BridgeFailure.unavailable }
+                Diagnostics.record("coordinator.pool_limited", ["model": model.cliAlias, "limited": String(limit.limited),
+                    "back_s": limit.back.map { String(Int($0.timeIntervalSince(now()))) } ?? "-", "conversation": conversation ?? "-"])
+                throw BridgeFailure.poolLimited(limit.back)
+            }
             // Why this account: what the conversation asked for and how the others scored.
             let load = conversationLoad(), date = now()
             let scored = candidates.prefix(5).map { candidate in
@@ -904,7 +1038,7 @@ public actor PoolCoordinator: BridgeBackend {
             if Task.isCancelled || cancelledGenerations.contains(generation) { throw BridgeFailure.cancelled }
             throw blocked() ? BridgeFailure.paused : BridgeFailure.unavailable
         }
-        let reason: RoutingReason = reasonOverride ?? (rejectedAccount ? .failover : parallel ? .parallelWork : lead == account.id ? .sessionAffinity : routingPolicy.strategy == .ordered ? .accountOrder :
+        let reason: RoutingReason = reasonOverride ?? (rejectedAccount ? .failover : lead == account.id ? .sessionAffinity : parallel ? .parallelWork : routingPolicy.strategy == .ordered ? .accountOrder :
             (PoolRouting.assessment(verifiedAccount, model: model.cliAlias).headroom == nil ? .unknownQuota : .headroom))
         route(id: worker.id, model: model.id, reason: reason)
         return worker.id
@@ -937,6 +1071,7 @@ public actor PoolCoordinator: BridgeBackend {
             resetProgress(id)
             var reportedUsage = false
             var lastUsage: BridgeUsage?
+            var thought = 0
             do {
                 let source: AsyncThrowingStream<BridgeEvent, Error>
                 if replayCompletedResults {
@@ -997,14 +1132,23 @@ public actor PoolCoordinator: BridgeBackend {
                                                       toolsChanged: current.toolsDigest.map { $0 != tools } ?? false,
                                                       read: read, written: written)
                             bindings[id]?.replies += 1; bindings[id]?.toolsDigest = tools
+                            // the conversation written whole, or most of it: what a move costs, not a turn
+                            if why != "turn", why != "one_off", written > read {
+                                bindings[id]?.turnWroteWhole = true; wholeWriteAt[binding.session.accountID] = date
+                            }
                             bindings[id]?.contextTokens = max(0, usage.inputTokens) + read + written + max(0, usage.outputTokens)
                             Diagnostics.record("coordinator.usage", [
                                 "conversation": Diagnostics.tag(alias), "run": Diagnostics.id(id),
                                 "account": Diagnostics.id(binding.accountAtStart.id), "replay": replay ? "yes" : "no",
-                                "cache_r": String(read), "cache_w": String(written), "why": why])
+                                "cache_r": String(read), "cache_w": String(written), "why": why, "thinking_chars": String(thought)])
                         }
                     }
                     switch event {
+                    case .thinking(let delta):
+                        // shown, not the answer: a reply that fails after it may still go to another account
+                        thought += delta.count
+                        setWorkState(id, state: .generating)
+                    case .thinkingSignature: break
                     case .text(let delta):
                         committed = true; text += delta
                         setWorkState(id, state: .generating)
@@ -1026,6 +1170,7 @@ public actor PoolCoordinator: BridgeBackend {
                         bindings[id]?.history = request.messages + [BridgeMessage(role: "assistant", content: .array(content))]
                         bindings[id]?.busy = false; bindings[id]?.serving = nil
                         bindings[id]?.lastActive = now()
+                        if reason != .toolUse { measureTurn(id, model: model) }
                         if let finished = bindings[id] { rememberAccount(finished); rememberWarm(finished) }
                         bindings[id]?.session.state = reason == .toolUse ? .waiting : .idle
                         if reason == .toolUse {
@@ -1316,10 +1461,83 @@ public actor PoolCoordinator: BridgeBackend {
     /// reply is one a run was let go at, with the same model, instructions and tools, on an account that
     /// can still serve it and needs no handoff; and the request that tells only the turn since.
     private func takeShelved(_ request: BridgeRequest, model: PoolModel) -> (Shelved, BridgeRequest)? {
-        guard !shelf.isEmpty, let turn = ConversationWords.nextTurn(request.messages), !turn.since.isEmpty,
-              let entry = shelf.removeValue(forKey: shelfKey(turn.before, model: request.model)) else { return nil }
-        guard fits(entry, request, model: model), let told = turnRequest(request, turn: turn, alias: "shelf") else { entry.saved.discard(); return nil }
+        guard !shelf.isEmpty, let turn = ConversationWords.nextTurn(request.messages), !turn.since.isEmpty else { return nil }
+        let key = shelfKey(turn.before, model: request.model)
+        if let entry = shelf.removeValue(forKey: key) {
+            guard fits(entry, request, model: model), let told = turnRequest(request, turn: turn, alias: "shelf") else { entry.saved.discard(); return nil }
+            return (entry, told)
+        }
+        // A session whose last turn was the client's own, after the reply this conversation goes on
+        // from: it is cut where that turn began and taken (Pool's own).
+        guard let other = shelf.first(where: { $0.value.turnKey == key })?.key, var entry = shelf.removeValue(forKey: other) else { return nil }
+        guard fits(entry, request, model: model), let cut = entry.saved.beforeTurn(), cut.held == turn.before.count,
+              let told = turnRequest(request, turn: turn, alias: "shelf") else { entry.saved.discard(); return nil }
+        entry.saved = cut; entry.turnKey = nil
         return (entry, told)
+    }
+    /// A run's turn begins: the conversation it goes on from is kept by its key, `told` being that
+    /// conversation and the turn's one message.
+    private func noteTurn(_ id: UUID, told: BridgeRequest) {
+        noteTurn(id, before: Array(told.messages.dropLast()))
+    }
+    private func noteTurn(_ id: UUID, before: [BridgeMessage]) {
+        guard let reply = before.last, reply.role == "assistant", !ConversationWords.callsTool(reply) else { bindings[id]?.before = nil; return }
+        bindings[id]?.before = (ConversationWords.key(before), before.count)
+    }
+    /// A conversation goes on from before its run's last turn (Pool's own): a client asks a turn of
+    /// its own after a reply (Claude Code's next-prompt suggestion, which it sends as the conversation
+    /// with one more message) and the person's next message then follows the reply, not that turn. A
+    /// new run on the same account goes on from the run's session cut where that turn began, told
+    /// only what came since, so the service is asked a prefix it has cached rather than the
+    /// conversation written whole. `ending`: the run is ended and its session is cut where it is;
+    /// otherwise the run is left as it is, waiting on that turn's calls, and the new run takes a copy.
+    /// Nil, the run untouched, when the request does not go on from there, its model, instructions or
+    /// tools changed, its account cannot take it without a handoff, or the session cannot be cut.
+    private func forkBeforeTurn(_ id: UUID, request: BridgeRequest, model: PoolModel, generation: UInt64, ending: Bool) async throws -> UUID? {
+        guard let binding = bindings[id], let before = binding.before, !binding.busy, !binding.retiring, !binding.stopped,
+              sameIdentity(binding), binding.request.model == request.model, binding.request.system == request.system,
+              binding.request.tools == request.tools,
+              binding.request.toolChoice == nil, !binding.request.webSearch, binding.request.answerSchema == nil,
+              request.toolChoice == nil, !request.webSearch, request.answerSchema == nil,
+              eligible(binding, model: model), !shouldHandoff(binding, model: model),
+              let turn = ConversationWords.nextTurn(request.messages), !turn.since.isEmpty, turn.before.count == before.count,
+              // only the person's own messages since: a client's calls since need a run told it whole
+              turn.since.allSatisfy({ $0.role == "user" && !ConversationWords.carriesTools($0) }),
+              ConversationWords.key(turn.before) == before.key else { return nil }
+        guard let at = await binding.worker.liveSession(), at.turn?.held == before.count,
+              let current = bindings[id], !current.busy, !current.retiring, !current.stopped,
+              current.before?.key == before.key, current.before?.count == before.count else { return nil }
+        let account = binding.session.accountID
+        let cut: ShelvedSession
+        if ending {
+            guard current.pending.isEmpty else { return nil }
+            bindings[id]?.retiring = true
+            guard let saved = await binding.worker.shelveEnding() else { bindings[id]?.retiring = false; return nil }
+            if bindings[id] != nil { bindings[id]?.session.state = .ended; publish(id); remove(id) }
+            guard let copy = saved.beforeTurn(), copy.held == before.count else {
+                Diagnostics.record("coordinator.route", ["decision": "turn_fork_lost", "conversation": binding.session.conversation ?? "-",
+                                                         "messages": String(request.messages.count)])
+                saved.discard()
+                do { return try await create(request: request, model: model, generation: generation, only: account) }
+                catch BridgeFailure.unavailable { return try await create(request: request, model: model, generation: generation) }
+            }
+            cut = copy
+        } else {
+            guard let copy = at.beforeTurn(keeping: true) else { return nil }
+            cut = copy
+        }
+        let next: UUID
+        do { next = try await create(request: request, model: model, generation: generation, only: account) }
+        catch BridgeFailure.unavailable {
+            cut.discard()
+            return try await create(request: request, model: model, generation: generation)
+        }
+        if bindings[next]?.session.accountID == account, await resumeRun(next, from: cut) {
+            noteTurn(next, before: turn.before)
+            Diagnostics.record("coordinator.route", ["decision": "turn_forked", "why": ending ? "replaced" : "pending_calls",
+                "conversation": binding.session.conversation ?? "-", "messages": String(request.messages.count), "held": String(before.count)])
+        } else { cut.discard() }
+        return next
     }
     /// Lets an idle run go for room or past idleMost with its session shelved for its conversation's
     /// next turn, else ends it as `retire` does.
@@ -1330,12 +1548,15 @@ public actor PoolCoordinator: BridgeBackend {
         guard let saved = await binding.worker.shelve() else { bindings[id]?.retiring = false; return await retire(id) }
         let key = shelfKey(binding.history, model: binding.request.model)
         shelf.removeValue(forKey: key)?.saved.discard()
+        // where its last turn began, when the run and its session agree on it
+        let turnKey = binding.before.flatMap { saved.turn?.held == $0.count ? binding.request.model + "\u{0}" + $0.key : nil }
         shelf[key] = Shelved(saved: saved, model: binding.request.model, context: Self.context(binding.request),
-                             until: binding.lastActive.addingTimeInterval(idleTimeout), forks: Self.forkKeys(binding.history))
+                             until: binding.lastActive.addingTimeInterval(idleTimeout), forks: Self.forkKeys(binding.history), turnKey: turnKey, tokens: binding.contextTokens)
         while shelf.count > Self.shelfMost, let oldest = shelf.min(by: { $0.value.until < $1.value.until }) {
             shelf.removeValue(forKey: oldest.key)?.saved.discard()
         }
-        Diagnostics.record("coordinator.route", ["decision": "shelved", "messages": String(binding.history.count)])
+        Diagnostics.record("coordinator.route", ["decision": "shelved", "messages": String(binding.history.count),
+                                                 "turn": turnKey == nil ? "-" : "known"])
         if bindings[id] != nil { bindings[id]?.session.state = .ended; publish(id); remove(id) }
         return true
     }
@@ -1371,7 +1592,13 @@ public actor PoolCoordinator: BridgeBackend {
         if request.messages.last?.role != "user" { return declined("no_user_turn") }
         if !eligible(binding, model: model) { return declined("account_unavailable") }
         if shouldHandoff(binding, model: model) { return declined("low_quota") }
-        guard let held = Self.held(binding.history, in: request.messages) else { return declined("not_from_last_reply") }
+        guard let held = Self.held(binding.history, in: request.messages) else {
+            // it may go on from before the run's last turn: the session is then cut there
+            if let forked = try await forkBeforeTurn(id, request: request, model: model, generation: generation, ending: true) { return forked }
+            // Where the request leaves what the run has: the shape of it says whether its session could go on cut there.
+            recordDivergence(binding.history, request.messages)
+            return declined("not_from_last_reply")
+        }
         let account = binding.session.accountID
         bindings[id]?.retiring = true
         guard let saved = await binding.worker.shelveEnding() else { bindings[id]?.retiring = false; return declined("session_unsaved") }
@@ -1383,6 +1610,8 @@ public actor PoolCoordinator: BridgeBackend {
             return try await create(request: request, model: model, generation: generation)
         }
         if bindings[next]?.session.accountID == account, await resumeRun(next, from: saved.holding(held)) {
+            // a stopped run's session holds its stopped turn after the conversation: never cut there
+            if !binding.stopped { noteTurn(next, before: Array(request.messages.prefix(held))) }
             Diagnostics.record("coordinator.route", ["decision": "session_handed_on", "why": why, "messages": String(request.messages.count),
                                                      "held": String(held)])
         } else { saved.discard() }
@@ -1428,7 +1657,7 @@ public actor PoolCoordinator: BridgeBackend {
         let key = callShelfKey(ConversationWords.key(binding.told), model: binding.request.model)
         shelf.removeValue(forKey: key)?.saved.discard()
         shelf[key] = Shelved(saved: saved, model: binding.request.model, context: Self.context(binding.request),
-                             until: binding.lastActive.addingTimeInterval(idleTimeout), forks: Self.forkKeys(binding.told))
+                             until: binding.lastActive.addingTimeInterval(idleTimeout), forks: Self.forkKeys(binding.told), tokens: binding.contextTokens)
         while shelf.count > Self.shelfMost, let oldest = shelf.min(by: { $0.value.until < $1.value.until }) {
             shelf.removeValue(forKey: oldest.key)?.saved.discard()
         }
@@ -1468,8 +1697,10 @@ public actor PoolCoordinator: BridgeBackend {
     /// call's results with its own words after them, of a session whose run answered past them. A
     /// run of that conversation idle now is shelved first. The session is cut before the call
     /// (`ShelvedSession.forking`) and stays on the shelf for the conversation's own next turn. Nil
-    /// when no session told that conversation fits the request.
-    private func takeForkShelf(_ request: BridgeRequest, model: PoolModel) async -> ShelvedSession? {
+    /// when no session told that conversation fits the request. A run of the conversation still
+    /// waiting on later calls is copied from as it is (`SessionWorker.liveSession`), and left waiting:
+    /// Claude Code compacts in the middle of a turn too, while its calls are out.
+    private func takeForkShelf(_ request: BridgeRequest, model: PoolModel, conversation: String? = nil) async -> ShelvedSession? {
         let messages = request.messages
         guard messages.last?.role == "user", let call = messages.lastIndex(where: { $0.role == "assistant" }), call > 0,
               ConversationWords.callsTool(messages[call]) else { return nil }
@@ -1484,8 +1715,22 @@ public actor PoolCoordinator: BridgeBackend {
                                                                  Self.forkKeys($0.value.history).contains(key) }) {
             _ = await shelveOrRetire(id)
         }
-        guard !calls.isEmpty, let entry = found(), fits(entry, request, model: model) else { return nil }
-        return entry.saved.forking(call, before: calls)
+        guard !calls.isEmpty else { return nil }
+        if let entry = found() { return fits(entry, request, model: model) ? entry.saved.forking(call, before: calls) : nil }
+        // no session let go: the conversation's own run, waiting on calls it made after these
+        guard let conversation, request.toolChoice == nil, !request.webSearch, request.answerSchema == nil,
+              let (id, waiting) = bindings.first(where: { item in
+                  let binding = item.value
+                  return binding.session.conversation == conversation && !binding.busy && !binding.retiring && !binding.stopped &&
+                      !binding.pending.isEmpty && binding.request.model == request.model &&
+                      binding.request.toolChoice == nil && !binding.request.webSearch && binding.request.answerSchema == nil &&
+                      Self.context(binding.request) == Self.context(request) && Self.forkKeys(binding.history).contains(key)
+              }), sameIdentity(waiting), eligible(waiting, model: model), !shouldHandoff(waiting, model: model),
+              let live = await waiting.worker.liveSession(),
+              let current = bindings[id], !current.busy, !current.retiring, !current.stopped, !current.pending.isEmpty else { return nil }
+        Diagnostics.record("coordinator.route", ["decision": "fork_from_waiting_run", "conversation": conversation,
+                                                 "calls": String(waiting.pending.count), "held": String(call)])
+        return live.forking(call, before: calls)
     }
     /// Whether a shelved session can take the request: within its hour, the same instructions and
     /// tools, and its account still able to serve it without a handoff.
@@ -1493,7 +1738,8 @@ public actor PoolCoordinator: BridgeBackend {
         let account = entry.saved.accountID
         return entry.until > now() && entry.context == Self.context(request) && entry.plain(request) &&
             PoolRouting.candidates(accounts, model: model.cliAlias, excluding: restingAccounts(), policy: routingPolicy).contains(where: { $0.id == account }) &&
-            PoolRouting.handoff(accounts, model: model.cliAlias, currentID: account, policy: routingPolicy)?.reason != .lowQuota
+            PoolRouting.handoff(accounts, model: model.cliAlias, currentID: account, policy: routingPolicy,
+                                contextTokens: entry.tokens)?.reason != .lowQuota
     }
     private func discardShelf(where match: (Shelved) -> Bool) {
         for (key, entry) in shelf where match(entry) { shelf.removeValue(forKey: key); entry.saved.discard() }

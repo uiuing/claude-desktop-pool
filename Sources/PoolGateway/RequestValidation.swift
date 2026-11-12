@@ -3,6 +3,23 @@ import CryptoKit
 import PoolCore
 
 public enum GatewayRequestValidation {
+    /// A body already read, for the request served within `withValue`: the full log reads a body
+    /// before it is routed, and the request is then built from the same tree, so a body is read once.
+    struct Read: Sendable {
+        @TaskLocal static var current: Read?
+        let body: Data
+        /// The body's tree, or nil when it is not JSON.
+        let tree: JSONValue?
+        init(_ body: Data) { self.body = body; tree = try? JSONValue.parse(body) }
+        /// The same bytes: a large body by its shared storage, so its content is not compared again;
+        /// a small one, which may be kept inline rather than shared, by its content.
+        func holds(_ other: Data) -> Bool {
+            guard body.count == other.count else { return false }
+            if body.count < 4096 { return body == other }
+            return body.withUnsafeBytes { mine in other.withUnsafeBytes { $0.baseAddress == mine.baseAddress } }
+        }
+    }
+
     public static func decode(_ body: Data, models: [PoolModel] = PoolModel.defaults) throws -> BridgeRequest {
         try decodeRequest(body, models: models).request
     }
@@ -10,8 +27,13 @@ public enum GatewayRequestValidation {
     /// shape (`conversationKey`) it belongs to.
     public static func decodeRequest(_ body: Data, models: [PoolModel] = PoolModel.defaults) throws -> (request: BridgeRequest, requested: String, shape: String) {
         let root: JSONValue
-        do { root = try JSONDecoder().decode(JSONValue.self, from: body) }
-        catch { throw BridgeFailure.invalidRequest("The message body is not valid JSON.") }
+        if let read = Read.current, read.holds(body) {
+            guard let tree = read.tree else { throw BridgeFailure.invalidRequest("The message body is not valid JSON.") }
+            root = tree
+        } else {
+            do { root = try JSONValue.parse(body) }
+            catch { throw BridgeFailure.invalidRequest("The message body is not valid JSON.") }
+        }
         guard let input = root.objectValue else { throw BridgeFailure.invalidRequest("A message object is required.") }
         let adapted = try ClientRequestShape.adapt(input)
         let object = adapted.object
@@ -55,11 +77,21 @@ public enum GatewayRequestValidation {
                 throw BridgeFailure.invalidRequest("The request metadata is not supported.")
             }
         }
-        var request: BridgeRequest
-        do { request = try JSONDecoder().decode(BridgeRequest.self, from: try JSONValue.object(object).encoded()) }
-        catch { throw BridgeFailure.invalidRequest("The message body is malformed.") }
+        // Built from the checked tree as `BridgeRequest`'s decoder would read it: a message's other
+        // keys and a tool's other fields are not kept, and an absent `stream` stays absent.
+        var request = BridgeRequest(
+            model: requested,
+            messages: messages.map { BridgeMessage(role: $0["role"]?.stringValue ?? "", content: $0["content"] ?? .null) },
+            system: object["system"],
+            tools: object["tools"]?.arrayValue?.map { tool in
+                BridgeTool(name: tool["name"]?.stringValue ?? "", description: tool["description"]?.stringValue,
+                           inputSchema: tool["input_schema"] ?? .null)
+            },
+            maxTokens: Int(maxTokens), metadata: object["metadata"])
+        request.stream = object["stream"]?.boolValue
         request = normalized(request, model: model)
         request.toolChoice = adapted.toolChoice; request.answerSchema = adapted.answerSchema; request.webSearch = adapted.webSearch
+        request.effort = adapted.effort // not part of the conversation's shape
         return (request, requested, shape(of: request, tools: adapted.standingTools))
     }
 

@@ -96,6 +96,12 @@ enum GatewayJSON {
         let answer = classify(error)
         var headers = ["Content-Type": "application/json"]
         if let wait = retryAfter(error) { headers["Retry-After"] = String(wait) }
+        // The pool at its limit is said as Anthropic says a subscription's: Claude Code then waits for
+        // the reset it names when it is set to wait, instead of taking it for a moment's overload.
+        if case BridgeFailure.poolLimited(let back)? = error as? BridgeFailure {
+            headers["anthropic-ratelimit-unified-status"] = "rejected"
+            if let back { headers["anthropic-ratelimit-unified-reset"] = String(Int(back.timeIntervalSince1970.rounded(.up))) }
+        }
         return GatewayHTTPResponse(status: answer.status, headers: headers, body: data([
             "type": .string("error"), "error": .object(["type": .string(answer.type), "message": .string(answer.message)])
         ]))
@@ -120,7 +126,7 @@ enum GatewayJSON {
         // A pool account that must sign in again is not the gateway's own credential: a 401
         // here would make the client ask for a new gateway key.
         case .accountUnavailable, .permissionRequired: return (403, "permission_error", message)
-        case .rateLimited, .quotaLimited: return (429, "rate_limit_error", message)
+        case .rateLimited, .quotaLimited, .poolLimited: return (429, "rate_limit_error", message)
         case .cancelled: return (499, "api_error", message)
         case .paused, .unavailable, .busy, .privacyBusy: return (503, "overloaded_error", message)
         case .compatibility, .transport: return (502, "api_error", message)
@@ -157,6 +163,7 @@ enum GatewayJSON {
         case .paused: return "paused"
         case .busy: return "busy"
         case .rateLimited: return "rateLimited"
+        case .poolLimited: return "poolLimited"
         case .permissionRequired: return "permissionRequired"
         case .cancelled: return "cancelled"
         case .compatibility: return "compatibility"
@@ -206,7 +213,7 @@ enum GatewayJSON {
     static func retryAfter(_ error: Error, now: Date = Date()) -> Int? {
         let reset: Date?
         switch error as? BridgeFailure {
-        case .rateLimited(let date): reset = date
+        case .rateLimited(let date), .poolLimited(let date): reset = date
         case .quotaLimited(let windows): reset = windows.compactMap(\.resetsAt).filter { $0 > now }.min()
         default: reset = nil
         }

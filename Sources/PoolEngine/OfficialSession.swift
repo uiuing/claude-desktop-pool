@@ -38,6 +38,15 @@ public actor OfficialSession: SessionWorker {
     private var resumeHeld: Int?
     /// The calls the resumed session is cut before: the run goes on from a copy of it up to them.
     private var resumeCut: Set<String>?
+    /// The length the resumed session is cut to, and how: where it is, or as a copy of the run's own
+    /// when another run still has it. And what removes a session that could not be cut where it is,
+    /// which then is nobody's.
+    private var resumeCutAt: Int?
+    private var resumeCopies = false
+    private var resumeDiscard: (@Sendable () -> Void)?
+    /// Where the run's last turn began: the client's messages its session held then, and how long
+    /// its transcript was (`ShelvedSession.Turn`).
+    private var turnStart: ShelvedSession.Turn?
     private var keepSession = false
     /// What the turn may call and its answer tool: the
     /// answer a call gave, the turn's words held back meanwhile, and whether it was asked for one.
@@ -66,6 +75,8 @@ public actor OfficialSession: SessionWorker {
     private var observer: AsyncStream<WorkerObservation>.Continuation?
     private var observationStream: AsyncStream<WorkerObservation>?
     private var pollTask: Task<Void, Never>?
+    /// Ends a look's wait as soon as the run's events, tap or transcript change.
+    private nonisolated let wake = FileWake()
     private var processTask: Task<Void, Never>?
     private var inputTask: Task<Void, Never>?
     private var deadline: Date?
@@ -217,6 +228,7 @@ public actor OfficialSession: SessionWorker {
             let turn = try ClaudePrompt.messages(Array(request.messages[since...]))
             pieces = ClaudePrompt.pieces(ClaudePrompt.turn(turn, name: callableName))
             try ClaudePrompt.validatePasted(pieces ?? [])
+            noteTurn(held: since)
         }
         if !results.isEmpty, request.tools ?? [] != originalTools {
             // the list is taken up again before the results go on, at most toolCatalogTimeout,
@@ -292,6 +304,7 @@ public actor OfficialSession: SessionWorker {
             if from <= 0 || from >= request.messages.count {
                 // nothing the shelved session holds is this conversation's: the run is its own
                 resumeFrom = nil; resumeHeld = nil; resumeCut = nil; sessionKey = ClaudeReplay.sessionKey(id)
+                resumeCutAt = nil; resumeDiscard?(); resumeDiscard = nil
             }
         }
         let config = try workspace.accountDirectory(account.id), work = try workspace.workDirectory(account.id)
@@ -306,6 +319,26 @@ public actor OfficialSession: SessionWorker {
                 resumeFrom = nil; resumeHeld = nil; sessionKey = own
             }
             resumeCut = nil
+        }
+        if let from = resumeFrom, let bytes = resumeCutAt {
+            // A session cut where its last turn began: the session itself once its run has ended, kept
+            // under its id with what Claude Code keeps beside it; a copy of the run's own while
+            // another run still has it.
+            let own = ClaudeReplay.sessionKey(id)
+            let refusal = resumeCopies ? ClaudeReplay.forkRefusal(config: config, work: work, from: from, to: own, upTo: bytes)
+                : ClaudeReplay.cutRefusal(config: config, work: work, session: from, upTo: bytes)
+            if let refusal {
+                // the turn is then told whole, as it was before sessions were cut
+                Diagnostics.record("session.fork_refused", ["run": runTag, "why": refusal, "bytes": String(bytes),
+                                                            "how": resumeCopies ? "copy" : "cut"])
+                resumeDiscard?()
+                resumeFrom = nil; resumeHeld = nil; sessionKey = own
+            } else {
+                Diagnostics.record("session.forked", ["run": runTag, "at": "turn", "bytes": String(bytes), "held": String(resumeHeld ?? 0),
+                                                      "how": resumeCopies ? "copy" : "cut"])
+                if resumeCopies { resumeFrom = own; sessionKey = own }
+            }
+            resumeCutAt = nil; resumeDiscard = nil
         }
 
         // What is typed, and the saved session it goes on from (claude_replay.go:31-93): a
@@ -334,6 +367,8 @@ public actor OfficialSession: SessionWorker {
         }
         let settings = JSONValue.object([
             "disableDeepLinkRegistration": .string("disable"),
+            // interactive mode leaves thinking out of the reply stream unless asked
+            "showThinkingSummaries": .bool(true),
             "hooks": .object(hooks),
             "statusLine": .object(["type": .string("command"), "command": .string("\(helper) --bridge-hook \(run) statusLine")])])
         let settingsURL = directory.appendingPathComponent("settings.json")
@@ -347,6 +382,8 @@ public actor OfficialSession: SessionWorker {
         var arguments = ["--session-id", sessionKey, "--model", model.cliAlias,
                          "--tools", request.webSearch ? "WebSearch" : "", "--strict-mcp-config", "--mcp-config", mcpURL.path,
                          "--setting-sources", "", "--settings", settingsURL.path]
+        // the effort the client chose; none keeps Claude Code's own
+        if let effort = request.effort { arguments += ["--effort", effort] }
         // The client's instructions follow Claude Code's own system prompt, never replace it:
         // Anthropic refused interactive turns whose system prompt was a client's.
         let system = try request.system.map { ClaudePrompt.withoutBillingHeader(try RequestContent.text($0)) } ?? ""
@@ -388,6 +425,9 @@ public actor OfficialSession: SessionWorker {
             told = try resumeSplit(request.messages)
             firstPieces = ClaudePrompt.pieces(ClaudePrompt.turn(Array(messages[told...]), name: callableName))
             resumed = true; arguments[0] = "--resume"
+            // a turn after a plain reply begins here, before anything of it is in the session
+            if told > 0, told <= request.messages.count, request.messages[told - 1].role == "assistant",
+               !ConversationWords.callsTool(request.messages[told - 1]) { noteTurn(held: told) }
         } else if let replay {
             do {
                 _ = try ClaudeReplay.write(replay.data, config: config, work: work, session: sessionKey)
@@ -419,10 +459,15 @@ public actor OfficialSession: SessionWorker {
     private func startPolling() {
         guard !ended, !nativeSessionEnded else { return }
         pollTask?.cancel(); quietLooks = 0
+        let wake = wake
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
+                let began = ContinuousClock.now
                 guard let interval = await self?.poll() else { return }
-                try? await Task.sleep(nanoseconds: interval)
+                await wake.wait(upTo: .nanoseconds(Int64(interval)))
+                // A change wakes the wait early; a stream of them still looks at most a hundred times a second, as before.
+                let since = ContinuousClock.now - began
+                if since < .milliseconds(10) { try? await Task.sleep(for: .milliseconds(10) - since) }
             }
         }
     }
@@ -438,7 +483,8 @@ public actor OfficialSession: SessionWorker {
         transport = child; launchedAt = Date()
         Diagnostics.record("session.started", ["run": runTag, "model": model.cliAlias, "resumed": resumed ? "yes" : "no",
                                                "history_messages": String(history), "transcript_bytes": String(bytes),
-                                               "cache": plan.environment["CLAUDE_CODE_PROMPT_CACHE_TTL"] ?? "-"])
+                                               "cache": plan.environment["CLAUDE_CODE_PROMPT_CACHE_TTL"] ?? "-",
+                                               "effort": plan.arguments.firstIndex(of: "--effort").map { plan.arguments[$0 + 1] } ?? "-"])
         processTask = Task { [weak self] in
             for await event in child.events { await self?.process(event) }
         }
@@ -451,6 +497,8 @@ public actor OfficialSession: SessionWorker {
         Diagnostics.record("session.failed", ["run": runTag, "reason": "replay_failed",
                                               "ms": String(Int(Date().timeIntervalSince(launchedAt) * 1000))])
         retriedWhole = true; exitedBeforeReady = false; resumed = false
+        // the run's session is a new one, told whole: nothing of the one it replaced says where a turn begins
+        turnStart = nil
         ClaudeReplay.remove(config: accountDirectory, work: workDirectory, session: sessionKey)
         try? FileManager.default.removeItem(at: directory.appendingPathComponent("tools-listed.json"))
         screen = TerminalScreen(); firstRun = FirstRunScreens(); drawn = Data()
@@ -794,11 +842,11 @@ public actor OfficialSession: SessionWorker {
                 // the client ended before its prompt on a saved session it was to go on from
                 exitedBeforeReady = true; transport = nil; processTask = nil
                 Diagnostics.record("session.ended", ["run": runTag, "ms": String(Int(Date().timeIntervalSince(launchedAt) * 1000)),
-                                                     "status": String(status)])
+                                                     "status": String(status), "woken": String(wake.woken), "polled": String(wake.polled)])
                 return
             }
             Diagnostics.record("session.ended", ["run": runTag, "ms": String(Int(Date().timeIntervalSince(launchedAt) * 1000)),
-                                                 "status": String(status)])
+                                                 "status": String(status), "woken": String(wake.woken), "polled": String(wake.polled)])
             if response != nil { failed("process_exited") }
             _ = confirmExit()
         }
@@ -848,6 +896,7 @@ public actor OfficialSession: SessionWorker {
         }
         drain()
         if ended { return 40_000_000 }
+        wake.watch([folder.path] + [tap?.output.path, transcript?.url?.path].compactMap { $0 })
         if response != nil, ready, !invalidated, let failure = usageCreditsFailure() {
             invalidated = true; failed("usage_credits"); observer?.yield(.attention); fail(failure)
             return 40_000_000
@@ -989,6 +1038,8 @@ public actor OfficialSession: SessionWorker {
             case .text(let text):
                 // a structured answer is its answer tool's call alone; the turn's words wait
                 if answerSchema != nil { heldWords += text } else { response?.yield(.text(text)) }
+            case .thinking(let text): response?.yield(.thinking(text))
+            case .signature(let signature): response?.yield(.thinkingSignature(signature))
             case .call(let call):
                 guard response != nil else { continue }
                 outstanding.insert(call.id); replyCalls += 1
@@ -1370,9 +1421,22 @@ public actor OfficialSession: SessionWorker {
         guard ended else { keepSession = false; return nil }
         return keptSession(config: config, work: work)
     }
+    /// The run's session as it is, with where its last turn began when known; the run goes on as it was.
+    public func liveSession() async -> ShelvedSession? {
+        guard submitted, !ended, !invalidated, response == nil, accountDirectory != nil else { return nil }
+        return ShelvedSession(session: sessionKey, accountID: account.id, turn: turnStart, discard: {})
+    }
+    /// A turn begins: the client's messages the session holds, and its transcript's length now.
+    private func noteTurn(held: Int) {
+        guard held > 0, let accountDirectory, let workDirectory,
+              let bytes = ClaudeReplay.length(config: accountDirectory, work: workDirectory, session: sessionKey), bytes > 0 else {
+            turnStart = nil; return
+        }
+        turnStart = .init(held: held, bytes: bytes)
+    }
     private func keptSession(config: URL, work: URL) -> ShelvedSession {
         let session = sessionKey
-        return ShelvedSession(session: session, accountID: account.id, discard: {
+        return ShelvedSession(session: session, accountID: account.id, turn: turnStart, discard: {
             ClaudeReplay.remove(config: config, work: work, session: session)
         })
     }
@@ -1385,6 +1449,8 @@ public actor OfficialSession: SessionWorker {
     public func resume(from saved: ShelvedSession) async -> Bool {
         guard transport == nil, !submitted, saved.accountID == account.id, UUID(uuidString: saved.session) != nil else { return false }
         resumeFrom = saved.session; resumeHeld = saved.held; resumeCut = saved.cut; sessionKey = saved.session
+        resumeCutAt = saved.cutAt; resumeCopies = saved.cutCopies
+        resumeDiscard = saved.cutAt != nil && !saved.cutCopies ? saved.discard : nil
         return true
     }
     /// Where the messages a resumed session is told begin: after those it holds.
@@ -1466,6 +1532,7 @@ public actor OfficialSession: SessionWorker {
                 ClaudeReplay.remove(config: accountDirectory, work: workDirectory, session: sessionKey)
             }
             tap?.remove(); tap = nil
+            wake.close()
             do { try workspace.removeRun(id); directory = nil; attachmentFiles = [] }
             catch { Diagnostics.record("session.cleanup_failed", ["run": runTag, "error": (error as? RuntimeError).map { "\($0)" } ?? "error"]) }
         }

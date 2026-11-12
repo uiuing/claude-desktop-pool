@@ -183,8 +183,15 @@ enum ClaudePrompt {
 
     /// Whether the pieces can be typed into Claude Code as they are: words, and images it can paste. Anything
     /// else, of whatever kind, goes in the session's own transcript instead, as it came (`OfficialSession`).
+    /// More images than `pastedMost` are not pasted either: each paste waits for Claude Code to show its
+    /// image, one after another, and a turn of very many (a long run of screenshots told again) did not
+    /// get through.
+    static let pastedMost = 16
     static func typeable(_ pieces: [Piece]) -> Bool {
-        pieces.allSatisfy { piece in
+        var images = 0
+        for case .image in pieces { images += 1 }
+        guard images <= pastedMost else { return false }
+        return pieces.allSatisfy { piece in
             switch piece {
             case .text: return true
             case .image: return (try? validatePasted([piece])) != nil

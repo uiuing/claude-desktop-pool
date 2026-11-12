@@ -244,6 +244,31 @@ final class ClaudeStreamTests: XCTestCase {
         _ = await session.close()
     }
 
+    /// Thinking streams first, its signature closing its block, then the words and the call, in
+    /// the order the stream had them; a redacted_thinking block is not told.
+    func testThinkingIsToldInOrderBeforeWordsAndCallsAndRedactedThinkingIsNot() async throws {
+        let harness = try SessionHarness(); defer { harness.clean() }
+        let session = harness.session()
+        let log = EventLog.recording(try await session.events(for: request("Inspect", tools: tools)))
+        try await waitFor { harness.sentCount == 1 }
+        try harness.tap(#"{"tap":"on"}"#, #"{"s":1,"open":true}"#)
+        try harness.stream(1, Self.start("msg_t"), Self.thinkingStart(0), Self.thinking(0, "Weighing"), Self.thinking(0, " the file"))
+        try await waitFor { await log.events.contains(.thinking(" the file")) }
+        try harness.stream(1, Self.signature(0, "c2lnLXN5bnRoZXRpYw=="), Self.blockStop(0),
+                           Self.redactedStart(1), Self.blockStop(1),
+                           Self.textStart(2), Self.text(2, "Reading"), Self.blockStop(2),
+                           Self.toolStart(3, "toolu_t", "read"), Self.toolInput(3, #"{\"path\":\"a\"}"#), Self.blockStop(3),
+                           Self.delta("tool_use", out: 40), Self.messageStop)
+        try harness.tap(#"{"s":1,"end":"done"}"#)
+        try await waitFor { await log.ended }
+        let events = await log.events
+        XCTAssertEqual(events, [.usage(.init(inputTokens: 3, outputTokens: 1)), .thinking("Weighing"), .thinking(" the file"),
+                                .thinkingSignature("c2lnLXN5bnRoZXRpYw=="), .text("Reading"),
+                                .toolUse(.init(id: "toolu_t", name: "read", input: .object(["path": .string("a")]))),
+                                .usage(.init(inputTokens: 3, outputTokens: 40)), .finished(.toolUse)])
+        _ = await session.close()
+    }
+
     /// Without the tap, a call the helper hands over waits for its message, read 118 to 162 ms
     /// after it (callFirst): the message's words then go before the call, as the model wrote them.
     func testWithoutTheTapAMessagesWordsGoBeforeItsCallThatCameFirst() async throws {
@@ -572,6 +597,18 @@ final class ClaudeStreamTests: XCTestCase {
     static func textStart(_ index: Int) -> String { #"{"type":"content_block_start","index":\#(index),"content_block":{"type":"text","text":""}}"# }
     static func text(_ index: Int, _ text: String) -> String {
         #"{"type":"content_block_delta","index":\#(index),"delta":{"type":"text_delta","text":"\#(text)"}}"#
+    }
+    static func thinkingStart(_ index: Int) -> String {
+        #"{"type":"content_block_start","index":\#(index),"content_block":{"type":"thinking","thinking":"","signature":""}}"#
+    }
+    static func thinking(_ index: Int, _ text: String) -> String {
+        #"{"type":"content_block_delta","index":\#(index),"delta":{"type":"thinking_delta","thinking":"\#(text)"}}"#
+    }
+    static func signature(_ index: Int, _ signature: String) -> String {
+        #"{"type":"content_block_delta","index":\#(index),"delta":{"type":"signature_delta","signature":"\#(signature)"}}"#
+    }
+    static func redactedStart(_ index: Int) -> String {
+        #"{"type":"content_block_start","index":\#(index),"content_block":{"type":"redacted_thinking","data":"ZW5jcnlwdGVkLXN5bnRoZXRpYw=="}}"#
     }
     static func toolStart(_ index: Int, _ id: String, _ alias: String) -> String {
         #"{"type":"content_block_start","index":\#(index),"content_block":{"type":"tool_use","id":"\#(id)","name":"mcp__pool__\#(alias)","input":{}}}"#

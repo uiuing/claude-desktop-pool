@@ -480,6 +480,44 @@ final class CoordinatorReplayTests: XCTestCase {
         _ = await pool.shutdown()
     }
 
+    /// A run keeps its effort while turns name the same one or none; another effort goes on from the
+    /// run's session in a new run started with it, and later turns that name none stay there.
+    func testAnotherEffortHandsTheSessionOnAndNoEffortKeepsTheRun() async throws {
+        let lines = LoggedLines()
+        Diagnostics.install { lines.add($0) }
+        defer { Diagnostics.install(nil) }
+        let original = ReplayWorker(steps: [.reply([.text("Three items."), .finished(.endTurn)]),
+                                            .reply([.text("The first."), .finished(.endTurn)]),
+                                            .reply([.text("The last."), .finished(.endTurn)])], keeps: true)
+        let resumed = ReplayWorker(steps: [.reply([.text("The second is longest."), .finished(.endTurn)]),
+                                           .reply([.text("Done."), .finished(.endTurn)])], keeps: true)
+        let pool = pool(ReplayFactory([original, resumed]))
+        var request = first(); request.effort = "high"
+        _ = try await collect(pool, request)
+        func turn(_ answer: String, _ text: String, effort: String?) -> BridgeRequest {
+            request.messages += [.init(role: "assistant", content: .string(answer)), .init(role: "user", content: .string(text))]
+            request.effort = effort
+            return request
+        }
+        _ = try await collect(pool, turn("Three items.", "Which is first?", effort: nil))
+        _ = try await collect(pool, turn("The first.", "Which is last?", effort: "high"))
+        let changed = turn("The last.", "Which is longest?", effort: "max")
+        let answer = try await collect(pool, changed)
+        XCTAssertEqual(answer, [.text("The second is longest."), .finished(.endTurn)])
+        _ = try await collect(pool, turn("The second is longest.", "Thanks.", effort: nil))
+        let typedToOriginal = await original.regular.count, kept = await original.endShelves
+        let from = await resumed.resumedFrom, told = await resumed.regular, replays = await resumed.replays.count
+        XCTAssertEqual(typedToOriginal, 3, "the same effort, or none, keeps the run")
+        XCTAssertEqual(kept, 1)
+        XCTAssertEqual(from, "fixture-session-\(original.id.uuidString.prefix(8))", "resumed, not told whole")
+        XCTAssertEqual(replays, 0)
+        XCTAssertEqual(told.map(\.effort), ["max", "max"], "a turn naming none keeps the new run's effort")
+        XCTAssertTrue(lines.all.contains { $0.contains("decision=effort_changed") && $0.contains("from=high") && $0.contains("to=max") },
+                      lines.all.joined(separator: "\n"))
+        XCTAssertTrue(lines.all.contains { $0.contains("decision=session_handed_on") }, lines.all.joined(separator: "\n"))
+        _ = await pool.shutdown()
+    }
+
     /// A stopped run whose conversation was edited before its last reply is ended as before.
     func testAStoppedRunKeepsNoSessionForAnEditedConversation() async throws {
         let lines = LoggedLines()
@@ -586,6 +624,40 @@ final class CoordinatorReplayTests: XCTestCase {
         _ = await pool.shutdown()
     }
 
+    /// Claude Code compacts in the middle of a turn too: the conversation up to the last results it
+    /// sent, with its own words after them, while the run that answered those results waits on the
+    /// calls it made next. The compaction goes on from a copy of that run's session cut before the
+    /// call, and the run is left waiting.
+    func testACompactionWhileTheRunWaitsOnLaterCallsGoesOnFromACopyOfItsSession() async throws {
+        let lines = LoggedLines()
+        Diagnostics.install { lines.add($0) }
+        defer { Diagnostics.install(nil) }
+        let later = BridgeToolCall(id: "toolu_fixture_02", name: "Read", input: .object(["file_path": .string("/fixture/more.txt")]))
+        let original = ReplayWorker(steps: [.reply([.text("Reading it."), .toolUse(call), .finished(.toolUse)]),
+                                            .reply([.toolUse(later), .finished(.toolUse)])], keeps: true)
+        let compacting = ReplayWorker(steps: [.reply([.text("A synthetic summary."), .finished(.endTurn)])], keeps: true)
+        let factory = ReplayFactory([original, compacting])
+        let pool = pool(factory)
+        _ = try await collect(pool, first())
+        let results = withResult(first())
+        _ = try await collect(pool, results)
+
+        var compaction = results
+        compaction.messages[2].content = .array((compaction.messages[2].content.arrayValue ?? []) +
+            [.object(["type": .string("text"), "text": .string("Synthetic: summarise the conversation so far.")])])
+        let summary = try await collect(pool, compaction)
+        XCTAssertEqual(summary, [.text("A synthetic summary."), .finished(.endTurn)])
+        let from = await compacting.resumedFrom, held = await compacting.resumedHeld, cut = await compacting.resumedCut
+        XCTAssertEqual(from, "fixture-session-\(original.id.uuidString.prefix(8))")
+        XCTAssertEqual(held, 1, "The copy holds the conversation before the call")
+        XCTAssertEqual(cut, [call.id])
+        let ended = await original.endShelves, closes = await original.closes, callShelves = await original.callShelves, shelves = await original.shelves
+        XCTAssertEqual(ended + closes + callShelves + shelves, 0, "The run goes on waiting on its later call")
+        XCTAssertTrue(lines.all.contains { $0.contains("decision=fork_from_waiting_run") }, lines.all.joined(separator: "\n"))
+        XCTAssertTrue(lines.all.contains { $0.contains("decision=session_forked") }, lines.all.joined(separator: "\n"))
+        _ = await pool.shutdown()
+    }
+
     /// A reply cut off after the client sent its calls' results (the client left or stopped it) leaves its
     /// run's session: the client sending those results again goes on from a copy cut before the call, on
     /// the same account, so the service reads the conversation it cached rather than having it written again.
@@ -609,6 +681,190 @@ final class CoordinatorReplayTests: XCTestCase {
         let from = await fresh.resumedFrom, cut = await fresh.resumedCut, held = await fresh.resumedHeld
         XCTAssertEqual(from, "fixture-session-\(original.id.uuidString.prefix(8))")
         XCTAssertEqual(cut, [call.id]); XCTAssertEqual(held, 1, "The copy holds the conversation before the call")
+        _ = await pool.shutdown()
+    }
+
+    // MARK: A turn of the client's own after a reply
+
+    /// The conversation after its first reply, with one more message: the client's own ask
+    /// (Claude Code's next-prompt suggestion is sent this way), or what the person then typed.
+    private func after(_ text: String) -> BridgeRequest {
+        var next = first()
+        next.messages += [.init(role: "assistant", content: .array([.object(["type": .string("text"), "text": .string("Three items.")])])),
+                          .init(role: "user", content: .string(text))]
+        return next
+    }
+
+    /// Claude Code asks a turn of its own after a reply, and the person's next message then follows
+    /// the reply, not that turn. The run's session is cut where that turn began and a new run goes on
+    /// from the copy, told only the person's message, rather than the conversation written whole.
+    func testTheTurnAfterTheClientsOwnAskGoesOnFromTheSessionCutBeforeIt() async throws {
+        let lines = LoggedLines()
+        Diagnostics.install { lines.add($0) }
+        defer { Diagnostics.install(nil) }
+        let original = ReplayWorker(steps: [.reply([.text("Three items."), .finished(.endTurn)]),
+                                            .reply([.text("Which is longest?"), .finished(.endTurn)])], keeps: true)
+        let resumed = ReplayWorker(steps: [.reply([.text("The second is longest."), .finished(.endTurn)]),
+                                           .reply([.text("Done."), .finished(.endTurn)])], keeps: true)
+        let factory = ReplayFactory([original, resumed])
+        let pool = pool(factory)
+        _ = try await collect(pool, first())
+        _ = try await collect(pool, after("Synthetic: suggest the next message."))
+        let typed = await original.regular.count
+        XCTAssertEqual(typed, 2, "The client's own ask is a turn of the run")
+
+        let real = after("Which is longest?")
+        let answer = try await collect(pool, real)
+        XCTAssertEqual(answer, [.text("The second is longest."), .finished(.endTurn)])
+        let kept = await original.endShelves, from = await resumed.resumedFrom, held = await resumed.resumedHeld
+        let cutAt = await resumed.resumedCutAt, cut = await resumed.resumedCut, told = await resumed.regular, replays = await resumed.replays.count
+        XCTAssertEqual(kept, 1, "The run ends with its session kept")
+        XCTAssertEqual(from, "fixture-session-\(original.id.uuidString.prefix(8))")
+        XCTAssertEqual(held, 2, "The copy holds the conversation up to the reply")
+        XCTAssertEqual(cutAt, 102, "cut where the client's own turn began")
+        XCTAssertNil(cut)
+        let copies = await resumed.resumedCopies
+        XCTAssertEqual(copies, false, "Its run has ended: the session is cut where it is, under its own id")
+        XCTAssertEqual(told, [real]); XCTAssertEqual(replays, 0)
+        XCTAssertTrue(lines.all.contains { $0.contains("decision=turn_forked") && $0.contains("why=replaced") && $0.contains("held=2") },
+                      lines.all.joined(separator: "\n"))
+        XCTAssertFalse(lines.all.contains { $0.contains("decision=hand_on_declined") }, "Nothing was told whole")
+
+        // the conversation's next turn is the new run's own
+        var next = real
+        next.messages += [.init(role: "assistant", content: .string("The second is longest.")), .init(role: "user", content: .string("Thanks."))]
+        _ = try await collect(pool, next)
+        let turns = await resumed.regular.count, made = await factory.count
+        XCTAssertEqual(turns, 2); XCTAssertEqual(made, 2)
+        _ = await pool.shutdown()
+    }
+
+    /// The client's own ask made a call nobody answers, and the person's message comes while its run
+    /// still waits on it: the new run goes on from a copy of that run's session cut before the ask,
+    /// and the waiting run is left as it is.
+    func testATurnWhileTheClientsOwnAskWaitsOnItsCallGoesOnFromACopy() async throws {
+        let lines = LoggedLines()
+        Diagnostics.install { lines.add($0) }
+        defer { Diagnostics.install(nil) }
+        let original = ReplayWorker(steps: [.reply([.text("Three items."), .finished(.endTurn)]),
+                                            .reply([.toolUse(call), .finished(.toolUse)])], keeps: true)
+        let resumed = ReplayWorker(steps: [.reply([.text("The second is longest."), .finished(.endTurn)])], keeps: true)
+        let pool = pool(ReplayFactory([original, resumed]))
+        _ = try await collect(pool, first())
+        _ = try await collect(pool, after("Synthetic: note what was learned."))
+
+        let real = after("Which is longest?")
+        let answer = try await collect(pool, real)
+        XCTAssertEqual(answer, [.text("The second is longest."), .finished(.endTurn)])
+        let ended = await original.endShelves, closes = await original.closes, callShelves = await original.callShelves
+        let from = await resumed.resumedFrom, held = await resumed.resumedHeld, cutAt = await resumed.resumedCutAt, told = await resumed.regular
+        XCTAssertEqual(ended + closes + callShelves, 0, "The run waiting on its call is not ended for this")
+        XCTAssertEqual(from, "fixture-session-\(original.id.uuidString.prefix(8))")
+        XCTAssertEqual(held, 2); XCTAssertEqual(cutAt, 102); XCTAssertEqual(told, [real])
+        let copies = await resumed.resumedCopies
+        XCTAssertEqual(copies, true, "A run still has the session: the new run takes a copy")
+        XCTAssertTrue(lines.all.contains { $0.contains("decision=turn_forked") && $0.contains("why=pending_calls") },
+                      lines.all.joined(separator: "\n"))
+        let discards = await original.discards
+        XCTAssertEqual(discards, 0, "A session its run still has is never removed")
+        _ = await pool.shutdown()
+    }
+
+    /// The same once the run was let go with its session shelved after the client's own ask, and after
+    /// a restart of the app: the shelf remembers where that turn began.
+    func testAShelvedSessionIsCutBeforeTheClientsOwnAskAcrossARestart() async throws {
+        let original = ReplayWorker(steps: [.reply([.text("Three items."), .finished(.endTurn)]),
+                                            .reply([.text("Which is longest?"), .finished(.endTurn)])], keeps: true)
+        let before0 = ReplayFactory([original])
+        let before = PoolCoordinator(accounts: [account()], maximumWorkers: 4, roomWait: 0, duplicateWait: 0.1,
+                                     factory: { _, _ in try await before0.make() })
+        _ = try await collect(before, first())
+        _ = try await collect(before, after("Synthetic: suggest the next message."))
+        let ended = await before.shutdown(keepingShelf: true)
+        XCTAssertTrue(ended)
+        let remembered = await before.rememberedAccounts()
+        let saved = try XCTUnwrap(remembered)
+
+        let lines = LoggedLines()
+        Diagnostics.install { lines.add($0) }
+        defer { Diagnostics.install(nil) }
+        let resumed = ReplayWorker(steps: [.reply([.text("The second is longest."), .finished(.endTurn)])], keeps: true)
+        let after0 = ReplayFactory([resumed])
+        let restarted = PoolCoordinator(accounts: [account()], maximumWorkers: 4, roomWait: 0, duplicateWait: 0.1,
+                                        factory: { _, _ in try await after0.make() })
+        let removed = RemovedSessions()
+        await restarted.restoreRememberedAccounts(saved, discard: { _, session in removed.add(session) })
+        let real = after("Which is longest?")
+        let answer = try await collect(restarted, real)
+        XCTAssertEqual(answer, [.text("The second is longest."), .finished(.endTurn)])
+        let from = await resumed.resumedFrom, held = await resumed.resumedHeld, cutAt = await resumed.resumedCutAt, told = await resumed.regular
+        XCTAssertEqual(from, "fixture-session-\(original.id.uuidString.prefix(8))")
+        XCTAssertEqual(held, 2); XCTAssertEqual(cutAt, 102); XCTAssertEqual(told, [real])
+        let copies = await resumed.resumedCopies
+        XCTAssertEqual(copies, false)
+        XCTAssertTrue(lines.all.contains { $0.contains("decision=unshelved") && $0.contains("cut=turn") }, lines.all.joined(separator: "\n"))
+        XCTAssertTrue(removed.sessions.isEmpty, "The session is the new run's now, not removed")
+        _ = await restarted.shutdown()
+    }
+
+    /// A stopped run's session holds its stopped turn after the conversation, and the retry goes on
+    /// from it whole. A turn that then goes on from before the retry is not cut there, where the
+    /// stopped turn would come with it: it is told whole.
+    func testASessionThatHoldsAStoppedTurnIsNotCutWhereTheRetryBegan() async throws {
+        let lines = LoggedLines()
+        Diagnostics.install { lines.add($0) }
+        defer { Diagnostics.install(nil) }
+        let original = ReplayWorker(steps: [.reply([.text("Three items."), .finished(.endTurn)]), .failure([], .transport)], keeps: true)
+        let retried = ReplayWorker(steps: [.reply([.text("Which is longest?"), .finished(.endTurn)])], keeps: true)
+        let fresh = ReplayWorker(steps: [.reply([.text("The second is longest."), .finished(.endTurn)])], keeps: true)
+        let pool = pool(ReplayFactory([original, retried, fresh]))
+        _ = try await collect(pool, first())
+        let side = after("Synthetic: suggest the next message.")
+        _ = try? await collect(pool, side)
+        _ = try await collect(pool, side)
+        let handed = await retried.resumedFrom
+        XCTAssertEqual(handed, "fixture-session-\(original.id.uuidString.prefix(8))", "The retry goes on from the stopped run's session")
+
+        _ = try await collect(pool, after("Which is longest?"))
+        let from = await fresh.resumedFrom, cutAt = await fresh.resumedCutAt
+        XCTAssertNil(from); XCTAssertNil(cutAt)
+        XCTAssertFalse(lines.all.contains { $0.contains("decision=turn_forked") }, lines.all.joined(separator: "\n"))
+        _ = await pool.shutdown()
+    }
+
+    /// A session that does not know where its last turn began is not cut: the turn is told whole, as before.
+    func testASessionThatDoesNotKnowItsTurnIsNotCut() async throws {
+        let lines = LoggedLines()
+        Diagnostics.install { lines.add($0) }
+        defer { Diagnostics.install(nil) }
+        let original = ReplayWorker(steps: [.reply([.text("Three items."), .finished(.endTurn)]),
+                                            .reply([.text("Which is longest?"), .finished(.endTurn)])], keeps: true, knowsTurn: false)
+        let fresh = ReplayWorker(steps: [.reply([.text("The second is longest."), .finished(.endTurn)])], keeps: true)
+        let pool = pool(ReplayFactory([original, fresh]))
+        _ = try await collect(pool, first())
+        _ = try await collect(pool, after("Synthetic: suggest the next message."))
+        _ = try await collect(pool, after("Which is longest?"))
+        let from = await fresh.resumedFrom, kept = await original.endShelves, closes = await original.closes
+        XCTAssertNil(from); XCTAssertEqual(kept, 0); XCTAssertEqual(closes, 1)
+        XCTAssertTrue(lines.all.contains { $0.contains("decision=hand_on_declined") && $0.contains("reason=not_from_last_reply") },
+                      lines.all.joined(separator: "\n"))
+        XCTAssertFalse(lines.all.contains { $0.contains("decision=turn_forked") })
+        _ = await pool.shutdown()
+    }
+
+    /// Nor is it cut for a conversation that differs before that turn: an edit further back is told whole.
+    func testAnEditBeforeTheLastReplyIsNotTakenForTheClientsOwnAsk() async throws {
+        let original = ReplayWorker(steps: [.reply([.text("Three items."), .finished(.endTurn)]),
+                                            .reply([.text("Which is longest?"), .finished(.endTurn)])], keeps: true)
+        let fresh = ReplayWorker(steps: [.reply([.text("Two items."), .finished(.endTurn)])], keeps: true)
+        let pool = pool(ReplayFactory([original, fresh]))
+        _ = try await collect(pool, first())
+        _ = try await collect(pool, after("Synthetic: suggest the next message."))
+        var edited = after("Which is longest?")
+        edited.messages[0].content = .string("Summarise the edited notes.")
+        _ = try await collect(pool, edited)
+        let from = await fresh.resumedFrom, cutAt = await fresh.resumedCutAt
+        XCTAssertNil(from); XCTAssertNil(cutAt)
         _ = await pool.shutdown()
     }
 
@@ -669,31 +925,54 @@ private actor ReplayWorker: SessionWorker {
     private(set) var resumedFrom: String?
     private(set) var resumedHeld: Int?
     private(set) var resumedCut: Set<String>?
+    private(set) var resumedCutAt: Int?
+    private(set) var resumedCopies: Bool?
     private(set) var discards = 0
     private let keeps: Bool
-    init(steps: [Step], keeps: Bool = false) { self.steps = steps; self.keeps = keeps }
+    /// Where the run's last turn began, as a session knows it: the client's messages it held then.
+    private let knowsTurn: Bool
+    private var turn: ShelvedSession.Turn?
+    init(steps: [Step], keeps: Bool = false, knowsTurn: Bool = true) { self.steps = steps; self.keeps = keeps; self.knowsTurn = knowsTurn }
+    private func saved() -> ShelvedSession {
+        ShelvedSession(session: "fixture-session-\(id.uuidString.prefix(8))", accountID: UUID(uuidString: "0a1b2c3d-2222-4aaa-8bbb-000000000001")!,
+                       turn: turn, discard: { [weak self] in Task { await self?.discarded() } })
+    }
+    func liveSession() -> ShelvedSession? {
+        guard keeps else { return nil }
+        return ShelvedSession(session: saved().session, accountID: saved().accountID, turn: turn, discard: {})
+    }
     func shelve() -> ShelvedSession? {
         guard keeps else { return nil }
         shelves += 1
-        return ShelvedSession(session: "fixture-session-\(id.uuidString.prefix(8))", accountID: UUID(uuidString: "0a1b2c3d-2222-4aaa-8bbb-000000000001")!,
-                              discard: { [weak self] in Task { await self?.discarded() } })
+        return saved()
     }
     func shelveEnding() -> ShelvedSession? {
         guard keeps else { return nil }
         endShelves += 1
         held?.finish(throwing: BridgeFailure.cancelled); held = nil
-        return ShelvedSession(session: "fixture-session-\(id.uuidString.prefix(8))", accountID: UUID(uuidString: "0a1b2c3d-2222-4aaa-8bbb-000000000001")!,
-                              discard: { [weak self] in Task { await self?.discarded() } })
+        return saved()
     }
     func shelveCalls() -> ShelvedSession? {
         guard keeps else { return nil }
         callShelves += 1
-        return ShelvedSession(session: "fixture-session-\(id.uuidString.prefix(8))", accountID: UUID(uuidString: "0a1b2c3d-2222-4aaa-8bbb-000000000001")!,
-                              discard: { [weak self] in Task { await self?.discarded() } })
+        return saved()
     }
     private func discarded() { discards += 1 }
-    func resume(from saved: ShelvedSession) -> Bool { resumedFrom = saved.session; resumedHeld = saved.held; resumedCut = saved.cut; return keeps }
-    func events(for request: BridgeRequest) throws -> AsyncThrowingStream<BridgeEvent, Error> { regular.append(request); return try next() }
+    func resume(from saved: ShelvedSession) -> Bool {
+        resumedFrom = saved.session; resumedHeld = saved.held; resumedCut = saved.cut; resumedCutAt = saved.cutAt
+        resumedCopies = saved.cutCopies
+        return keeps
+    }
+    func events(for request: BridgeRequest) throws -> AsyncThrowingStream<BridgeEvent, Error> {
+        regular.append(request)
+        // a turn after a plain reply begins where the session then ends: 100 bytes and one a message, here
+        let results = request.messages.last?.content.arrayValue?.contains { $0["type"]?.stringValue == "tool_result" } == true
+        if knowsTurn, !results, let reply = request.messages.lastIndex(where: { $0.role == "assistant" }),
+           !ConversationWords.callsTool(request.messages[reply]) {
+            turn = .init(held: reply + 1, bytes: 100 + reply + 1)
+        } else if !results { turn = nil }
+        return try next()
+    }
     func events(replaying replay: VerifiedToolReplay) throws -> AsyncThrowingStream<BridgeEvent, Error> { replays.append(replay.request); return try next() }
     private func next() throws -> AsyncThrowingStream<BridgeEvent, Error> {
         guard !steps.isEmpty else { throw BridgeFailure.transport }

@@ -988,6 +988,29 @@ extension PrivacyBridgeTests {
         XCTAssertEqual(told.input["file_path"]?.stringValue, path)
     }
 
+    /// Thinking is put back as the words are, on its own: a stand-in the stream cut across two
+    /// thinking fragments is never shown cut, nor carried into the answer's words; the signature
+    /// passes as it came.
+    func testThinkingIsRestoredApartFromTheWordsAndNeverShownCut() async throws {
+        let backend = PrivacyBackendFixture(), bridge = PrivacyBridge(backend: backend, detector: FixtureDetector())
+        let address = "synthetic.user@gmail.com"
+        let reply = Task { try await collectPrivacy(try await bridge.events(for: self.textRequest("Contact " + address), conversationID: "request:thinking")) }
+        try await privacyEventually { await backend.requests.count == 1 }
+        let placeholder = try privacyToken(await backend.requests[0].messages[0].content.stringValue!)
+        await backend.finish(0, [.thinking("Write to " + String(placeholder.prefix(5))), .thinking(String(placeholder.dropFirst(5)) + " now"),
+                                 .thinkingSignature("c2lnLXN5bnRoZXRpYw=="), .text("Mailing " + placeholder), .finished(.endTurn)])
+        let events = try await reply.value
+        let thought = events.compactMap { if case .thinking(let text) = $0 { return text }; return nil }
+        XCTAssertEqual(thought.joined(), "Write to \(address) now")
+        XCTAssertFalse(thought.contains { $0.contains("{{") && !$0.contains("}}") }, "No fragment shows a stand-in cut")
+        XCTAssertTrue(thought.allSatisfy { !$0.contains(placeholder) })
+        XCTAssertEqual(events.privacyText, "Mailing \(address)")
+        let signature = try XCTUnwrap(events.firstIndex(of: .thinkingSignature("c2lnLXN5bnRoZXRpYw==")))
+        let firstText = try XCTUnwrap(events.firstIndex { if case .text = $0 { return true }; return false })
+        XCTAssertLessThan(signature, firstText)
+        XCTAssertTrue(events[signature...].allSatisfy { if case .thinking = $0 { return false }; return true }, "All thinking is told before its signature")
+    }
+
     func testOnlyAccountNamesWorthMaskingAreTakenAsMachineUsers() {
         XCTAssertTrue(PrivacyRules.machineUser("synthowner"))
         XCTAssertTrue(PrivacyRules.machineUser("abc"))
@@ -1082,6 +1105,67 @@ extension PrivacyBridgeTests {
         await backend.finish(2, [.text("A done"), .finished(.endTurn)])
         await backend.finish(3, [.text("B done"), .finished(.endTurn)])
         _ = try await nextA.value; _ = try await nextB.value
+    }
+}
+
+extension PrivacyBridgeTests {
+    /// A new task of a conversation whose context is answering has no history to share with it: it gets
+    /// a context of its own at once, without waiting for the other.
+    func testNewTaskBesideABusyContextDoesNotWait() async throws {
+        let backend = PrivacyBackendFixture(), bridge = PrivacyBridge(backend: backend, detector: FixtureDetector(), wait: .seconds(5))
+        let alias = "session-single#shape"
+        let a = Task { try await collectPrivacy(try await bridge.events(for: textRequest("Task A: open https://a.example.com"), conversationID: alias)) }
+        try await privacyEventually { await backend.requests.count == 1 }
+        let began = ContinuousClock.now
+        let b = Task { try await collectPrivacy(try await bridge.events(for: textRequest("Task B: open https://b.example.com"), conversationID: alias)) }
+        try await privacyEventually { await backend.requests.count == 2 }
+        XCTAssertLessThan(ContinuousClock.now - began, .milliseconds(700), "No wait for the busy context")
+        let identities = await backend.identities
+        XCTAssertNotEqual(identities[0], identities[1])
+        await backend.finish(0, [.text("A done"), .finished(.endTurn)])
+        await backend.finish(1, [.text("B done"), .finished(.endTurn)])
+        _ = try await a.value; _ = try await b.value
+    }
+
+    /// A conversation's turn whose context is answering waits for it: woken when it ends, it goes on
+    /// in that context; when it does not end in time, it gets a context of its own.
+    func testTurnWaitsForItsBusyContextThenTakesItOrANewOne() async throws {
+        for ends in [true, false] {
+            let backend = PrivacyBackendFixture(), bridge = PrivacyBridge(backend: backend, detector: FixtureDetector(), wait: .seconds(5))
+            let alias = "session-wait-\(ends)#shape"
+            let opening = textRequest("Read https://docs.example.com")
+            let first = Task { try await collectPrivacy(try await bridge.events(for: opening, conversationID: alias)) }
+            try await privacyEventually { await backend.requests.count == 1 }
+            await backend.finish(0, [.text("Read it"), .finished(.endTurn)])
+            let reply = try await first.value
+            func turn(_ text: String) -> BridgeRequest {
+                var next = opening
+                next.messages += [.init(role: "assistant", content: privacyAssistant(reply)), .init(role: "user", content: .string(text))]
+                return next
+            }
+            let busy = Task { try await collectPrivacy(try await bridge.events(for: turn("Go on"), conversationID: alias)) }
+            try await privacyEventually { await backend.requests.count == 2 }
+            let began = ContinuousClock.now
+            let waiting = Task { try await collectPrivacy(try await bridge.events(for: turn("Also check"), conversationID: alias)) }
+            try await Task.sleep(for: .milliseconds(200))
+            let held = await backend.requests.count
+            XCTAssertEqual(held, 2, "The turn waits for the busy context")
+            if ends {
+                let ended = ContinuousClock.now
+                await backend.finish(1, [.text("Gone on"), .finished(.endTurn)])
+                try await privacyEventually { await backend.requests.count == 3 }
+                XCTAssertLessThan(ContinuousClock.now - ended, .milliseconds(500), "Woken when the context's request ends")
+            } else {
+                try await privacyEventually { await backend.requests.count == 3 }
+                XCTAssertGreaterThanOrEqual(ContinuousClock.now - began, .milliseconds(1400), "Waited its time")
+            }
+            let identities = await backend.identities
+            if ends { XCTAssertEqual(identities[2], identities[0], "Goes on in the context it waited for") }
+            else { XCTAssertNotEqual(identities[2], identities[0], "A context of its own after the wait") }
+            if !ends { await backend.finish(1, [.text("Gone on"), .finished(.endTurn)]) }
+            await backend.finish(2, [.text("Checked"), .finished(.endTurn)])
+            _ = try await busy.value; _ = try await waiting.value
+        }
     }
 }
 

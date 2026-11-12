@@ -18,35 +18,128 @@ enum ConversationWords {
     /// Each message's parts with words. A call is told
     /// by its place among the conversation's calls, and a result by the call it answers.
     static func parts(_ messages: [BridgeMessage]) -> [[WordPart]] {
-        var calls: [String: Int] = [:], count = 0
+        var calls = Calls()
         return messages.map { message in
             var parts: [WordPart] = []
-            func add(_ kind: WordPart.Kind, _ text: String, media: Int = 0) {
-                let words = text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
+            eachPart(message, &calls) { kind, text, media in
+                let words = squeezed(text)
                 if !words.isEmpty { parts.append(WordPart(kind: kind, words: words, media: media)) }
-            }
-            if let text = message.content.stringValue { add(.text, text) }
-            for block in message.content.arrayValue ?? [] {
-                switch block["type"]?.stringValue {
-                case "text": add(.text, block["text"]?.stringValue ?? "")
-                case "tool_use":
-                    count += 1
-                    if let id = block["id"]?.stringValue { calls[id] = count }
-                    add(.call, "\u{1}call \(block["name"]?.stringValue ?? "") #\(count)")
-                case "tool_result":
-                    let place = block["tool_use_id"]?.stringValue.flatMap { calls[$0] }.map(String.init) ?? "?"
-                    let images = block["content"]?.arrayValue?.filter { $0["type"]?.stringValue == "image" }.count ?? 0
-                    add(.result, "\u{1}result #\(place) " + resultText(block["content"]), media: images)
-                case "image":
-                    add(.image, "\u{1}image \(block["source"]?["data"]?.stringValue?.utf8.count ?? 0)")
-                case "thinking", "redacted_thinking", nil: continue // the service's own record, not the conversation's words
-                default:
-                    // a block of any other kind the person sent: by its kind and a digest of it as sent
-                    add(.text, "\u{1}block \(block["type"]?.stringValue ?? "") " + digest(block))
-                }
             }
             return parts
         }
+    }
+
+    /// The calls made so far: each call's place among the conversation's calls, by its id.
+    struct Calls: Sendable {
+        var places: [String: Int] = [:]
+        var count = 0
+    }
+
+    /// Each part of a message as text before its words are taken (kind, text, images beside it), in order.
+    private static func eachPart(_ message: BridgeMessage, _ calls: inout Calls, _ add: (WordPart.Kind, String, Int) -> Void) {
+        if let text = message.content.stringValue { add(.text, text, 0) }
+        for block in message.content.arrayValue ?? [] {
+            switch block["type"]?.stringValue {
+            case "text": add(.text, block["text"]?.stringValue ?? "", 0)
+            case "tool_use":
+                calls.count += 1
+                if let id = block["id"]?.stringValue { calls.places[id] = calls.count }
+                add(.call, "\u{1}call \(block["name"]?.stringValue ?? "") #\(calls.count)", 0)
+            case "tool_result":
+                let place = block["tool_use_id"]?.stringValue.flatMap { calls.places[$0] }.map(String.init) ?? "?"
+                let images = block["content"]?.arrayValue?.filter { $0["type"]?.stringValue == "image" }.count ?? 0
+                add(.result, "\u{1}result #\(place) " + resultText(block["content"]), images)
+            case "image":
+                add(.image, "\u{1}image \(block["source"]?["data"]?.stringValue?.utf8.count ?? 0)", 0)
+            case "thinking", "redacted_thinking", nil: continue // the service's own record, not the conversation's words
+            default:
+                // a block of any other kind the person sent: by its kind and a digest of it as sent
+                add(.text, "\u{1}block \(block["type"]?.stringValue ?? "") " + digest(block), 0)
+            }
+        }
+    }
+
+    /// A text's words, one space between them: the text split at each character that is a space or a line break.
+    static func squeezed(_ text: String) -> String {
+        var bytes: [UInt8] = []
+        appendWords(text, to: &bytes)
+        guard !bytes.isEmpty else { return "" }
+        bytes.removeLast()
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
+    /// Appends each of a text's words to `out`, a space after each: the text split where a character is
+    /// a space or a line break (`Character.isWhitespace || isNewline`). The bytes are read once; when a space
+    /// shares its character with the scalar before or after it (a mark on it, a sign before it), which the
+    /// bytes alone do not tell, the text is split by characters instead, so the words are the same either way.
+    static func appendWords(_ text: String, to out: inout [UInt8]) {
+        let start = out.count
+        var text = text
+        let read = text.withUTF8 { appendWords(bytes: $0, to: &out) }
+        guard !read else { return }
+        out.removeSubrange(start...)
+        for word in text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }) {
+            out.append(contentsOf: word.utf8)
+            out.append(0x20)
+        }
+    }
+
+    /// `appendWords` over valid UTF-8, false when a space is not a character of its own.
+    private static func appendWords(bytes: UnsafeBufferPointer<UInt8>, to out: inout [UInt8]) -> Bool {
+        let count = bytes.count
+        var index = 0, wordStart = -1, previous: UInt32 = 0
+        while index < count {
+            let (scalar, length) = decode(bytes, at: index)
+            if isSpace(scalar) {
+                // An ASCII scalar never joins a space's character; any other one next to it is asked.
+                if previous >= 0x80 && !separate(previous, scalar) { return false }
+                if index + length < count && bytes[index + length] >= 0x80
+                    && !separate(scalar, decode(bytes, at: index + length).scalar) { return false }
+                if wordStart >= 0 {
+                    out.append(contentsOf: UnsafeBufferPointer(rebasing: bytes[wordStart..<index]))
+                    out.append(0x20)
+                    wordStart = -1
+                }
+            } else if wordStart < 0 {
+                wordStart = index
+            }
+            previous = scalar
+            index += length
+        }
+        if wordStart >= 0 {
+            out.append(contentsOf: UnsafeBufferPointer(rebasing: bytes[wordStart..<count]))
+            out.append(0x20)
+        }
+        return true
+    }
+
+    @inline(__always)
+    private static func decode(_ bytes: UnsafeBufferPointer<UInt8>, at index: Int) -> (scalar: UInt32, length: Int) {
+        let lead = UInt32(bytes[index])
+        if lead < 0x80 { return (lead, 1) }
+        if lead < 0xE0 { return ((lead & 0x1F) << 6 | UInt32(bytes[index + 1] & 0x3F), 2) }
+        if lead < 0xF0 {
+            return ((lead & 0x0F) << 12 | UInt32(bytes[index + 1] & 0x3F) << 6 | UInt32(bytes[index + 2] & 0x3F), 3)
+        }
+        return ((lead & 0x07) << 18 | UInt32(bytes[index + 1] & 0x3F) << 12 | UInt32(bytes[index + 2] & 0x3F) << 6
+                | UInt32(bytes[index + 3] & 0x3F), 4)
+    }
+
+    /// Whether a scalar, as a character of its own, is a space or a line break: Unicode's White_Space.
+    static func isSpace(_ scalar: UInt32) -> Bool {
+        if scalar < 0x80 { return scalar == 0x20 || (scalar >= 0x09 && scalar <= 0x0D) }
+        switch scalar {
+        case 0x85, 0xA0, 0x1680, 0x2000...0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000: return true
+        default: return false
+        }
+    }
+
+    /// Whether two scalars in a row are two characters. Only these two decide it when one is a space.
+    private static func separate(_ first: UInt32, _ second: UInt32) -> Bool {
+        guard let a = Unicode.Scalar(first), let b = Unicode.Scalar(second) else { return true }
+        var pair = String(Character(a))
+        pair.unicodeScalars.append(b)
+        return pair.count == 2
     }
 
     /// Each message's words, as `key` reads them.
@@ -161,18 +254,46 @@ enum ConversationWords {
     }
 
     /// The digest of the conversation after each of its messages (hashMessages' `after`).
-    static func prefixKeys(_ messages: [BridgeMessage]) -> [String] {
-        var hasher = SHA256(), role = "", keys: [String] = []
-        for (index, words) in words(messages).enumerated() {
-            if !words.isEmpty {
-                if messages[index].role != role { role = messages[index].role; hasher.update(data: Data("\u{0}\(role):".utf8)) }
-                hasher.update(data: Data((words + " ").utf8))
-            }
-            keys.append(hex(hasher))
+    static func prefixKeys(_ messages: [BridgeMessage]) -> [String] { Prefix(messages).keys }
+    static func key(_ messages: [BridgeMessage]) -> String { Prefix(messages).key }
+
+    /// A conversation's keys as it grows: after each message, the digest of the conversation so far.
+    /// Each message is hashed as its role (when it changes) and its words, each followed by a space; a message
+    /// without words leaves the digest as it was. `Prefix(m).keys` is `prefixKeys(m)`, and appending a message
+    /// gives the key `prefixKeys` has for it after the messages before.
+    struct Prefix: Sendable {
+        private(set) var keys: [String] = []
+        private var hasher = SHA256()
+        private var role = ""
+        private var calls = Calls()
+        private var bytes: [UInt8] = []
+
+        init(_ messages: [BridgeMessage]) {
+            keys.reserveCapacity(messages.count)
+            for message in messages { append(message) }
         }
-        return keys
+
+        /// The conversation's key, `key(_:)`: the last message's, or the empty conversation's.
+        var key: String { keys.last ?? ConversationWords.hex(SHA256().finalize()) }
+
+        /// Takes the next message and gives the conversation's key after it.
+        @discardableResult
+        mutating func append(_ message: BridgeMessage) -> String {
+            // Moved out while parts are read, so neither is copied.
+            var words: [UInt8] = [], made = Calls()
+            swap(&words, &bytes); swap(&made, &calls)
+            words.removeAll(keepingCapacity: true)
+            ConversationWords.eachPart(message, &made) { _, text, _ in ConversationWords.appendWords(text, to: &words) }
+            if !words.isEmpty {
+                if message.role != role { role = message.role; hasher.update(data: Data("\u{0}\(role):".utf8)) }
+                words.withUnsafeBytes { hasher.update(bufferPointer: $0) }
+            }
+            swap(&words, &bytes); swap(&made, &calls)
+            let key = ConversationWords.hex(hasher.finalize())
+            keys.append(key)
+            return key
+        }
     }
-    static func key(_ messages: [BridgeMessage]) -> String { prefixKeys(messages).last ?? hex(SHA256()) }
 
     /// Whether `messages` go on from `history`: that conversation whole, then whatever came since.
     static func follows(_ messages: [BridgeMessage], history: [BridgeMessage]) -> Bool {
@@ -261,9 +382,17 @@ enum ConversationWords {
         var value = block
         if case .object(var fields) = block { fields.removeValue(forKey: "cache_control"); value = .object(fields) }
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
-        return String(SHA256.hash(data: (try? encoder.encode(value)) ?? Data()).map { String(format: "%02x", $0) }.joined().prefix(16))
+        return String(hex(SHA256.hash(data: (try? encoder.encode(value)) ?? Data())).prefix(16))
     }
-    private static func hex(_ hasher: SHA256) -> String {
-        hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    private static let hexDigits = Array("0123456789abcdef".utf8)
+    /// A digest in lowercase hex, two digits a byte.
+    private static func hex(_ digest: SHA256.Digest) -> String {
+        var out: [UInt8] = []
+        out.reserveCapacity(SHA256.Digest.byteCount * 2)
+        for byte in digest {
+            out.append(hexDigits[Int(byte >> 4)])
+            out.append(hexDigits[Int(byte & 0x0F)])
+        }
+        return String(decoding: out, as: UTF8.self)
     }
 }

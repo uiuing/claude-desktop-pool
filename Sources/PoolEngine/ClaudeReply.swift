@@ -19,6 +19,9 @@ import PoolCore
 struct ClaudeReply {
     enum Output: Equatable {
         case text(String)
+        /// Thinking as it streams, and the signature that ends its block.
+        case thinking(String)
+        case signature(String)
         case call(BridgeToolCall)
         /// The reply ends: its message called the client's tools.
         case finish(BridgeStopReason)
@@ -69,6 +72,8 @@ struct ClaudeReply {
     private var message: String?
     private var theirs = false, shown = false, stopped = false
     private var blocks: [Int: Block] = [:]
+    /// The message's thinking blocks, by index.
+    private var thinking: Set<Int> = []
     private var unstreamed: String?
     private var quietUntil: Date?
     /// A stream was cut short before it showed anything: Claude Code asks again, and the reply
@@ -114,7 +119,7 @@ struct ClaudeReply {
 
     /// The turn ended (its turn_duration or the client's error): nothing of it waits any more.
     mutating func turnOver() {
-        quietUntil = nil; unstreamed = nil; cut = false; blocks = [:]; message = nil
+        quietUntil = nil; unstreamed = nil; cut = false; blocks = [:]; thinking = []; message = nil
         made = [:]; awaited = []; written = [:]; unheard = []; lateID = nil
     }
 
@@ -174,6 +179,10 @@ struct ClaudeReply {
             guard let index = Self.index(event["index"]), let block = event["content_block"] else { break }
             switch block["type"]?.stringValue {
             case "text": say(block["text"]?.stringValue ?? "", into: &out)
+            case "thinking":
+                // a redacted_thinking block is not told: it has no words to show
+                thinking.insert(index)
+                think(block["thinking"]?.stringValue ?? "", into: &out)
             case "tool_use":
                 guard let id = block["id"]?.stringValue, !id.isEmpty, let called = block["name"]?.stringValue,
                       let name = clientName(called), !told.contains(id) else { break }
@@ -184,6 +193,13 @@ struct ClaudeReply {
             let delta = event["delta"]
             switch delta?["type"]?.stringValue {
             case "text_delta": say(delta?["text"]?.stringValue ?? "", into: &out)
+            case "thinking_delta":
+                if let index = Self.index(event["index"]), thinking.contains(index) { think(delta?["thinking"]?.stringValue ?? "", into: &out) }
+            case "signature_delta":
+                if let index = Self.index(event["index"]), thinking.contains(index), listening,
+                   let signature = delta?["signature"]?.stringValue, !signature.isEmpty {
+                    out.append(.signature(signature))
+                }
             case "input_json_delta":
                 if let index = Self.index(event["index"]), blocks[index] != nil {
                     blocks[index]?.json += delta?["partial_json"]?.stringValue ?? ""
@@ -208,7 +224,7 @@ struct ClaudeReply {
             } else if theirs && listening {
                 out.append(finish(.toolUse))
             }
-            message = nil; blocks = [:]
+            message = nil; blocks = [:]; thinking = []
         default: break
         }
         return out
@@ -275,13 +291,20 @@ struct ClaudeReply {
     // MARK: Telling
 
     private mutating func begin(_ id: String) {
-        message = id; theirs = false; shown = false; stopped = false; cut = false; blocks = [:]
+        message = id; theirs = false; shown = false; stopped = false; cut = false; blocks = [:]; thinking = []
     }
 
     private mutating func say(_ text: String, into out: inout [Output]) {
         guard listening, !text.isEmpty else { return }
         shown = true
         out.append(.text(text))
+    }
+
+    /// Thinking is told as it comes but is not the answer: a stream cut after it goes on in the
+    /// attempt that answers, as one cut before anything was shown.
+    private func think(_ text: String, into out: inout [Output]) {
+        guard listening, !text.isEmpty else { return }
+        out.append(.thinking(text))
     }
 
     private mutating func tell(_ call: BridgeToolCall, into out: inout [Output]) {

@@ -55,6 +55,30 @@ final class ClaudeCodeShapeTests: XCTestCase {
         XCTAssertNil(request.messages[0].content.arrayValue?[1]["cache_control"])
     }
 
+    /// The effort goes to the run: the turn's system message over the request's, only levels the
+    /// official client takes, and never part of the conversation's key.
+    func testEffortIsTheTurnsOverTheRequestsAndNotPartOfTheConversation() throws {
+        func decode(request: String, turn: String) throws -> (BridgeRequest, String) {
+            let text = String(decoding: body(self.turn.replacingOccurrences(of: #"{"effort":"high"}"#, with: turn)), as: UTF8.self)
+                .replacingOccurrences(of: #""output_config":{"effort":"high"}"#, with: #""output_config":"# + request)
+            let (decoded, _, shape) = try GatewayRequestValidation.decodeRequest(Data(text.utf8))
+            return (decoded, shape)
+        }
+        let (both, shape) = try decode(request: #"{"effort":"high"}"#, turn: #"{"effort":"low"}"#)
+        XCTAssertEqual(both.effort, "low", "the turn's own")
+        XCTAssertEqual(try decode(request: #"{"effort":"MAX"}"#, turn: "{}").0.effort, "max", "the request's, when the turn names none")
+        XCTAssertEqual(try decode(request: #"{"effort":"high"}"#, turn: #"{"effort":"turbo"}"#).0.effort, "high")
+        XCTAssertNil(try decode(request: #"{"effort":"extreme"}"#, turn: #"{"effort":7}"#).0.effort)
+        let (none, unnamed) = try decode(request: "{}", turn: "{}")
+        XCTAssertNil(none.effort)
+        // the same conversation at any effort
+        XCTAssertEqual(shape, unnamed)
+        XCTAssertEqual(GatewayRequestValidation.conversationKey(session: "fixture-session", request: both),
+                       GatewayRequestValidation.conversationKey(session: "fixture-session", request: none))
+        // the effort-only system message still goes
+        XCTAssertEqual(both.messages.map(\.role), ["user"])
+    }
+
     func testToolSearchLoadsTheToolForTheSameConversation() throws {
         let first = try GatewayRequestValidation.decodeRequest(body(turn))
         let second = try GatewayRequestValidation.decodeRequest(body(turn + "," + search))
@@ -190,5 +214,48 @@ final class ClaudeCodeShapeTests: XCTestCase {
         let main = try GatewayRequestValidation.decodeRequest(body(turn)).shape
         let other = try GatewayRequestValidation.decodeRequest(JSONValue.object(aside).encoded()).shape
         XCTAssertNotEqual(main, other)
+    }
+
+    /// The request is built from one reading of the body, and is the request the decoder built
+    /// when the body was read, written out and read again: equal, and equal when written.
+    func testOneReadingBuildsTheSameRequestAsTheDecoder() throws {
+        let call = #"""
+        {"role":"assistant","content":[{"type":"tool_use","id":"toolu_02","name":"mcp__probe__read_a","input":{"path":"a","offset":-0,"limit":2000,"ratio":1.5e300,"big":123456789012345678901234567890,"flag":true,"none":null,"empty":{},"list":[]}}]},
+        {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_02","content":"A","is_error":false},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw=="}}],"cache_control":{"type":"ephemeral"}}
+        """#
+        let plain = #"[{"name":"Bash","input_schema":{"type":"object","properties":{}},"extra":1}]"#
+        let bodies = [body(turn), body(turn + "," + search), body(turn + "," + search + "," + call), body(turn, tools: plain),
+                      Data(#"{"model":"claude-sonnet","max_tokens":1e3,"system":"x-anthropic-billing-header: a\nSystem.","messages":[{"role":"user","content":"Hi"}],"metadata":{}}"#.utf8),
+                      Data(#"{"model":"claude-haiku","max_tokens":5,"messages":[{"role":"user","content":"Hi"}],"model":"claude-opus-5-5"}"#.utf8)]
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        for (index, data) in bodies.enumerated() {
+            let (request, requested, shape) = try GatewayRequestValidation.decodeRequest(data)
+            let expected = try Self.decoderRequest(data)
+            XCTAssertEqual(request, expected.request, "body \(index)")
+            XCTAssertEqual(try encoder.encode(request), try encoder.encode(expected.request), "body \(index)")
+            XCTAssertEqual(request.toolChoice, expected.request.toolChoice); XCTAssertEqual(request.webSearch, expected.request.webSearch)
+            XCTAssertEqual(request.answerSchema, expected.request.answerSchema)
+            XCTAssertEqual(requested, expected.requested); XCTAssertEqual(shape, expected.shape, "body \(index)")
+            // a body the full log already read is not read again, and builds the same request
+            let read = GatewayRequestValidation.Read(data)
+            XCTAssertEqual(try GatewayRequestValidation.Read.$current.withValue(read) { try GatewayRequestValidation.decodeRequest(data).request }, request)
+        }
+        // a tree read from other bytes is never used
+        let other = GatewayRequestValidation.Read(body(turn))
+        let served = try GatewayRequestValidation.Read.$current.withValue(other) { try GatewayRequestValidation.decodeRequest(bodies[2]).request }
+        XCTAssertEqual(served, try Self.decoderRequest(bodies[2]).request)
+        XCTAssertThrowsError(try GatewayRequestValidation.Read.$current.withValue(GatewayRequestValidation.Read(Data("{".utf8))) {
+            try GatewayRequestValidation.decodeRequest(Data("{".utf8))
+        })
+    }
+    /// How a request was built before it was built from one reading: decoded, adapted, written out and decoded again.
+    private static func decoderRequest(_ data: Data) throws -> (request: BridgeRequest, requested: String, shape: String) {
+        let adapted = try ClientRequestShape.adapt(JSONDecoder().decode(JSONValue.self, from: data).objectValue!)
+        let requested = adapted.object["model"]!.stringValue!
+        var request = try JSONDecoder().decode(BridgeRequest.self, from: JSONValue.object(adapted.object).encoded())
+        request = GatewayRequestValidation.normalized(request, model: PoolModel.resolve(requested, in: PoolModel.defaults)!)
+        request.toolChoice = adapted.toolChoice; request.answerSchema = adapted.answerSchema; request.webSearch = adapted.webSearch
+        request.effort = adapted.effort
+        return (request, requested, GatewayRequestValidation.shape(of: request, tools: adapted.standingTools))
     }
 }

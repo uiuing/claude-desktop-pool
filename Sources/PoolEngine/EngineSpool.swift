@@ -136,7 +136,11 @@ public enum EngineHelpers {
             // 50 ms while the catalog has just changed, then 250 ms: a new list is acknowledged well
             // inside toolCatalogTimeout either way, and a resting run's helper wakes 4 times a second.
             var changedAt = Date()
+            // the catalog is renamed into the run's folder: a change there ends the wait early
+            let wake = FileWake()
+            defer { wake.close() }
             while alive.isRunning {
+                wake.watch([directory.path])
                 if alive.isInitialized {
                     var info = stat()
                     let nextStamp = lstat(catalogURL.path, &info) == 0 ? "\(info.st_ino):\(info.st_size):\(info.st_mtimespec.tv_sec):\(info.st_mtimespec.tv_nsec)" : "missing"
@@ -151,7 +155,7 @@ public enum EngineHelpers {
                         } catch { alive.stop(); return }
                     }
                 }
-                Thread.sleep(forTimeInterval: Date().timeIntervalSince(changedAt) < 2 ? 0.05 : 0.25)
+                wake.waitBlocking(upTo: Date().timeIntervalSince(changedAt) < 2 ? 0.05 : 0.25)
             }
         }
         var listedNames: Set<String> = []
@@ -210,7 +214,11 @@ public enum EngineHelpers {
                         defer { calls.end(callID); group.leave() }
                         let resultPath = directory.appendingPathComponent("results/\(callID).json")
                         let began = Date(), deadline = began.addingTimeInterval(3600)
+                        // results and `cancelled` are renamed into their folders: a change there ends the wait early
+                        let wake = FileWake()
+                        defer { wake.close() }
                         while alive.isRunning && Date() < deadline {
+                            wake.watch([resultPath.deletingLastPathComponent().path, directory.path])
                             if FileManager.default.fileExists(atPath: directory.appendingPathComponent("cancelled").path) {
                                 writer.error(id: id, code: -32800, message: "The client cancelled this request."); return
                             }
@@ -221,7 +229,7 @@ public enum EngineHelpers {
                             }
                             // a result comes quickly or after the client has run the tool: 25 ms for
                             // the first seconds, then 200 ms for a call parked on the client
-                            Thread.sleep(forTimeInterval: Date().timeIntervalSince(began) < 5 ? 0.025 : 0.2)
+                            wake.waitBlocking(upTo: Date().timeIntervalSince(began) < 5 ? 0.025 : 0.2)
                         }
                         if alive.isRunning { writer.error(id: id, code: -32800, message: "The client did not return a tool result.") }
                     }

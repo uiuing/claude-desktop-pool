@@ -10,6 +10,8 @@ public actor PrivacyBridge: BridgeBackend {
     private var contexts: [UUID: PrivacyConversation] = [:]
     private var aliases: [String: UUID] = [:]
     private var toolOwners: [String: UUID] = [:]
+    /// Requests waiting for a context's request to end, by context and waiter.
+    private var waiters: [UUID: [UUID: CheckedContinuation<Void, Never>]] = [:]
     private var totals = PrivacyStatistics()
     private var processing = 0
     private var enabled = true
@@ -220,6 +222,7 @@ public actor PrivacyBridge: BridgeBackend {
         context.cancelled = true; context.activeRequest = nil; context.busy = false; context.backendReady = false
         context.allowed = [:]; context.allowedNumbers = [:]
         onUpdate(.requestState(conversationID: context.backendID, active: false))
+        wake(id)
         await cancelBackend(context)
         remove(id)
     }
@@ -238,14 +241,18 @@ public actor PrivacyBridge: BridgeBackend {
             let owners = Set(results.compactMap { toolOwners[$0] })
             if owners.count == 1, results.allSatisfy({ toolOwners[$0] != nil }), let id = owners.first, let owner = contexts[id],
                aliases[alias] == nil || aliases[alias] == id || owner.aliases.contains(alias) {
-                if await settled(id) { return id }
+                if await settled(id, alias: alias) { return id }
                 renewed = "answered_elsewhere"
             } else {
                 renewed = owners.isEmpty ? "no_owner" : owners.count > 1 ? "ambiguous" : contexts[owners.first!] == nil ? "no_owner" : "alias_changed"
             }
         }
-        if !alias.hasPrefix("request:"), let id = aliases[alias], contexts[id] != nil, renewed != "answered_elsewhere" {
-            if await settled(id) { return id }
+        if !alias.hasPrefix("request:"), let id = aliases[alias], let held = contexts[id], renewed != "answered_elsewhere" {
+            if request.messages.count == 1 && results.isEmpty && held.busy {
+                // A new task of the conversation has no history to share with the busy one: no wait.
+                Diagnostics.record("privacy.route", ["decision": "context_wait", "outcome": "skipped_single",
+                                                     "waited_ms": "0", "conversation": Diagnostics.tag(alias)])
+            } else if await settled(id, alias: alias) { return id }
             renewed = "busy"
         }
         if request.messages.count > 1 {
@@ -292,14 +299,46 @@ public actor PrivacyBridge: BridgeBackend {
         }
         return try? fingerprint(messages.prefix(2).map { BridgeMessage(role: $0.role, content: uncached($0.content)) })
     }
-    /// Waits up to 1.5 s for a context's request to end; whether the context is free now.
-    private func settled(_ id: UUID) async -> Bool {
-        let deadline = Date().addingTimeInterval(1.5)
-        while let context = contexts[id], context.busy {
-            if Date() >= deadline || Task.isCancelled { return false }
-            try? await Task.sleep(nanoseconds: 20_000_000)
+    /// Waits up to 1.5 s for a context's request to end; whether the context is free now. The wait
+    /// is woken when the context's request ends or the context is removed, and ends when the task is cancelled.
+    private func settled(_ id: UUID, alias: String) async -> Bool {
+        guard let first = contexts[id] else { return false }
+        guard first.busy else { return true }
+        let began = ContinuousClock.now, deadline = began.advanced(by: .milliseconds(1500))
+        var outcome = "freed"
+        while true {
+            guard let context = contexts[id] else { outcome = "removed"; break }
+            guard context.busy else { break }
+            if Task.isCancelled { outcome = "cancelled"; break }
+            if ContinuousClock.now >= deadline { outcome = "timeout"; break }
+            let waiter = UUID()
+            let timer = Task { [deadline] in
+                try? await Task.sleep(until: deadline, clock: .continuous)
+                self.wake(id, waiter: waiter)
+            }
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    if Task.isCancelled { continuation.resume() } else { waiters[id, default: [:]][waiter] = continuation }
+                }
+            } onCancel: {
+                Task { await self.wake(id, waiter: waiter) }
+            }
+            timer.cancel()
         }
-        return contexts[id] != nil
+        Diagnostics.record("privacy.route", ["decision": "context_wait", "outcome": outcome,
+                                             "waited_ms": String(Self.milliseconds(since: began)), "conversation": Diagnostics.tag(alias)])
+        return outcome == "freed"
+    }
+    /// Resumes the waiters on a context: one of them, or all when its request ends or it is removed.
+    /// Each is taken out of the table before it is resumed, so none is resumed twice.
+    private func wake(_ id: UUID, waiter: UUID? = nil) {
+        if let waiter {
+            guard let continuation = waiters[id]?.removeValue(forKey: waiter) else { return }
+            if waiters[id]?.isEmpty == true { waiters.removeValue(forKey: id) }
+            continuation.resume()
+        } else {
+            for continuation in (waiters.removeValue(forKey: id) ?? [:]).values { continuation.resume() }
+        }
     }
 
     private func resultIDs(_ request: BridgeRequest) throws -> Set<String> {
@@ -547,17 +586,39 @@ public actor PrivacyBridge: BridgeBackend {
         guard let context = contexts[contextID] else { continuation.finish(throwing: BridgeFailure.cancelled); return }
         defer { finishRequest(context, id: contextID, alias: alias, token: token) }
         var restorer = PrivacyTextRestorer(values: context.allowed, numericTokens: Set(context.numbers.keys.map { PrivacyConversation.numberText(Double(bitPattern: $0)) }))
+        // Thinking is put back apart from the words, so a stand-in cut across thinking fragments never joins the answer's.
+        var thinker = PrivacyTextRestorer(values: context.allowed, numericTokens: Set(context.numbers.keys.map { PrivacyConversation.numberText(Double(bitPattern: $0)) }))
         var maskedText = "", restoredText = "", history: [JSONValue] = [], counted = 0, toolRestored = 0, reported = 0
+        /// What thinking held back, told before what follows it.
+        func endThinking() throws {
+            let tail = try thinker.append("", final: true)
+            if !tail.isEmpty { continuation.yield(.thinking(tail)) }
+        }
         do {
             var finished = false, committed = false
             for try await event in source {
                 try Task.checkCancellation()
                 guard !context.cancelled, context.activeRequest == token else { throw BridgeFailure.cancelled }
                 if !committed { context.commitPrepared(prepared); committed = true }
-                restorer.allow(context.allowed)
-                restorer.reserveNumbers(Set(context.numbers.keys.map { PrivacyConversation.numberText(Double(bitPattern: $0)) }))
+                let numbers = Set(context.numbers.keys.map { PrivacyConversation.numberText(Double(bitPattern: $0)) })
+                restorer.allow(context.allowed); restorer.reserveNumbers(numbers)
+                thinker.allow(context.allowed); thinker.reserveNumbers(numbers)
                 switch event {
+                case .thinking(let text):
+                    // words before it are a block of their own, as the client gets them
+                    if !maskedText.isEmpty || !restoredText.isEmpty {
+                        let tail = try restorer.append("", final: true)
+                        restoredText += tail
+                        if !tail.isEmpty { continuation.yield(.text(tail)) }
+                        try saveText(context, messageIndex: request.messages.count, masked: &maskedText, restored: &restoredText, history: &history)
+                    }
+                    let restored = try thinker.append(text)
+                    if !restored.isEmpty { continuation.yield(.thinking(restored)) }
+                case .thinkingSignature:
+                    try endThinking()
+                    continuation.yield(event)
                 case .text(let text):
+                    try endThinking()
                     maskedText += text
                     let restored = try restorer.append(text)
                     restoredText += restored
@@ -566,6 +627,7 @@ public actor PrivacyBridge: BridgeBackend {
                     }
                     if !restored.isEmpty { continuation.yield(.text(restored)) }
                 case .toolUse(var call):
+                    try endThinking()
                     let tail = try restorer.append("", final: true)
                     restoredText += tail
                     if !tail.isEmpty { continuation.yield(.text(tail)) }
@@ -583,6 +645,7 @@ public actor PrivacyBridge: BridgeBackend {
                     continuation.yield(.toolUse(call))
                 case .usage: continuation.yield(event)
                 case .finished:
+                    try endThinking()
                     let tail = try restorer.append("", final: true)
                     restoredText += tail
                     if !tail.isEmpty { continuation.yield(.text(tail)) }
@@ -603,8 +666,8 @@ public actor PrivacyBridge: BridgeBackend {
                     if let opening = Self.openingKey(Array(told.prefix(2)), fingerprint: historyFingerprint) { context.opening = opening }
                     continuation.yield(event); finished = true
                 }
-                if restorer.count > counted {
-                    totals.restoredOccurrences += restorer.count - counted; counted = restorer.count
+                if restorer.count + thinker.count > counted {
+                    totals.restoredOccurrences += restorer.count + thinker.count - counted; counted = restorer.count + thinker.count
                     onUpdate(.protected(totals))
                 }
                 if counted + toolRestored > reported {
@@ -678,8 +741,10 @@ public actor PrivacyBridge: BridgeBackend {
         context.allowed = [:]; context.allowedNumbers = [:]; context.lastUsed = Date()
         onUpdate(.requestState(conversationID: context.backendID, active: false))
         if alias.hasPrefix("request:") { aliases.removeValue(forKey: alias); context.aliases.remove(alias) }
+        wake(id)
     }
     private func remove(_ id: UUID) {
+        defer { wake(id) }
         guard let context = contexts.removeValue(forKey: id) else { return }
         for alias in context.aliases { aliases.removeValue(forKey: alias) }
         for call in context.pending { toolOwners.removeValue(forKey: call) }

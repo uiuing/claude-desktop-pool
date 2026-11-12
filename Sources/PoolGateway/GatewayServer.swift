@@ -150,6 +150,8 @@ private final class GatewayConnection: @unchecked Sendable {
         }
         defer { headerDeadline.cancel(); connection.cancel() }
         var received: GatewayHTTPRequest?
+        /// Reading and checking the body, before any answer is begun (`parse_ms`).
+        var parsing = Duration.zero
         do {
             var parser = GatewayHTTPParser()
             while received == nil {
@@ -159,22 +161,33 @@ private final class GatewayConnection: @unchecked Sendable {
             }
             headerDeadline.cancel()
             let raw = received!
+            // The full log reads the body before it is routed; the request is then built from that tree.
+            var read: GatewayRequestValidation.Read?
             DevRecord.record(.http, "http.request") {
                 // The key that admits the client is Pool's own credential and is never recorded.
                 let kept = raw.headers.filter { !Self.secretHeaders.contains($0.key) }.mapValues(JSONValue.string)
+                let began = ContinuousClock.now
+                let body = GatewayRequestValidation.Read(raw.body)
+                parsing += .now - began; read = body
                 return ["method": .string(raw.method), "path": .string(raw.path), "headers": .object(kept),
                         "withheld_headers": .array(raw.headers.keys.filter(Self.secretHeaders.contains).sorted().map(JSONValue.string)),
-                        "body": Self.recordedBody(raw)]
+                        "body": Self.recordedBody(raw, tree: body.tree)]
             }
-            switch try router.route(raw) {
+            let routing = ContinuousClock.now
+            let route: GatewayRoute
+            do { route = try GatewayRequestValidation.Read.$current.withValue(read) { try router.route(raw) }; parsing += .now - routing }
+            catch { parsing += .now - routing; throw error }
+            switch route {
             case .response(let response): try await writer.respond(response)
             case .messages(let request, let conversationID, let requested):
                 var line = GatewayRequestLine(number: number, bytes: raw.body.count)
+                line.parsing = parsing
                 line.describe(request, conversationID: conversationID, requestedModel: requested)
                 await serve(request, conversationID: conversationID, requestedModel: requested, writer: writer, line: &line)
                 await line.record(writer)
             case .check(let model, let requested, let stream):
                 var line = GatewayRequestLine(number: number, bytes: raw.body.count)
+                line.parsing = parsing
                 line.kind = "check"; line.model = requested; line.messages = 1; line.stream = stream
                 await check(model, requestedModel: requested, stream: stream, writer: writer, line: &line)
                 await line.record(writer)
@@ -183,7 +196,7 @@ private final class GatewayConnection: @unchecked Sendable {
             try? await writer.respond(GatewayJSON.failure(error))
             if let raw = received, raw.method == "POST", raw.path == "/v1/messages" {
                 var line = GatewayRequestLine(number: number, bytes: raw.body.count)
-                line.kind = "rejected"; line.fail(error)
+                line.kind = "rejected"; line.parsing = parsing; line.fail(error)
                 await line.record(writer)
             }
         }
@@ -192,8 +205,8 @@ private final class GatewayConnection: @unchecked Sendable {
     static let secretHeaders: Set<String> = ["authorization", "x-api-key", "proxy-authorization", "cookie"]
     /// A request body for the full log. A conversation is kept as its change from the client session's
     /// last request of the same path and model (`DevRecord.conversation`); anything else as it came.
-    static func recordedBody(_ raw: GatewayHTTPRequest) -> JSONValue {
-        guard case .object(var fields)? = try? JSONDecoder().decode(JSONValue.self, from: raw.body),
+    static func recordedBody(_ raw: GatewayHTTPRequest, tree: JSONValue?) -> JSONValue {
+        guard case .object(var fields)? = tree,
               case .array(let messages)? = fields["messages"] else { return DevRecord.bytes(raw.body) }
         let session = raw.headers["x-claude-code-session-id"] ?? raw.headers["x-claude-session-id"] ?? raw.headers["x-session-id"] ?? ""
         let path = String(raw.path.split(separator: "?", maxSplits: 1).first ?? "")
@@ -330,6 +343,8 @@ private struct GatewayRequestLine {
     var type = "-"
     var reason = "-"
     var usage: BridgeUsage?
+    /// Reading and checking the body, which comes before `began`.
+    var parsing = Duration.zero
     init(number: Int, bytes: Int) { self.number = number; self.bytes = bytes }
 
     mutating func describe(_ request: BridgeRequest, conversationID: String, requestedModel: String) {
@@ -358,6 +373,7 @@ private struct GatewayRequestLine {
         Diagnostics.record("gateway.request", [
             "req": String(number), "kind": kind, "conv": conversation, "model": model,
             "msgs": String(messages), "tools": String(tools), "images": String(images), "bytes_in": String(bytes),
+            "parse_ms": String(Int(parsing / .milliseconds(1))),
             "stream": stream ? "yes" : "no", "headers_ms": headers.map(ms) ?? "-", "total_ms": ms(.now),
             "events": String(events), "outcome": outcome, "status": status.map(String.init) ?? "-", "type": type, "reason": reason,
             "in": count(usage?.inputTokens), "out": count(usage?.outputTokens),

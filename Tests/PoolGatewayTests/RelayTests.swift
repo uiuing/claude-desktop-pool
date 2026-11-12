@@ -184,6 +184,7 @@ final class RelayTests: XCTestCase {
         XCTAssertEqual(first["cache_r"], "182340"); XCTAssertEqual(first["cache_w"], "2118"); XCTAssertEqual(first["cache_w1h"], "2118")
         XCTAssertEqual(second["cache_r"], "182340", "An unstreamed reply logs its usage too.")
         XCTAssertNotEqual(first["headers_ms"], "-"); XCTAssertNotNil(first["total_ms"].flatMap(Int.init))
+        XCTAssertNotNil(first["parse_ms"].flatMap(Int.init)); XCTAssertNotNil(third["parse_ms"].flatMap(Int.init))
         XCTAssertEqual(first["conv"], second["conv"], "One conversation keeps one tag.")
         XCTAssertEqual(second["kind"], "tool_result"); XCTAssertEqual(second["stream"], "no"); XCTAssertEqual(second["msgs"], "3")
         XCTAssertEqual(third["outcome"], "failed"); XCTAssertEqual(third["status"], "429")

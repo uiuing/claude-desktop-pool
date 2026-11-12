@@ -7,8 +7,9 @@ import PoolCore
 ///
 /// - `thinking.display`, `safeguards` (auto mode), `speed`, sampling hints and the like are advisory.
 /// - A `{"role":"system"}` message inside `messages` holds a turn's effort (`output_config`) and,
-///   at times, text. The effort is advisory; the text joins the user turn before it (the next one
-///   when none came before), so the session's instructions stay the same from turn to turn.
+///   at times, text. The effort goes to the run (`--effort`), over the request's own; the text
+///   joins the user turn before it (the next one when none came before), so the session's
+///   instructions stay the same from turn to turn.
 /// - Thinking from earlier answers is the service's own record; the live session keeps its own.
 /// - Deferred tools (`defer_loading`, tool search): a tool is offered to the session once it is
 ///   loaded — ToolSearch answered with a `tool_reference` naming it, or a `tool_addition` brought
@@ -32,6 +33,15 @@ enum ClientRequestShape {
         var toolChoice: String?
         var answerSchema: JSONValue?
         var webSearch = false
+        /// The turn's effort, one the official client takes; nil when the client did not say.
+        var effort: String?
+    }
+
+    /// The effort levels the official client's `--effort` takes.
+    static let effortLevels: Set<String> = ["low", "medium", "high", "xhigh", "max"]
+    static func effortLevel(_ value: JSONValue?) -> String? {
+        guard let level = value?["effort"]?.stringValue?.lowercased(), effortLevels.contains(level) else { return nil }
+        return level
     }
 
     /// Tool search the service runs itself; the pool loads tools itself, as the client asks.
@@ -58,7 +68,11 @@ enum ClientRequestShape {
             default: toolChoice = nil
             }
         }
-        // Reasoning, effort, sampling, stop sequences, context editing, auto mode's safeguards, speed and
+        // The effort: the turn's own (the last system message's) over the request's.
+        var effort = effortLevel(object["output_config"])
+        if let turn = input["messages"]?.arrayValue?.last(where: { $0["role"]?.stringValue == "system" }),
+           let level = effortLevel(turn["output_config"]) { effort = level }
+        // Reasoning, sampling, stop sequences, context editing, auto mode's safeguards, speed and
         // the rest the client sets for itself: not applied.
         for key in object.keys where !["model", "messages", "system", "tools", "max_tokens", "stream", "metadata"].contains(key) {
             object.removeValue(forKey: key)
@@ -76,7 +90,7 @@ enum ClientRequestShape {
         }
 
         guard let messages = input["messages"]?.arrayValue else {
-            return Adapted(object: object, standingTools: [], toolChoice: toolChoice, answerSchema: answerSchema)
+            return Adapted(object: object, standingTools: [], toolChoice: toolChoice, answerSchema: answerSchema, effort: effort)
         }
         var declared: [[String: JSONValue]] = []
         var webSearch = false, advisorLeftOut = false
@@ -216,7 +230,7 @@ enum ClientRequestShape {
             offered.append(.object(fields.filter { ["name", "description", "input_schema"].contains($0.key) }))
         }
         if input["tools"] != nil { object["tools"] = .array(offered) }
-        return Adapted(object: object, standingTools: standing, toolChoice: toolChoice, answerSchema: answerSchema, webSearch: webSearch)
+        return Adapted(object: object, standingTools: standing, toolChoice: toolChoice, answerSchema: answerSchema, webSearch: webSearch, effort: effort)
     }
 
     /// What a session is told of a tool ToolSearch loaded.

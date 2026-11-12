@@ -30,7 +30,7 @@ final class OfficialSessionTests: XCTestCase {
         XCTAssertEqual(value("--allowedTools"), "mcp__pool")
         XCTAssertTrue(arguments.contains("--strict-mcp-config"))
         XCTAssertTrue(arguments.contains("--no-chrome"))
-        for absent in ["--restricted", "--system-prompt-file", "-p", "--dangerously-skip-permissions", "--resume", "--bare"] {
+        for absent in ["--restricted", "--system-prompt-file", "-p", "--dangerously-skip-permissions", "--resume", "--bare", "--effort"] {
             XCTAssertFalse(arguments.contains(absent), absent)
         }
         let appended = try XCTUnwrap(value("--append-system-prompt-file"))
@@ -55,6 +55,21 @@ final class OfficialSessionTests: XCTestCase {
         XCTAssertEqual(harness.exitCount, 1)
         XCTAssertTrue(harness.allInputs.suffix(6).elementsEqual(["/", "e", "x", "i", "t", "\r"]), "/exit is typed a character at a time, then Return")
         XCTAssertFalse(FileManager.default.fileExists(atPath: transcript.path), "The run's session file goes with it")
+    }
+
+    /// The effort the client chose starts the run; none leaves Claude Code's own.
+    func testTheClientsEffortStartsTheRun() async throws {
+        let harness = try SessionHarness(); defer { harness.clean() }
+        let session = harness.session()
+        var r = request("Hello"); r.effort = "xhigh"
+        let result = Task { try await collectEvents(try await session.events(for: r)) }
+        try await waitFor { harness.sentCount == 1 }
+        let arguments = try XCTUnwrap(harness.plan).arguments
+        XCTAssertEqual(arguments.firstIndex(of: "--effort").map { arguments[$0 + 1] }, "xhigh")
+        try harness.answer("Hi")
+        try harness.turnEnded()
+        _ = try await result.value
+        _ = await session.close()
     }
 
     /// The cache lasts as Claude Code's own on a subscription: an hour for a main conversation, five
@@ -424,6 +439,17 @@ final class OfficialSessionTests: XCTestCase {
         try harness.answer("Five screenshots"); try harness.turnEnded()
         _ = try await reply.value
         _ = await session.close()
+    }
+
+    /// A turn of more images than Claude Code is pasted is not typed: it goes in the session as it came.
+    func testATurnOfVeryManyImagesIsNotPasted() throws {
+        func turn(_ images: Int) throws -> BridgeRequest {
+            var content: [JSONValue] = [.object(["type": .string("text"), "text": .string("What changed?")])]
+            for index in 0..<images { content.append(try sessionFixtureImage(red: UInt8(index * 7 % 250))) }
+            return BridgeRequest(model: "claude-sonnet", messages: [.init(role: "user", content: .array(content))])
+        }
+        XCTAssertTrue(ClaudePrompt.typeableTurn(try turn(ClaudePrompt.pastedMost)))
+        XCTAssertFalse(ClaudePrompt.typeableTurn(try turn(ClaudePrompt.pastedMost + 1)))
     }
 
     /// A conversation moved to another account types everything since its session's last turn as one

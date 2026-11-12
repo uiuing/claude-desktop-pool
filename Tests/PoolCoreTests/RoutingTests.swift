@@ -16,6 +16,72 @@ final class RoutingTests: XCTestCase {
         return .init(email: email, plan: plan, state: .ready, windows: windows, createdAt: now)
     }
 
+    /// A pool as it is really run: eleven Pro accounts. Measured there (11-10 to 11-11), a reply costs
+    /// 0.65% of an account's five hours and a heavy one 3%, a working run about 1% a minute, and half of
+    /// all limits were met with the last reading still showing 9% or more left. So a fixed share
+    /// kept back says little: what counts is whether what is left covers the conversation's next turn.
+    private func proPool(left: [Double]) -> [PoolAccount] {
+        left.enumerated().map { index, left in account("pro\(index)@example.invalid", session: 100 - left, week: 40) }
+    }
+    func testAProAccountIsLeftWhenItCannotTakeTheConversationsNextTurn() {
+        let pool = proPool(left: [12, 70, 55, 30, 9, 4, 80, 20, 15, 60, 45])
+        let none = RoutingPolicy(reservePercent: 0)
+        // light turns: 12% left is plenty, and the conversation keeps its account and its cache
+        XCTAssertNil(PoolRouting.handoff(pool, model: "claude-opus", currentID: pool[0].id, policy: none, now: now,
+                                         need: PoolRouting.turnNeed(cost: 2)))
+        // turns that cost a tenth of the account: one more would meet the limit midway
+        let moved = PoolRouting.handoff(pool, model: "claude-opus", currentID: pool[0].id, policy: none, now: now,
+                                        need: PoolRouting.turnNeed(cost: 10))
+        XCTAssertEqual(moved?.reason, .lowQuota)
+        XCTAssertEqual(moved?.account.id, pool[6].id)
+        // the reserve the person set is the floor under what was measured, not replaced by it
+        XCTAssertEqual(PoolRouting.handoff(pool, model: "claude-opus", currentID: pool[0].id, policy: .init(reservePercent: 15), now: now)?.reason, .lowQuota)
+        // nowhere better to go: it stays rather than being written whole on an account as low
+        let low = proPool(left: [12, 9, 4, 11])
+        XCTAssertNil(PoolRouting.handoff(low, model: "claude-opus", currentID: low[0].id, policy: none, now: now,
+                                         need: PoolRouting.turnNeed(cost: 10)))
+        // one very long turn does not empty an account of every conversation
+        XCTAssertEqual(PoolRouting.turnNeed(cost: 90), PoolRouting.turnNeedMost)
+    }
+    /// Measured on that pool (11-12): 400,000 tokens written whole took about a fifth of an
+    /// account's five hours, and a turn that reads them from the cache about a hundredth. A long
+    /// conversation that leaves an account with a tenth left spends twice that to go.
+    func testTheReserveCountsForLessTheMoreAConversationCostsToMove() {
+        XCTAssertEqual(PoolRouting.reserve(10, tokens: nil), 10)
+        XCTAssertEqual(PoolRouting.reserve(10, tokens: 30_000), 10)
+        XCTAssertEqual(PoolRouting.reserve(10, tokens: PoolRouting.reserveFullTokens), 10)
+        XCTAssertEqual(PoolRouting.reserve(10, tokens: 200_000), 5)
+        XCTAssertEqual(PoolRouting.reserve(10, tokens: 400_000), 2.5)
+        XCTAssertEqual(PoolRouting.reserve(0, tokens: 400_000), 0)
+        let pool = proPool(left: [8, 70, 55])
+        let ten = RoutingPolicy(reservePercent: 10)
+        XCTAssertEqual(PoolRouting.handoff(pool, model: "claude-opus", currentID: pool[0].id, policy: ten, now: now)?.reason, .lowQuota,
+                       "A conversation of unknown size keeps the whole reserve")
+        XCTAssertEqual(PoolRouting.handoff(pool, model: "claude-opus", currentID: pool[0].id, policy: ten, now: now, contextTokens: 80_000)?.reason, .lowQuota)
+        XCTAssertNil(PoolRouting.handoff(pool, model: "claude-opus", currentID: pool[0].id, policy: ten, now: now, contextTokens: 400_000),
+                     "8% left is eight more turns that read the cache")
+        // what its next turn was measured to need still counts whole
+        XCTAssertEqual(PoolRouting.handoff(pool, model: "claude-opus", currentID: pool[0].id, policy: ten, now: now,
+                                           need: PoolRouting.turnNeed(cost: 8), contextTokens: 400_000)?.reason, .lowQuota)
+        let spent = proPool(left: [2, 70, 55])
+        XCTAssertEqual(PoolRouting.handoff(spent, model: "claude-opus", currentID: spent[0].id, policy: ten, now: now, contextTokens: 400_000)?.account.id,
+                       spent[1].id)
+        // it goes only where more than the whole reserve is left: it is written there whole
+        let low = proPool(left: [2, 9, 6])
+        XCTAssertNil(PoolRouting.handoff(low, model: "claude-opus", currentID: low[0].id, policy: ten, now: now, contextTokens: 400_000))
+    }
+    func testNewWorkGoesLastToAProAccountWithLessThanATurnLeft() {
+        // 8% left and an idle account, against 40% left carrying two conversations already
+        let pool = proPool(left: [8, 40])
+        let load = [pool[1].id: 2]
+        // by the fixed floor alone the nearly spent account wins on load
+        XCTAssertEqual(PoolRouting.candidates(pool, model: "claude-opus", now: now, load: load).first?.id, pool[0].id)
+        // with turns measured at a tenth of an account it is the last to take new work, and still takes it when alone
+        let need = PoolRouting.turnNeed(cost: 10)
+        XCTAssertEqual(PoolRouting.candidates(pool, model: "claude-opus", now: now, load: load, spentBelow: need).first?.id, pool[1].id)
+        XCTAssertEqual(PoolRouting.candidates([pool[0]], model: "claude-opus", now: now, spentBelow: need).count, 1)
+    }
+
     /// A real pool (11-05): accounts whose week was used up had their 5-hour limit renewed hours ago, and
     /// counted as full they lifted the plan's 5-hour figure to about half while nothing could be used.
     func testASessionLimitUnderASpentWeekCountsAsNothingLeft() {

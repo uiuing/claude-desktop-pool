@@ -149,6 +149,94 @@ final class TurnChoiceSessionTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: transcript.path))
     }
 
+    /// A first turn, then the client's own ask after its reply, in one run: the request that ask
+    /// replaces, the session's transcript as it was when the ask began, and where it is.
+    private func sessionWithAClientsOwnTurn(_ harness: SessionHarness) async throws
+        -> (first: OfficialSession, opening: BridgeRequest, before: Data, transcript: URL) {
+        let first = harness.session()
+        let opening = request("Summarise the synthetic notes.")
+        let log = EventLog.recording(try await first.events(for: opening))
+        try await waitFor { harness.sentCount == 1 }
+        try harness.answer("Three items.", stop: "end_turn")
+        try harness.turnEnded()
+        try await waitFor { await log.ended }
+        let unknown = await first.liveSession()
+        XCTAssertNil(try XCTUnwrap(unknown).turn, "A first turn has nothing before it to go on from")
+        let transcript = try harness.transcriptURL
+        let before = try Data(contentsOf: transcript)
+        var side = opening
+        side.messages += [.init(role: "assistant", content: .string("Three items.")),
+                          .init(role: "user", content: .string("Synthetic: suggest the next message."))]
+        let sideLog = EventLog.recording(try await first.events(for: side))
+        try await waitFor { harness.sentCount == 2 }
+        try harness.answer("Which is longest?", stop: "end_turn")
+        try harness.turnEnded()
+        try await waitFor { await sideLog.ended }
+        let at = try await XCTUnwrapAsync(await first.liveSession())
+        XCTAssertEqual(at.turn, .init(held: 2, bytes: before.count), "The run knows where its last turn began")
+        XCTAssertGreaterThan(try Data(contentsOf: transcript).count, before.count)
+        return (first, opening, before, transcript)
+    }
+    private func real(_ opening: BridgeRequest) -> BridgeRequest {
+        var next = opening
+        next.messages += [.init(role: "assistant", content: .string("Three items.")), .init(role: "user", content: .string("Which is longest?"))]
+        return next
+    }
+
+    /// A run that has ended leaves its session cut where its last turn began, under its own id, and
+    /// the run that resumes it is typed only the turn that replaces that one.
+    func testAnEndedRunsSessionIsCutWhereItsLastTurnBeganAndResumed() async throws {
+        let harness = try SessionHarness(); defer { harness.clean() }
+        let (first, opening, before, transcript) = try await sessionWithAClientsOwnTurn(harness)
+        let saved = try await XCTUnwrapAsync(await first.shelveEnding())
+        XCTAssertEqual(saved.turn, .init(held: 2, bytes: before.count))
+        let cut = try XCTUnwrap(saved.beforeTurn())
+        XCTAssertEqual(cut.held, 2); XCTAssertEqual(cut.cutAt, before.count); XCTAssertFalse(cut.cutCopies)
+
+        let second = harness.session()
+        let resumed = await second.resume(from: cut)
+        XCTAssertTrue(resumed)
+        _ = EventLog.recording(try await second.events(for: real(opening)))
+        try await waitFor { harness.sentCount == 3 }
+        let arguments = try XCTUnwrap(harness.plan).arguments
+        XCTAssertEqual(Array(arguments.prefix(2)), ["--resume", saved.session], "The session itself, under its own id")
+        XCTAssertEqual(try Data(contentsOf: transcript), before, "cut to what it was when the turn began")
+        XCTAssertTrue(harness.typed.contains("Which is longest?"))
+        XCTAssertFalse(harness.typed.contains("Summarise the synthetic notes."), "Only the turn since the reply is typed")
+        XCTAssertFalse(harness.typed.contains("suggest the next message"))
+        let own = await second.liveSession()
+        XCTAssertNil(own, "A reply is open")
+        _ = await second.cancel()
+        _ = await second.requestExit()
+    }
+
+    /// While another run still has the session, the run that goes on from before its last turn takes
+    /// a copy cut there, under its own id, and the session stays whole.
+    func testASessionARunStillHasIsCopiedUpToWhereItsLastTurnBegan() async throws {
+        let harness = try SessionHarness(); defer { harness.clean() }
+        let (first, opening, before, transcript) = try await sessionWithAClientsOwnTurn(harness)
+        let saved = try await XCTUnwrapAsync(await first.shelveEnding())
+        let whole = try Data(contentsOf: transcript)
+        let copy = try XCTUnwrap(ShelvedSession(session: saved.session, accountID: saved.accountID, turn: saved.turn, discard: {}).beforeTurn(keeping: true))
+        XCTAssertTrue(copy.cutCopies)
+
+        let second = harness.session()
+        let resumed = await second.resume(from: copy)
+        XCTAssertTrue(resumed)
+        _ = EventLog.recording(try await second.events(for: real(opening)))
+        try await waitFor { harness.sentCount == 3 }
+        let arguments = try XCTUnwrap(harness.plan).arguments
+        XCTAssertEqual(Array(arguments.prefix(2)), ["--resume", harness.sessionKey], "The run's own copy, under its own id")
+        XCTAssertNotEqual(harness.sessionKey, saved.session)
+        XCTAssertEqual(harness.resumedTranscript, before, "The session as it was when the turn began")
+        XCTAssertEqual(try Data(contentsOf: transcript), whole, "The session it was copied from stays whole")
+        XCTAssertTrue(harness.typed.contains("Which is longest?"))
+        XCTAssertFalse(harness.typed.contains("suggest the next message"))
+        _ = await second.cancel()
+        _ = await second.requestExit()
+        saved.discard()
+    }
+
     private func request(_ text: String, tools: [BridgeTool]? = nil) -> BridgeRequest {
         BridgeRequest(model: "claude-sonnet", messages: [.init(role: "user", content: .string(text))], tools: tools)
     }

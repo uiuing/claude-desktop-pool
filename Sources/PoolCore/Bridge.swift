@@ -29,6 +29,74 @@ public enum JSONValue: Codable, Equatable, Sendable {
     public var doubleValue: Double? { if case .number(let n) = self { return n }; return nil }
     public var boolValue: Bool? { if case .bool(let b) = self { return b }; return nil }
     public func encoded() throws -> Data { try JSONEncoder().encode(self) }
+
+    /// The value `JSONDecoder().decode(JSONValue.self, from:)` gives, read about three times faster
+    /// through `JSONSerialization`. Where the two readers could differ (a sign or exponent on zero,
+    /// a number beyond a double, keys Swift counts as equal, anything `JSONSerialization` refuses)
+    /// the decoder reads it instead, so the result and its errors are the decoder's.
+    public static func parse(_ data: Data) throws -> JSONValue {
+        guard let object = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) else {
+            return try JSONDecoder().decode(JSONValue.self, from: data)
+        }
+        var reader = FoundationReader()
+        if let value = reader.value(object), !(reader.integerZero && Self.negativeZero(in: data)) { return value }
+        return try JSONDecoder().decode(JSONValue.self, from: data)
+    }
+    private struct FoundationReader {
+        /// An integer zero was read; `JSONSerialization` reads `-0` as one and drops its sign.
+        var integerZero = false
+        mutating func value(_ object: Any) -> JSONValue? {
+            switch object {
+            case let text as String: return .string(text)
+            case let number as NSNumber:
+                if CFGetTypeID(number) == CFBooleanGetTypeID() { return .bool(number.boolValue) }
+                // A decimal number holds more digits than a double, and rounds them differently.
+                if number is NSDecimalNumber { return nil }
+                let value = number.doubleValue, type = number.objCType.pointee
+                if type == UInt8(ascii: "d") || type == UInt8(ascii: "f") {
+                    // A zero written with an exponent, or a value beyond a double's range, is refused by the decoder.
+                    guard value != 0, value.isFinite else { return nil }
+                } else if value == 0 { integerZero = true }
+                return .number(value)
+            case let list as [Any]:
+                var values = [JSONValue](); values.reserveCapacity(list.count)
+                for element in list { guard let value = value(element) else { return nil }; values.append(value) }
+                return .array(values)
+            case let fields as NSDictionary:
+                // Read as Foundation keeps it: bridged to a Swift dictionary first, keys Foundation
+                // tells apart but Swift counts as equal would already be one, and which one the
+                // decoder keeps depends on their order.
+                var values = [String: JSONValue](minimumCapacity: fields.count)
+                for (key, element) in fields {
+                    guard let key = key as? String, let value = value(element) else { return nil }
+                    values[key] = value
+                }
+                return values.count == fields.count ? .object(values) : nil
+            case is NSNull: return .null
+            default: return nil
+            }
+        }
+    }
+    /// Whether the bytes may hold a bare `-0`: a minus and zero followed by no digit, point or
+    /// exponent. One inside a string only sends the body to the decoder.
+    private static func negativeZero(in data: Data) -> Bool {
+        data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) -> Bool in
+            guard let base = bytes.baseAddress else { return false }
+            var offset = 0
+            while offset < bytes.count, let hit = memchr(base + offset, Int32(UInt8(ascii: "-")), bytes.count - offset) {
+                let at = base.distance(to: UnsafeRawPointer(hit))
+                if at + 1 < bytes.count, bytes[at + 1] == UInt8(ascii: "0") {
+                    guard at + 2 < bytes.count else { return true }
+                    switch bytes[at + 2] {
+                    case UInt8(ascii: "0")...UInt8(ascii: "9"), UInt8(ascii: "."), UInt8(ascii: "e"), UInt8(ascii: "E"): break
+                    default: return true
+                    }
+                }
+                offset = at + 1
+            }
+            return false
+        }
+    }
 }
 
 public struct BridgeMessage: Codable, Equatable, Sendable {
@@ -58,6 +126,9 @@ public struct BridgeRequest: Codable, Equatable, Sendable {
     /// What the client's `tool_choice` lets the turn call, as Pool keeps it: nil for its own
     /// choice, "none", "required" (any), or "name:" and the one tool. Set by the gateway, never decoded from a client.
     public var toolChoice: String? = nil
+    /// The effort the client chose for this turn (`low`, `medium`, `high`, `xhigh`, `max`); nil when it
+    /// did not say, which keeps the run's own. Set by the gateway, never decoded from a client.
+    public var effort: String? = nil
     /// The JSON schema a structured answer must fit (`output_config.format`), answered through an answer
     /// tool in interactive mode.
     public var answerSchema: JSONValue? = nil
@@ -102,6 +173,10 @@ public struct BridgeUsage: Codable, Equatable, Sendable {
 public enum BridgeStopReason: String, Sendable { case endTurn = "end_turn", toolUse = "tool_use", maxTokens = "max_tokens", refusal }
 public enum BridgeEvent: Sendable, Equatable {
     case text(String)
+    /// The reply's thinking as it streams: shown to the client, never what it was told.
+    case thinking(String)
+    /// The signature that closes a thinking block.
+    case thinkingSignature(String)
     case toolUse(BridgeToolCall)
     case usage(BridgeUsage)
     case finished(BridgeStopReason)
@@ -112,6 +187,10 @@ public enum BridgeFailure: Error, Equatable, Sendable, LocalizedError {
     case rateLimited(Date?), permissionRequired, cancelled, compatibility, transport
     case quotaLimited([QuotaWindow])
     case accountUnavailable(AccountState), modelUnavailable
+    /// Every account that could serve is at a limit, with when the first of them is back. Unlike
+    /// `unavailable` it is no moment's wait: the client is told the limit and its reset, so one that
+    /// waits for a reset waits for this one.
+    case poolLimited(Date?)
     case privacyUnavailable, privacyBusy
     /// An error the official client itself reported for the turn, passed on as it is:
     /// the Anthropic status it got, or 0 when Claude Code's own check turned the
@@ -125,6 +204,9 @@ public enum BridgeFailure: Error, Equatable, Sendable, LocalizedError {
         case .paused: return "Claude Pool is quitting. Open it again to continue."
         case .busy: return "This conversation is still working. Wait for its current turn."
         case .rateLimited, .quotaLimited: return "This account has reached a limit. Check its reset time in Claude Pool."
+        case .poolLimited(let back):
+            guard let back else { return "Every account in Claude Pool is at its limit. Check their reset times in Claude Pool." }
+            return "Every account in Claude Pool is at its limit. The first is back at \(Self.clock(back))."
         case .permissionRequired: return "Claude needs your attention. Open the session in Claude Pool."
         case .cancelled: return "The request was cancelled."
         case .compatibility: return "The installed Claude Code did not provide the required session events."
@@ -141,6 +223,16 @@ public enum BridgeFailure: Error, Equatable, Sendable, LocalizedError {
         case .privacyBusy: return "Local redaction is busy. Try again shortly."
         case .clientReported(_, let message): return message
         }
+    }
+}
+
+extension BridgeFailure {
+    /// A reset as an error message says it: the hour and minute here, with the weekday when it is not today.
+    static func clock(_ date: Date, now: Date = Date(), calendar: Calendar = .current) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.calendar = calendar; formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = calendar.isDate(date, inSameDayAs: now) ? "HH:mm" : "EEE HH:mm"
+        return formatter.string(from: date)
     }
 }
 

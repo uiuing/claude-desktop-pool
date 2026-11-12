@@ -153,6 +153,89 @@ enum ClaudeReplay {
         return (try? write(kept, config: config, work: work, session: session)) != nil
     }
 
+    /// Writes `session` as a copy of the saved session `from` cut to `bytes`, where the run that had
+    /// it began its last turn: the rows before that turn, byte for byte, so Claude Code resumed on it
+    /// asks the conversation before the turn as the saved session asked it, a prefix the service has
+    /// cached. The cut is made only where a turn begins (`turnBoundary`). False, and nothing written, otherwise.
+    static func fork(config: URL, work: URL, from: String, to session: String, upTo bytes: Int) -> Bool {
+        forkRefusal(config: config, work: work, from: from, to: session, upTo: bytes) == nil
+    }
+    /// The same, saying what kept the copy from being made, by name only; nil once it is written.
+    static func forkRefusal(config: URL, work: URL, from: String, to session: String, upTo bytes: Int) -> String? {
+        guard UUID(uuidString: from) != nil, UUID(uuidString: session) != nil,
+              let file = sessionFile(config: config, work: work, session: from),
+              let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { return "unread" }
+        if let refusal = turnBoundary(data, at: bytes) { return refusal }
+        // the rows name their session: the copy's are its own
+        let copy = Data(String(decoding: data[data.startIndex..<(data.startIndex + bytes)], as: UTF8.self)
+            .replacingOccurrences(of: "\"sessionId\":\"\(from)\"", with: "\"sessionId\":\"\(session)\"").utf8)
+        return (try? write(copy, config: config, work: work, session: session)) != nil ? nil : "unwritten"
+    }
+    /// Cuts a saved session to `bytes` where it is, for a session whose run has ended: the same cut
+    /// as `fork`, with the session's id and what Claude Code keeps beside it (large tool results, which
+    /// its rows name by path) as they were. What kept it from being cut, by name only, the session
+    /// then left whole; nil once it is cut.
+    static func cutRefusal(config: URL, work: URL, session: String, upTo bytes: Int) -> String? {
+        guard UUID(uuidString: session) != nil, let file = sessionFile(config: config, work: work, session: session) else { return "unread" }
+        // read and let go before the file is cut under it
+        let refusal: String? = {
+            guard let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { return "unread" }
+            return turnBoundary(data, at: bytes)
+        }()
+        if let refusal { return refusal }
+        var info = stat()
+        guard lstat(file.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == getuid(),
+              truncate(file.path, off_t(bytes)) == 0 else { return "unwritten" }
+        return nil
+    }
+    private static func sessionFile(config: URL, work: URL, session: String) -> URL? {
+        projectDirectories(config: config, work: work).reversed().map { $0.appendingPathComponent(session + ".jsonl") }
+            .first { FileManager.default.fileExists(atPath: $0.path) }
+    }
+    /// Whether `bytes` into a session's transcript is where a turn begins, else why not, by name:
+    /// whole rows; the last row of the conversation before it an answer Claude ended itself (never one
+    /// cut off, the client's own error row, or one that calls a tool); the first after it the turn's
+    /// own message, which brings no result. A length that falls anywhere else (a reply still being
+    /// written when it was taken, a stopped turn left in the session) is refused.
+    static func turnBoundary(_ data: Data, at bytes: Int) -> String? {
+        guard bytes > 0 else { return "empty" }
+        guard data.count >= bytes else { return "shorter" }
+        let newline = UInt8(ascii: "\n")
+        let end = data.startIndex + bytes
+        guard data[end - 1] == newline else { return "inside_row" }
+        // A row of the conversation itself, the person's or an answer's and never a side task's:
+        // its role, whether it holds a block of `kind`, and whether it is an answer Claude ended itself.
+        func row(_ line: Data.SubSequence, holding kind: String) -> (role: String, holds: Bool, ended: Bool)? {
+            guard !line.isEmpty, let value = try? JSONDecoder().decode(JSONValue.self, from: Data(line)),
+                  value["isSidechain"]?.boolValue != true, let type = value["type"]?.stringValue,
+                  type == "user" || type == "assistant" else { return nil }
+            let message = value["message"]
+            let holds = message?["content"]?.arrayValue?.contains { $0["type"]?.stringValue == kind } == true
+            let ended = ["end_turn", "stop_sequence"].contains(message?["stop_reason"]?.stringValue ?? "") &&
+                value["isApiErrorMessage"]?.boolValue != true && message?["model"]?.stringValue != "<synthetic>"
+            return (type, holds, ended)
+        }
+        guard let last = data[data.startIndex..<end].split(separator: newline).reversed().lazy
+            .compactMap({ row($0, holding: "tool_use") }).first else { return "empty" }
+        guard last.role == "assistant" else { return "after_message" }
+        guard !last.holds else { return "after_call" }
+        guard last.ended else { return "after_unfinished" }
+        guard let next = data[end...].split(separator: newline).lazy.compactMap({ row($0, holding: "tool_result") }).first else {
+            return "nothing_after"
+        }
+        if next.role != "user" { return "before_answer" }
+        if next.holds { return "before_result" }
+        return nil
+    }
+    /// How long a session's transcript is now, in bytes; nil when it has none.
+    static func length(config: URL, work: URL, session: String) -> Int? {
+        for directory in projectDirectories(config: config, work: work).reversed() {
+            var info = stat()
+            if stat(directory.appendingPathComponent(session + ".jsonl").path, &info) == 0 { return Int(info.st_size) }
+        }
+        return nil
+    }
+
     /// Removes a session's file and the folder of its own the client may keep beside it, once
     /// its run has ended (claude_subscription.go removeSession, 2660-2671).
     static func remove(config: URL, work: URL, session: String) {
