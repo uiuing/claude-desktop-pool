@@ -1109,6 +1109,62 @@ extension PrivacyBridgeTests {
 }
 
 extension PrivacyBridgeTests {
+    /// Claude Code compacts a long task: it asks for a summary of the history up to a result already
+    /// answered, with the ask added to that result's message. The result names no context still waiting,
+    /// and the conversation's id last served the other task: the ask still goes to its own task's context,
+    /// never the other's, so the other task's next result goes on in its context without a wait.
+    func testCompactingTaskKeepsToItsOwnContextBesideAParallelTask() async throws {
+        let backend = PrivacyBackendFixture(), bridge = PrivacyBridge(backend: backend, detector: FixtureDetector(), wait: .seconds(5))
+        let tools = [BridgeTool(name: "lookup", inputSchema: .object(["type": .string("object")]))]
+        let alias = "session-compact#shape"
+        let taskA = textRequest("Task A: read /Users/synthetic-owner/a", tools: tools), taskB = textRequest("Task B: read /Users/synthetic-owner/b", tools: tools)
+        func answered(_ request: BridgeRequest, _ events: [BridgeEvent], _ id: String) -> BridgeRequest {
+            var next = request
+            next.messages += [.init(role: "assistant", content: privacyAssistant(events)), .init(role: "user", content: .array([.object([
+                "type": .string("tool_result"), "tool_use_id": .string(id), "content": .string("ok")])]))]
+            return next
+        }
+        let a = Task { try await collectPrivacy(try await bridge.events(for: taskA, conversationID: alias)) }
+        try await privacyEventually { await backend.requests.count == 1 }
+        let b = Task { try await collectPrivacy(try await bridge.events(for: taskB, conversationID: alias)) }
+        try await privacyEventually { await backend.requests.count == 2 }
+        await backend.finish(0, [.toolUse(BridgeToolCall(id: "toolu_a1", name: "lookup", input: .object([:]))), .finished(.toolUse)])
+        await backend.finish(1, [.toolUse(BridgeToolCall(id: "toolu_b1", name: "lookup", input: .object([:]))), .finished(.toolUse)])
+        let a1 = answered(taskA, try await a.value, "toolu_a1"), b1 = answered(taskB, try await b.value, "toolu_b1")
+        // A answers first, then B: the id last served B.
+        let a2 = Task { try await collectPrivacy(try await bridge.events(for: a1, conversationID: alias)) }
+        try await privacyEventually { await backend.requests.count == 3 }
+        await backend.finish(2, [.toolUse(BridgeToolCall(id: "toolu_a2", name: "lookup", input: .object([:]))), .finished(.toolUse)])
+        _ = try await a2.value
+        let b2 = Task { try await collectPrivacy(try await bridge.events(for: b1, conversationID: alias)) }
+        try await privacyEventually { await backend.requests.count == 4 }
+        await backend.finish(3, [.toolUse(BridgeToolCall(id: "toolu_b2", name: "lookup", input: .object([:]))), .finished(.toolUse)])
+        let b2Events = try await b2.value
+        let identities = await backend.identities
+
+        var summary = a1
+        summary.messages[summary.messages.count - 1] = .init(role: "user", content: .array([
+            .object(["type": .string("tool_result"), "tool_use_id": .string("toolu_a1"), "content": .string("ok")]),
+            .object(["type": .string("text"), "text": .string("Summarize the conversation so far.")])]))
+        let compacting = Task { try await collectPrivacy(try await bridge.events(for: summary, conversationID: alias)) }
+        try await privacyEventually { await backend.requests.count == 5 }
+        let sent = await backend.requests, afterSummary = await backend.identities
+        XCTAssertEqual(afterSummary[4], identities[0], "The summary ask goes to its own task's context")
+        XCTAssertEqual(sent[4].messages[0], sent[0].messages[0], "Its history goes as it went")
+
+        // The summary is still being written: B's next result goes on in B's context at once.
+        let began = ContinuousClock.now
+        let b3 = Task { try await collectPrivacy(try await bridge.events(for: answered(b1, b2Events, "toolu_b2"), conversationID: alias)) }
+        try await privacyEventually { await backend.requests.count == 6 }
+        XCTAssertLessThan(ContinuousClock.now - began, .milliseconds(700), "No wait for the other task's context")
+        let last = await backend.identities, resent = await backend.requests
+        XCTAssertEqual(last[5], identities[1], "B's result goes to B's context")
+        XCTAssertEqual(resent[5].messages[0], resent[1].messages[0], "B's history goes as it went")
+        await backend.finish(4, [.text("Summary"), .finished(.endTurn)])
+        await backend.finish(5, [.text("B done"), .finished(.endTurn)])
+        _ = try await compacting.value; _ = try await b3.value
+    }
+
     /// A new task of a conversation whose context is answering has no history to share with it: it gets
     /// a context of its own at once, without waiting for the other.
     func testNewTaskBesideABusyContextDoesNotWait() async throws {

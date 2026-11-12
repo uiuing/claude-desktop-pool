@@ -123,6 +123,7 @@ public actor PrivacyBridge: BridgeBackend {
         let token = UUID(); context.activeRequest = token
         let prepared = PrivacyPreparation()
         aliases[alias] = id; context.aliases.insert(alias)
+        if let opening = Self.openingKey(request.messages, fingerprint: historyFingerprint) { context.served(opening: opening) }
         processing += 1; onUpdate(.processing(active: processing))
         var preprocessing = true
         do {
@@ -247,7 +248,9 @@ public actor PrivacyBridge: BridgeBackend {
                 renewed = owners.isEmpty ? "no_owner" : owners.count > 1 ? "ambiguous" : contexts[owners.first!] == nil ? "no_owner" : "alias_changed"
             }
         }
-        if !alias.hasPrefix("request:"), let id = aliases[alias], let held = contexts[id], renewed != "answered_elsewhere" {
+        let aliased = alias.hasPrefix("request:") ? nil : taskContext(alias: alias, request: request)
+        if aliases[alias] != nil, aliased == nil, renewed == nil { renewed = "other_task" }
+        if let id = aliased, let held = contexts[id], renewed != "answered_elsewhere" {
             if request.messages.count == 1 && results.isEmpty && held.busy {
                 // A new task of the conversation has no history to share with the busy one: no wait.
                 Diagnostics.record("privacy.route", ["decision": "context_wait", "outcome": "skipped_single",
@@ -285,6 +288,26 @@ public actor PrivacyBridge: BridgeBackend {
         let context = PrivacyConversation(session: session, conversationTag: forkedFrom)
         context.machineUsers = machineUsers
         let id = UUID(); contexts[id] = context; return id
+    }
+    /// The context a request goes on in by its conversation's id. The id names the context it last served,
+    /// but parallel tasks of one conversation share it, each in a context of its own: there it is the
+    /// context that served the request's task, told by the task's first exchange, and never another
+    /// task's, which would hold it from its own task's next result and mask this history afresh.
+    /// A context that served no task yet known (restored) may take it; nil when none is the task's.
+    private func taskContext(alias: String, request: BridgeRequest) -> UUID? {
+        guard let last = aliases[alias] else { return nil }
+        let sharing = contexts.filter { $0.value.aliases.contains(alias) }
+        guard sharing.count > 1, let opening = Self.openingKey(request.messages, fingerprint: historyFingerprint) else { return last }
+        let own = sharing.filter { $0.value.openings.contains(opening) }
+        let unknown = sharing.filter { $0.value.openings.isEmpty }
+        let chosen = own.isEmpty ? (unknown[last] != nil ? last : nil)
+            : own[last] != nil ? last : own.max(by: { $0.value.lastUsed < $1.value.lastUsed })?.key
+        if chosen != last {
+            Diagnostics.record("privacy.route", ["decision": chosen == nil ? "alias_other_task" : "alias_task_matched",
+                                                 "conversation": Diagnostics.tag(alias), "sharing": String(sharing.count),
+                                                 "messages": String(request.messages.count)])
+        }
+        return chosen
     }
     /// A key of a conversation's first exchange as its client wrote it, cache marks left out, as they
     /// move from turn to turn. Nil before a reply, so two conversations that open alike stay apart.
@@ -663,7 +686,9 @@ public actor PrivacyBridge: BridgeBackend {
                     let told = request.messages + [.init(role: "assistant", content: .array(history))]
                     context.historyFingerprint = try historyFingerprint(told)
                     // Renewed each turn: from the second on, the reply is as the client keeps it.
-                    if let opening = Self.openingKey(Array(told.prefix(2)), fingerprint: historyFingerprint) { context.opening = opening }
+                    if let opening = Self.openingKey(Array(told.prefix(2)), fingerprint: historyFingerprint) {
+                        context.opening = opening; context.served(opening: opening)
+                    }
                     continuation.yield(event); finished = true
                 }
                 if restorer.count + thinker.count > counted {

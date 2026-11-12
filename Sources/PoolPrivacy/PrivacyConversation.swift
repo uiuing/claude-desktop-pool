@@ -97,6 +97,14 @@ final class PrivacyConversation {
     var allowedNumbers: [UInt64: Double] = [:]
     /// A key of the conversation's first exchange as its client wrote it, once it has one.
     var opening: String?
+    /// The first exchanges of every task this context served, newest last: the parallel tasks of one
+    /// conversation share its id, and a task's request is told apart by its opening. Not kept across a restart.
+    private(set) var openings: [String] = []
+    static let openingsMost = 16
+    func served(opening key: String) {
+        openings.removeAll { $0 == key }; openings.append(key)
+        if openings.count > Self.openingsMost { openings.removeFirst(openings.count - Self.openingsMost) }
+    }
     /// This Mac's account names, masked wherever they stand as a word: in a folder's name
     /// (`-Users-name-project`), a listing's owner column, a prompt. Short ones too, which `minKnown`
     /// would leave.
