@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/banner.png?v=3" alt="Claude Pool" width="100%">
+  <img src="docs/images/banner.png?v=4" alt="Claude Pool" width="100%">
 </p>
 
 <p align="center">
@@ -13,14 +13,14 @@
   <b>English</b> · <a href="README.zh-CN.md">简体中文</a>
 </p>
 
-<h3 align="center">All your Claude accounts share their quota in one Claude Desktop.</h3>
+<h3 align="center">All your Claude accounts, one smart pool for Claude Desktop.</h3>
 
-<p align="center">When one runs low, another takes over, and each conversation keeps its prompt cache. Your private info stays protected.</p>
+<p align="center">Every conversation, subagent and task goes to the account best placed for it. Your private info stays protected.</p>
 
 <table>
   <tr>
-    <td width="66%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/pool-en-dark.png"><img alt="Claude Pool: quota left across your Claude accounts" src="docs/images/pool-en-light.png"></picture></td>
-    <td width="34%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/menu-en-dark.png"><img alt="Every account's quota in the menu bar" src="docs/images/menu-en-light.png"></picture></td>
+    <td width="66%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/pool-en-dark.png?v=0.2.8"><img alt="Claude Pool: quota left across your Claude accounts" src="docs/images/pool-en-light.png?v=0.2.8"></picture></td>
+    <td width="34%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/menu-en-dark.png?v=0.2.8"><img alt="Every account's quota in the menu bar" src="docs/images/menu-en-light.png?v=0.2.8"></picture></td>
   </tr>
 </table>
 
@@ -36,9 +36,9 @@ You have more than one Claude account, and in Claude Desktop:
 
 ## What it does
 
-- **Pools the quota of all your accounts.** A conversation goes to the account with the most left and moves on before that one runs out, so it keeps going.
-- **Keeps the prompt cache.** Each conversation stays on the account that has it cached and moves only when moving costs less than staying. A long conversation is not written again on account after account.
-- **Spreads parallel work.** Subagents and parallel tasks go to different accounts by what each has left and how busy it is.
+- **Places each piece of work on the best account.** Every conversation, subagent and short task is placed on its own, weighing each account's 5-hour, weekly and model limits, when they reset, what that kind of work was measured to cost there, and how much the account already carries. A limit about to reset is used before it lapses; an account that can't fit the next turn is passed over.
+- **Keeps the prompt cache.** A conversation stays on the account that has it cached and moves only when staying would cost more than moving. A long conversation is not written again on account after account.
+- **Spreads parallel work.** A conversation's subagents run on different accounts at once instead of draining one.
 - **Handles a full pool.** When every account is at its limit, Desktop is told when the first one is back and you get a notification. Claude Code set to wait for a reset goes on by itself.
 - **Works everywhere in Desktop.** Chat, Cowork and Code, with the reasoning effort you pick and Claude's thinking shown as it streams.
 - **Shows what's left and where work goes.** Every account's quota and reset in the menu bar, including model limits such as Fable's; the Routing page shows which account each conversation is on and why; the Usage page shows tokens, cache hits and estimated cost.
@@ -49,12 +49,12 @@ You have more than one Claude account, and in Claude Desktop:
 
 <table>
   <tr>
-    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/accounts-en-dark.png"><img alt="Accounts" src="docs/images/accounts-en-light.png"></picture></td>
-    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/routing-en-dark.png"><img alt="Routing" src="docs/images/routing-en-light.png"></picture></td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/accounts-en-dark.png?v=0.2.8"><img alt="Accounts" src="docs/images/accounts-en-light.png?v=0.2.8"></picture></td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/routing-en-dark.png?v=0.2.8"><img alt="Routing" src="docs/images/routing-en-light.png?v=0.2.8"></picture></td>
   </tr>
   <tr>
-    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/usage-en-dark.png"><img alt="Usage" src="docs/images/usage-en-light.png"></picture></td>
-    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-en-dark.png"><img alt="Settings" src="docs/images/settings-en-light.png"></picture></td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/usage-en-dark.png?v=0.2.8"><img alt="Usage" src="docs/images/usage-en-light.png?v=0.2.8"></picture></td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-en-dark.png?v=0.2.8"><img alt="Settings" src="docs/images/settings-en-light.png?v=0.2.8"></picture></td>
   </tr>
 </table>
 
@@ -85,12 +85,12 @@ Claude Desktop
       │
       ▼
 Claude Pool            ← hides your private info
-      │                  keeps each conversation on its cached account
-      ▼
-your Claude accounts   ← the one with the most left, tasks spread across them
+      │                  places each conversation, subagent and task
+      ▼                  by limits left, resets, cost, load and cache
+your Claude accounts
 ```
 
-Claude Desktop hands your question to Pool. Pool hides your private info, keeps the conversation on the account that already has it cached while that account has room, or picks the one with the most left, asks through the official Claude Code, and sends the answer back to Desktop. See [architecture](docs/architecture.md) for the details.
+Claude Desktop hands your question to Pool. Pool hides your private info and places the work: a conversation stays where its prompt cache is while that account can take its next turn, and new conversations and subagents go to the account best placed for them. It asks through the official Claude Code and sends the answer back to Desktop. See [architecture](docs/architecture.md) for the details.
 
 ## Build from source
 

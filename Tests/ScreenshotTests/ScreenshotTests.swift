@@ -44,46 +44,16 @@ final class ScreenshotTests: XCTestCase {
         let output = URL(fileURLWithPath: directory, isDirectory: true)
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         NSApplication.shared.setActivationPolicy(.accessory)
-        let model = PoolAppModel.demoModel(language: "en")
+        // The showcase pool, with four more Pro accounts: a pool is mostly Pro.
+        let model = PoolAppModel.showcaseModel(language: "en")
         let date = model.now
-        func limits(_ session: Double?, _ week: Double, weekly: Bool = false) -> [QuotaWindow] {
-            let week = QuotaWindow(id: "seven_day", usedPercent: week, observedAt: date.addingTimeInterval(-90), resetsAt: date.addingTimeInterval(weekly ? 86_400 : 259_200))
-            guard let session else { return [week] }
-            return [.init(id: "five_hour", usedPercent: session, observedAt: date.addingTimeInterval(-90), resetsAt: date.addingTimeInterval(5_400)), week]
+        for (index, name) in ["kai", "logan", "morgan", "noah"].enumerated() {
+            let used = Double(18 + index * 13), week = Double(24 + index * 9)
+            model.snapshot.accounts.append(PoolAccount(email: "\(name)@example.\(["com", "org", "net"][index % 3])", plan: "Pro", state: .ready, windows: [
+                .init(id: "five_hour", usedPercent: used, observedAt: date.addingTimeInterval(-90), resetsAt: date.addingTimeInterval(5_400 + Double(index) * 900)),
+                .init(id: "seven_day", usedPercent: week, observedAt: date.addingTimeInterval(-90), resetsAt: date.addingTimeInterval(259_200))], createdAt: date))
         }
-        // Several accounts of every plan, in the states a real pool goes through: serving, low, at a 5-hour limit,
-        // and a used-up week.
-        let names = ["avery", "blake", "casey", "dana", "emery", "finley", "harper", "jordan", "kai", "logan", "morgan", "noah",
-                     "parker", "quinn", "riley", "sage", "taylor", "uma", "val", "wren", "xavi", "yuki", "zane", "ari",
-                     "bo", "cleo", "dev", "eli", "faye", "gus", "hana", "ivy"]
-        let domains = ["example.com", "example.org", "example.net"]
-        // With the four demo accounts: Pro 10, Max 5x 2, Ultra 1, as a pool is mostly Pro.
-        let plans: [(String, Int)] = [("Pro", 9)]
-        var next = 0
-        for (plan, count) in plans {
-            for index in 0..<count {
-                let name = names[next % names.count], seed = next; next += 1
-                let email = "\(name)@\(domains[seed % domains.count])"
-                var state = AccountState.ready, cooldown: Date?
-                var windows = limits(plan == "Ultra" ? nil : Double((seed * 29 + 7) % 88), Double((seed * 17 + 11) % 80))
-                switch (plan, index) {
-                case ("Pro", 5):
-                    state = .limited; cooldown = date.addingTimeInterval(5_400); windows = limits(100, 46)
-                case ("Pro", 1):
-                    state = .limited; cooldown = date.addingTimeInterval(86_400); windows = limits(30, 100, weekly: true)
-                default: break
-                }
-                model.snapshot.accounts.append(PoolAccount(email: email, plan: plan, state: state, windows: windows,
-                                                           cooldownUntil: cooldown, createdAt: date))
-            }
-        }
-        let serving = model.snapshot.accounts.filter { ["avery@example.com", "dana@example.com", "casey@example.net"].contains($0.email) }
-        for (index, account) in serving.enumerated() {
-            model.snapshot.sessions.append(.init(id: UUID(), accountID: account.id, name: ["Refactor the parser", "Draft the launch post", "Review open issues"][index],
-                                                 model: ["Opus", "Sonnet", "Sonnet"][index], state: index == 0 ? .running : .waiting,
-                                                 startedAt: date.addingTimeInterval(-Double(300 * (index + 1))), conversation: "banner-\(index)"))
-        }
-        for page in [PoolPage.accounts, .pool] {
+        for page in [PoolPage.accounts, .pool, .routing] {
             model.page = page
             try await capture(MainWindow(model: model), size: .init(width: 680, height: 900), dark: false,
                               to: output.appendingPathComponent("banner-\(page.rawValue)-en-light.png"))

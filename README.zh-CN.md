@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/banner.png?v=3" alt="Claude Pool" width="100%">
+  <img src="docs/images/banner.png?v=4" alt="Claude Pool" width="100%">
 </p>
 
 <p align="center">
@@ -13,14 +13,14 @@
   <a href="README.md">English</a> · <b>简体中文</b>
 </p>
 
-<h3 align="center">多个 Claude 账号，在一个 Claude Desktop 里共享额度。</h3>
+<h3 align="center">多个 Claude 账号，汇成一个会自己分配的池，供 Claude Desktop 使用。</h3>
 
-<p align="center">一个快用完了，另一个接上，对话的缓存也不会白白丢掉。你的隐私信息也会被保护好。</p>
+<p align="center">每个对话、子代理和任务，都交给最合适的账号去做。你的隐私信息也会被保护好。</p>
 
 <table>
   <tr>
-    <td width="66%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/pool-zh-Hans-dark.png"><img alt="Claude Pool：多个 Claude 账号的剩余额度" src="docs/images/pool-zh-Hans-light.png"></picture></td>
-    <td width="34%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/menu-zh-Hans-dark.png"><img alt="菜单栏里每个账号的剩余额度" src="docs/images/menu-zh-Hans-light.png"></picture></td>
+    <td width="66%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/pool-zh-Hans-dark.png?v=0.2.8"><img alt="Claude Pool：多个 Claude 账号的剩余额度" src="docs/images/pool-zh-Hans-light.png?v=0.2.8"></picture></td>
+    <td width="34%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/menu-zh-Hans-dark.png?v=0.2.8"><img alt="菜单栏里每个账号的剩余额度" src="docs/images/menu-zh-Hans-light.png?v=0.2.8"></picture></td>
   </tr>
 </table>
 
@@ -36,9 +36,9 @@
 
 ## 它能做什么
 
-- **所有账号共享额度。** 对话交给剩余最多的账号，这个账号快用完前换到下一个，对话照常继续。
-- **保住提示缓存。** 每个对话尽量留在已有缓存的账号上，只有换号比留下更省时才换。长对话不会在一个又一个账号上整段重写。
-- **并行任务分散跑。** 子代理和并行任务按各账号的剩余额度和忙碌程度分到不同账号。
+- **每份工作都挑最合适的账号。** 每个对话、子代理和短任务都单独分配，综合看各账号的 5 小时、每周和各型号额度还剩多少、什么时候重置、这类工作在那里实测要花多少、账号上已经压了多少活。快重置的额度先用掉，免得浪费；剩下的不够跑下一轮的账号会被跳过。
+- **保住提示缓存。** 对话留在已有缓存的账号上，只有留下比换走更贵时才换。长对话不会在一个又一个账号上整段重写。
+- **并行任务分散跑。** 一个对话的多个子代理同时分到不同账号，不会把一个账号耗光。
 - **全池用完也有交代。** 所有账号都达到上限时，会告诉 Desktop 第一个账号何时恢复，并发通知提醒你；设置了等待重置的 Claude Code 会到点自己继续。
 - **Desktop 里都能用。** Chat、Cowork、Code 都走它，你选的推理强度照样生效，Claude 的思考过程边想边显示。
 - **剩多少、去了哪，一眼看清。** 菜单栏显示每个账号的剩余额度和重置时间，包括 Fable 等型号单独的额度；分配页显示每个对话在哪个账号、为什么在那；用量页显示 token、缓存命中和估算费用。
@@ -49,12 +49,12 @@
 
 <table>
   <tr>
-    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/accounts-zh-Hans-dark.png"><img alt="账号" src="docs/images/accounts-zh-Hans-light.png"></picture></td>
-    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/routing-zh-Hans-dark.png"><img alt="分配" src="docs/images/routing-zh-Hans-light.png"></picture></td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/accounts-zh-Hans-dark.png?v=0.2.8"><img alt="账号" src="docs/images/accounts-zh-Hans-light.png?v=0.2.8"></picture></td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/routing-zh-Hans-dark.png?v=0.2.8"><img alt="分配" src="docs/images/routing-zh-Hans-light.png?v=0.2.8"></picture></td>
   </tr>
   <tr>
-    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/usage-zh-Hans-dark.png"><img alt="用量" src="docs/images/usage-zh-Hans-light.png"></picture></td>
-    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-zh-Hans-dark.png"><img alt="设置" src="docs/images/settings-zh-Hans-light.png"></picture></td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/usage-zh-Hans-dark.png?v=0.2.8"><img alt="用量" src="docs/images/usage-zh-Hans-light.png?v=0.2.8"></picture></td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-zh-Hans-dark.png?v=0.2.8"><img alt="设置" src="docs/images/settings-zh-Hans-light.png?v=0.2.8"></picture></td>
   </tr>
 </table>
 
@@ -85,12 +85,12 @@ Claude Desktop
       │
       ▼
 Claude Pool         ← 先藏好隐私信息
-      │               每个对话留在有缓存的账号上
-      ▼
-你的 Claude 账号    ← 剩余最多的先用，任务分散到各个账号
+      │               给每个对话、子代理、任务挑账号：
+      ▼               看剩余额度、重置时间、花费、负载和缓存
+你的 Claude 账号
 ```
 
-Claude Desktop 把问题交给 Pool。Pool 先把隐私信息藏好；对话所在的账号还有余量就留在那里读缓存，否则挑剩余最多的账号，用官方 Claude Code 去问，答案原路送回 Desktop。想了解细节可以看 [架构](docs/architecture.md)（英文）。
+Claude Desktop 把问题交给 Pool。Pool 先把隐私信息藏好，再分配工作：对话所在的账号还撑得住下一轮，就留在那里读缓存；新对话和子代理交给当下最合适的账号。用官方 Claude Code 去问，答案原路送回 Desktop。想了解细节可以看 [架构](docs/architecture.md)（英文）。
 
 ## 从源码构建
 
