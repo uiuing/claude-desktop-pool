@@ -4,6 +4,8 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-11-12
+
 ### Added
 
 - The Usage page goes down to reasoning effort. Each model in the models table opens to the efforts its replies ran at, with their replies, speed, cache hits, tokens and cost; a filter narrows the page to one effort, and the chart can stack by effort. Replies counted before this version show as "Effort not recorded".
@@ -249,7 +251,8 @@ First public release.
 - Update checks against GitHub Releases with verified one-click install.
 - Option to hide email addresses throughout the app.
 
-[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.9...HEAD
+[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.10...HEAD
+[0.2.10]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.6...v0.2.7
