@@ -166,6 +166,80 @@ final class WorkspaceTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: empty.path))
     }
 
+    func testStaleRunsAndOrphanAccountsGoWithoutFollowingLinks() throws {
+        let base = try fixture(), workspace = OwnedWorkspace(root: base.appendingPathComponent("app"))
+        try workspace.prepare()
+        XCTAssertEqual(workspace.removeStaleRuns(keeping: []), 0)
+        let live = UUID(), crashed = UUID()
+        _ = try run(live, in: workspace)
+        let leftover = try run(crashed, in: workspace)
+        try workspace.write(Data("anything".utf8), to: leftover.appendingPathComponent("work/notes/deep.txt"))
+        let runs = base.appendingPathComponent("app/runs")
+        try workspace.write(Data("keep".utf8), to: runs.appendingPathComponent("not-a-run/file"))
+        let outside = base.appendingPathComponent("outside")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try Data("untouched".utf8).write(to: outside.appendingPathComponent("file"))
+        let linkedRun = runs.appendingPathComponent(UUID().uuidString.lowercased())
+        try FileManager.default.createSymbolicLink(at: linkedRun, withDestinationURL: outside)
+        try FileManager.default.createSymbolicLink(at: leftover.appendingPathComponent("work/link"), withDestinationURL: outside)
+        XCTAssertEqual(workspace.removeStaleRuns(keeping: [live]), 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: leftover.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: runs.appendingPathComponent(live.uuidString.lowercased()).path))
+        XCTAssertEqual(try workspace.read(runs.appendingPathComponent("not-a-run/file")), Data("keep".utf8))
+        XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(atPath: linkedRun.path))
+        XCTAssertEqual(try Data(contentsOf: outside.appendingPathComponent("file")), Data("untouched".utf8))
+
+        let kept = UUID(), orphan = UUID()
+        try workspace.write(Data("kept".utf8), to: try workspace.accountDirectory(kept).appendingPathComponent(".claude.json"))
+        let orphanDirectory = try workspace.accountDirectory(orphan).deletingLastPathComponent()
+        try workspace.write(Data("gone".utf8), to: orphanDirectory.appendingPathComponent("cli/projects/p/s.jsonl"))
+        try FileManager.default.createSymbolicLink(at: orphanDirectory.appendingPathComponent("cli/outside"), withDestinationURL: outside)
+        let accounts = base.appendingPathComponent("app/accounts")
+        try workspace.write(Data("keep".utf8), to: accounts.appendingPathComponent("shared/file"))
+        XCTAssertEqual(workspace.removeOrphanAccounts(keeping: [kept]), 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphanDirectory.path))
+        XCTAssertEqual(try workspace.read(try workspace.accountDirectory(kept).appendingPathComponent(".claude.json")), Data("kept".utf8))
+        XCTAssertEqual(try workspace.read(accounts.appendingPathComponent("shared/file")), Data("keep".utf8))
+        XCTAssertEqual(try Data(contentsOf: outside.appendingPathComponent("file")), Data("untouched".utf8))
+    }
+
+    func testStaleSessionsGoWithTheirToolResultsOnly() throws {
+        let base = try fixture(), workspace = OwnedWorkspace(root: base.appendingPathComponent("app"))
+        try workspace.prepare()
+        let account = UUID(), now = Date()
+        XCTAssertEqual(workspace.removeStaleSessions(account: account, keeping: [], olderThan: 7200, now: now).count, 0)
+        let project = try workspace.accountDirectory(account).appendingPathComponent("projects/-Users-someone-example-work")
+        func session(_ name: String, age: TimeInterval, results: Bool = false) throws -> URL {
+            let file = project.appendingPathComponent(name)
+            try workspace.write(Data("0123456789".utf8), to: file)
+            try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-age)], ofItemAtPath: file.path)
+            if results {
+                try workspace.write(Data("12345".utf8), to: project.appendingPathComponent(
+                    String(name.dropLast(6)) + "/tool-results/toolu_01AbC.json"))
+            }
+            return file
+        }
+        let stale = try session(UUID().uuidString.lowercased() + ".jsonl", age: 3 * 3600, results: true)
+        let upper = try session(UUID().uuidString + ".jsonl", age: 3 * 3600)
+        let keptID = UUID().uuidString.lowercased()
+        let kept = try session(keptID + ".jsonl", age: 3 * 3600, results: true)
+        let fresh = try session(UUID().uuidString.lowercased() + ".jsonl", age: 600)
+        let history = try session("history.jsonl", age: 3 * 3600)
+        let outside = base.appendingPathComponent("outside.jsonl")
+        try Data("untouched".utf8).write(to: outside)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-3 * 3600)], ofItemAtPath: outside.path)
+        let link = project.appendingPathComponent(UUID().uuidString.lowercased() + ".jsonl")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+
+        let result = workspace.removeStaleSessions(account: account, keeping: [keptID.uppercased()], olderThan: 7200, now: now)
+        XCTAssertEqual(result.count, 2)
+        XCTAssertEqual(result.bytes, 25)
+        for gone in [stale, upper, stale.deletingPathExtension()] { XCTAssertFalse(FileManager.default.fileExists(atPath: gone.path)) }
+        for still in [kept, fresh, history, kept.deletingPathExtension()] { XCTAssertTrue(FileManager.default.fileExists(atPath: still.path)) }
+        XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(atPath: link.path))
+        XCTAssertEqual(try Data(contentsOf: outside), Data("untouched".utf8))
+    }
+
     func testLoadingTheLibraryLiftsAnOldModelCooldownOffTheWholeAccount() async throws {
         let workspace = OwnedWorkspace(root: try fixture().appendingPathComponent("app"))
         let store = PoolStore(workspace: workspace)

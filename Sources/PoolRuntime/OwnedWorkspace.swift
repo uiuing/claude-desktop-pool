@@ -172,6 +172,112 @@ public struct OwnedWorkspace: Sendable {
         try remove(Entry(parent: parent, name: name, device: runInfo.st_dev, inode: runInfo.st_ino), directory: true)
     }
 
+    /// Removes run directories left by a run that never finished cleanup (a forced quit or crash).
+    /// Only UUID-named directories absent from `keeping` go; other names, symbolic links and
+    /// anything that fails are left in place. Returns how many directories were removed.
+    public func removeStaleRuns(keeping: Set<UUID>) -> Int {
+        removeUUIDDirectories(in: "runs", keeping: keeping)
+    }
+
+    /// Removes account directories whose account is no longer in the library. Only UUID-named
+    /// directories absent from `keeping` go; the files are unlinked without being opened.
+    public func removeOrphanAccounts(keeping: Set<UUID>) -> Int {
+        removeUUIDDirectories(in: "accounts", keeping: keeping)
+    }
+
+    /// Removes an account's idle conversation transcripts: `projects/<project>/<session>.jsonl`
+    /// written by the official client, with the session's same-named directory beside it
+    /// (tool results). A transcript goes only when its name is a session UUID absent from
+    /// `keeping` and it was last modified before `now - olderThan`. Contents are never read.
+    public func removeStaleSessions(account: UUID, keeping: Set<String>, olderThan: TimeInterval,
+                                    now: Date = Date()) -> (count: Int, bytes: Int64) {
+        let projects: Int32
+        do { projects = try descendant(["accounts", account.uuidString.lowercased(), "cli", "projects"], create: false) }
+        catch { return (0, 0) }
+        defer { close(projects) }
+        let kept = Set(keeping.map { $0.lowercased() })
+        let cutoff = now.addingTimeInterval(-olderThan).timeIntervalSince1970
+        var count = 0, bytes: Int64 = 0
+        for project in (try? Self.names(projects)) ?? [] {
+            guard let folder = try? Self.openDirectory(project, at: projects, create: false) else { continue }
+            defer { close(folder) }
+            for name in (try? Self.names(folder)) ?? [] where name.hasSuffix(".jsonl") {
+                let session = String(name.dropLast(6))
+                guard UUID(uuidString: session) != nil, !kept.contains(session.lowercased()) else { continue }
+                var info = stat()
+                guard fstatat(folder, name, &info, AT_SYMLINK_NOFOLLOW) == 0, info.st_mode & S_IFMT == S_IFREG,
+                      info.st_uid == getuid(),
+                      Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1e9 < cutoff else { continue }
+                guard let removed = try? Self.removeTree(name, in: folder) else { continue }
+                count += 1; bytes += removed
+                var sibling = stat()
+                if fstatat(folder, session, &sibling, AT_SYMLINK_NOFOLLOW) == 0, sibling.st_mode & S_IFMT == S_IFDIR {
+                    bytes += (try? Self.removeTree(session, in: folder)) ?? 0
+                }
+            }
+        }
+        if count > 0 { fsync(projects) }
+        return (count, bytes)
+    }
+
+    /// Removes a directory or file inside the workspace together with everything below it.
+    func removeTree(_ url: URL) throws -> Int64 {
+        let (parent, name) = try parent(of: url, create: false)
+        defer { close(parent) }
+        return try Self.removeTree(name, in: parent)
+    }
+
+    private func removeUUIDDirectories(in folder: String, keeping: Set<UUID>) -> Int {
+        let parent: Int32
+        do { parent = try descendant([folder], create: false) } catch { return 0 }
+        defer { close(parent) }
+        var count = 0
+        for name in (try? Self.names(parent)) ?? [] {
+            guard let id = UUID(uuidString: name), !keeping.contains(id) else { continue }
+            var info = stat()
+            guard fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) == 0, info.st_mode & S_IFMT == S_IFDIR else { continue }
+            if (try? Self.removeTree(name, in: parent)) != nil { count += 1 }
+        }
+        if count > 0 { fsync(parent) }
+        return count
+    }
+
+    /// Unlinks `name` in `parent` and, for a directory, everything below it, returning the bytes of
+    /// the regular files removed. Symbolic links are unlinked, never followed; every directory is
+    /// opened with `O_NOFOLLOW` and matched by device and inode before and after its contents go,
+    /// so a swapped entry is refused. Only entries owned by this user are touched. A child that
+    /// fails is skipped and leaves its parent directory in place; the error is then rethrown.
+    private static func removeTree(_ name: String, in parent: Int32, depth: Int = 0) throws -> Int64 {
+        var info = stat()
+        guard fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else {
+            if errno == ENOENT { return 0 }
+            throw RuntimeError.storageFailure
+        }
+        guard info.st_uid == getuid() else { throw RuntimeError.unsafePath }
+        guard info.st_mode & S_IFMT == S_IFDIR else {
+            guard unlinkat(parent, name, 0) == 0 else { throw RuntimeError.storageFailure }
+            return info.st_mode & S_IFMT == S_IFREG ? Int64(info.st_size) : 0
+        }
+        guard depth < 64 else { throw RuntimeError.unsafePath }
+        let directory = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard directory >= 0 else { throw RuntimeError.unsafePath }
+        defer { close(directory) }
+        var opened = stat()
+        guard fstat(directory, &opened) == 0, opened.st_dev == info.st_dev, opened.st_ino == info.st_ino else {
+            throw RuntimeError.unsafePath
+        }
+        var bytes: Int64 = 0, failure: Error?
+        for child in try names(directory) {
+            do { bytes += try removeTree(child, in: directory, depth: depth + 1) } catch { failure = error }
+        }
+        if let failure { throw failure }
+        var current = stat()
+        guard fstatat(parent, name, &current, AT_SYMLINK_NOFOLLOW) == 0,
+              current.st_dev == info.st_dev, current.st_ino == info.st_ino else { throw RuntimeError.unsafePath }
+        guard unlinkat(parent, name, AT_REMOVEDIR) == 0 else { throw RuntimeError.storageFailure }
+        return bytes
+    }
+
     /// A tool call's id as it may name a result file: the one rule its writers and cleanup share.
     public static func isCallID(_ id: String) -> Bool {
         !id.isEmpty && id.utf8.count <= 128 &&

@@ -140,6 +140,43 @@ final class ManagedRuntimeTests: XCTestCase {
         XCTAssertTrue(requested.allSatisfy(OfficialRuntimeDownloader.isOfficialURL))
     }
 
+    func testInstallPrunesVersionsBeyondCurrentAndPrevious() async throws {
+        let workspace = try workspace(), downloads = ReleaseDownloads()
+        let runtime = ManagedRuntime(workspace: workspace, platform: .macOSArm64, downloader: downloads)
+        let versions = workspace.root.appendingPathComponent("runtime/versions")
+        let stray = versions.appendingPathComponent("2.1.299/darwin-arm64/claude")
+        try workspace.write(Data("unselected".utf8), to: stray)
+        let none = await runtime.pruneVersions(); XCTAssertEqual(none, [])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stray.path))
+        try FileManager.default.removeItem(at: versions.appendingPathComponent("2.1.299"))
+
+        _ = try await release("2.1.300", downloads: downloads, body: "first")
+        let first = try await runtime.installLatest()
+        let staging = versions.appendingPathComponent(".download-\(UUID().uuidString).part")
+        try workspace.write(Data("partial".utf8), to: staging)
+        try workspace.write(Data("keep".utf8), to: versions.appendingPathComponent("notes/readme"))
+        let outside = workspace.root.deletingLastPathComponent().appendingPathComponent("outside-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: outside) }
+        try Data("untouched".utf8).write(to: outside.appendingPathComponent("claude"))
+        try FileManager.default.createSymbolicLink(at: versions.appendingPathComponent("2.1.298"), withDestinationURL: outside)
+
+        let secondBytes = try await release("2.1.301", downloads: downloads, body: "second")
+        let second = try await runtime.installLatest()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: first.executable.path))
+        let thirdBytes = try await release("2.1.302", downloads: downloads, body: "third")
+        let third = try await runtime.installLatest()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: versions.appendingPathComponent("2.1.300").path))
+        XCTAssertEqual(try workspace.read(second.executable), secondBytes)
+        XCTAssertEqual(try workspace.read(third.executable), thirdBytes)
+        XCTAssertEqual(try workspace.read(staging), Data("partial".utf8))
+        XCTAssertEqual(try workspace.read(versions.appendingPathComponent("notes/readme")), Data("keep".utf8))
+        XCTAssertEqual(try Data(contentsOf: outside.appendingPathComponent("claude")), Data("untouched".utf8))
+        let again = await runtime.pruneVersions(); XCTAssertEqual(again, [])
+        let previous = try await runtime.previousInstallation(); XCTAssertEqual(previous, second)
+        let rolledBack = try await runtime.rollback(); XCTAssertEqual(rolledBack, second)
+    }
+
     func testFailedChecksumSizeOrArchitecturePreservesCurrentVersion() async throws {
         let workspace = try workspace(), downloads = ReleaseDownloads()
         let runtime = ManagedRuntime(workspace: workspace, platform: .macOSArm64, downloader: downloads)

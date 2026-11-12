@@ -153,6 +153,36 @@ public actor ManagedRuntime {
         return result
     }
 
+    /// Removes installed versions other than the selected one and the previous one kept for
+    /// rollback, with their receipts. Nothing is removed while an install is running, when no
+    /// version is selected, or when the selection cannot be read; names that are not versions
+    /// (such as download staging) are left alone. Workers already running a removed version are
+    /// unaffected: on macOS a running process keeps its opened executable after the directory
+    /// entry is unlinked, so they keep their original executable until they exit.
+    /// Returns the versions removed.
+    @discardableResult
+    public func pruneVersions() -> [String] {
+        guard !installing else { return [] }
+        return prune()
+    }
+
+    private func prune() -> [String] {
+        guard let selection = try? selection(), selection.platform == platform else { return [] }
+        let kept = Set([selection.version] + (selection.previous.map { [$0] } ?? []))
+        let versions = workspace.root.appendingPathComponent("runtime/versions", isDirectory: true)
+        guard let entries = try? workspace.entries(in: versions) else { return [] }
+        var removed: [String] = []
+        for entry in entries {
+            let version = entry.lastPathComponent
+            guard Self.validVersion(version), !kept.contains(version) else { continue }
+            if (try? workspace.removeTree(entry)) != nil {
+                verified[version] = nil
+                removed.append(version)
+            }
+        }
+        return removed
+    }
+
     private func latest() async throws -> RuntimeRelease {
         let bytes = try await metadata(Self.base.appendingPathComponent("latest"), limit: 256)
         guard let text = String(data: bytes, encoding: .utf8) else { throw RuntimeInstallError.invalidRelease }
@@ -198,6 +228,7 @@ public actor ManagedRuntime {
         try workspace.write(JSONEncoder().encode(release), to: receiptURL(release.version))
         let keepPrevious = previous?.version == release.version ? previous?.previous : previous?.version
         try saveSelection(Selection(version: release.version, previous: keepPrevious, platform: platform))
+        _ = prune()
         progress(.completed(version: release.version))
         return ManagedRuntimeInstallation(version: release.version, executable: executable, platform: platform)
     }
