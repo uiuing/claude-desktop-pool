@@ -24,7 +24,7 @@ struct ClaudePoolApplication: App {
 
     init() {
         let demo = CommandLine.arguments.contains("--demo")
-        let model = demo ? PoolAppModel.demoModel() : PoolAppModel()
+        let model = demo ? PoolAppModel.showcaseModel() : PoolAppModel()
         _model = State(initialValue: model)
         var dependencies = AppServiceDependencies(); dependencies.desktop = .live
         services = AppServices(model: model, dependencies: dependencies)

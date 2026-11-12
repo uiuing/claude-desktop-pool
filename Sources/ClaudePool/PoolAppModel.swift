@@ -1005,6 +1005,60 @@ final class PoolAppModel {
         model.referenceDate = date
         return model
     }
+    /// The demo as a pool is used today, for the README and `--demo`: mostly Pro accounts, one conversation
+    /// with its subagents on three of them, one moved off an account at its 5-hour limit, one week used up.
+    /// Tests keep `demoModel`, whose four accounts they count on.
+    static func showcaseModel(language: String = "en") -> PoolAppModel {
+        let model = demoModel(language: language)
+        let date = model.now
+        let ids = (1...8).map { UUID(uuidString: "0a1b2c3d-3333-4aaa-8bbb-00000000000\($0)")! }
+        func limits(_ session: Double?, _ week: Double, resets: TimeInterval = 7200) -> [QuotaWindow] {
+            let week = QuotaWindow(id: "seven_day", usedPercent: week, observedAt: date.addingTimeInterval(-60), resetsAt: date.addingTimeInterval(172_800))
+            guard let session else { return [week] }
+            return [.init(id: "five_hour", usedPercent: session, observedAt: date.addingTimeInterval(-60), resetsAt: date.addingTimeInterval(resets)), week]
+        }
+        func fable(_ used: Double) -> QuotaWindow {
+            .init(id: QuotaWindow.overageIncludedID, usedPercent: used, observedAt: date.addingTimeInterval(-60), resetsAt: date.addingTimeInterval(172_800))
+        }
+        model.snapshot.accounts = [
+            PoolAccount(id: ids[0], email: "avery@example.com", plan: "Pro", state: .ready, windows: limits(34, 41, resets: 9000), createdAt: date),
+            PoolAccount(id: ids[1], email: "blake@example.org", plan: "Pro", state: .ready, windows: limits(22, 30, resets: 10_800), createdAt: date),
+            PoolAccount(id: ids[2], email: "casey@example.net", plan: "Pro", state: .ready, windows: limits(48, 55, resets: 6300), createdAt: date),
+            PoolAccount(id: ids[3], email: "dana@example.com", plan: "Pro", state: .limited, windows: limits(100, 62, resets: 5400),
+                        cooldownUntil: date.addingTimeInterval(5400), createdAt: date),
+            PoolAccount(id: ids[4], email: "emery@example.org", plan: "Pro", state: .ready, windows: limits(9, 18, resets: 16_200), createdAt: date),
+            PoolAccount(id: ids[5], email: "finley@example.net", plan: "Pro", state: .limited, windows: limits(30, 100, resets: 12_600),
+                        cooldownUntil: date.addingTimeInterval(86_400), createdAt: date),
+            PoolAccount(id: ids[6], email: "harper@example.com", plan: "Max 5x", state: .ready, windows: limits(41, 27) + [fable(28)], createdAt: date),
+            PoolAccount(id: ids[7], email: "jordan@example.org", plan: "Ultra", state: .ready, windows: limits(nil, 36) + [fable(10)], createdAt: date)
+        ]
+        let sessions = (1...6).map { UUID(uuidString: "1a1b2c3d-3333-4aaa-8bbb-00000000000\($0)")! }
+        model.snapshot.sessions = [
+            .init(id: sessions[0], accountID: ids[0], name: "Refactor the parser", model: "Opus", state: .waiting, startedAt: date.addingTimeInterval(-900), conversation: "showcase-1"),
+            // The conversation waits on its subagents, spread by what each account has left.
+            .init(id: sessions[1], accountID: ids[1], name: "Claude session", model: "Opus", state: .running, startedAt: date.addingTimeInterval(-240), conversation: "showcase-1"),
+            .init(id: sessions[2], accountID: ids[2], name: "Claude session", model: "Opus", state: .running, startedAt: date.addingTimeInterval(-235), conversation: "showcase-1"),
+            .init(id: sessions[3], accountID: ids[6], name: "Plan the next release", model: "Opus", state: .waiting, startedAt: date.addingTimeInterval(-1500), conversation: "showcase-2"),
+            .init(id: sessions[4], accountID: ids[7], name: "Review open issues", model: "Sonnet", state: .running, startedAt: date.addingTimeInterval(-420), conversation: "showcase-3"),
+            // Conversation 3's title request: on its account, part of it.
+            .init(id: sessions[5], accountID: ids[7], name: "Claude session", model: "Haiku", state: .idle, startedAt: date.addingTimeInterval(-410), conversation: "showcase-3")
+        ]
+        model.generatingSessionIDs = Set(model.snapshot.sessions.filter { $0.state == .running }.map(\.id))
+        model.quotaCadence = [ids[0]: .init(interval: 30, demand: 2, generatingSessions: 2)]
+        model.warmUp = [ids[4]: .init(warmedAt: date.addingTimeInterval(-3600))]
+        model.preferences.warmUp = .init(onReset: .week)
+        model.routeDecisions = [
+            .init(timestamp: date.addingTimeInterval(-1500), sessionID: sessions[3], accountID: ids[6], model: "Opus", reason: .headroom, strategy: .mostHeadroom),
+            .init(timestamp: date.addingTimeInterval(-900), sessionID: sessions[0], accountID: ids[3], model: "Opus", reason: .lowQuota, strategy: .mostHeadroom),
+            .init(timestamp: date.addingTimeInterval(-899), sessionID: sessions[0], accountID: ids[0], model: "Opus", reason: .failover, strategy: .mostHeadroom),
+            .init(timestamp: date.addingTimeInterval(-420), sessionID: sessions[4], accountID: ids[7], model: "Sonnet", reason: .headroom, strategy: .mostHeadroom),
+            .init(timestamp: date.addingTimeInterval(-240), sessionID: sessions[1], accountID: ids[1], model: "Opus", reason: .parallelWork, strategy: .mostHeadroom),
+            .init(timestamp: date.addingTimeInterval(-235), sessionID: sessions[2], accountID: ids[2], model: "Opus", reason: .parallelWork, strategy: .mostHeadroom),
+            .init(timestamp: date.addingTimeInterval(-60), sessionID: sessions[0], accountID: ids[0], model: "Opus", reason: .sessionAffinity, strategy: .mostHeadroom)
+        ]
+        model.usage = demoUsage(ids: ids, now: date)
+        return model
+    }
     /// Thirty days of replies across the demo accounts, the same on every run: a few accounts carry most
     /// of the work, as in a real pool. Times count back from the demo clock, so today has replies too.
     static func demoUsage(ids: [UUID], now: Date) -> UsageLedger {

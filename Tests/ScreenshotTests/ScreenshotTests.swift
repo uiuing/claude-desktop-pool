@@ -18,7 +18,7 @@ final class ScreenshotTests: XCTestCase {
         for language in L10n.languages.map(\.code) {
             for dark in [false, true] {
                 let suffix = "\(language)-\(dark ? "dark" : "light")"
-                let model = PoolAppModel.demoModel(language: language)
+                let model = PoolAppModel.showcaseModel(language: language)
                 for page in PoolPage.allCases.filter({ $0 != .pool && $0 != .settings }) {
                     model.page = page
                     try await capture(MainWindow(model: model), size: .init(width: 680, height: 560), dark: dark,
@@ -141,7 +141,7 @@ final class ScreenshotTests: XCTestCase {
         NSApplication.shared.setActivationPolicy(.accessory)
         for language in L10n.languages.map(\.code) {
             for dark in [false, true] {
-                let model = PoolAppModel.demoModel(language: language)
+                let model = PoolAppModel.showcaseModel(language: language)
                 let suffix = "\(language)-\(dark ? "dark" : "light")"
                 try await capture(MainWindow(model: model), size: .init(width: 680, height: 560), dark: dark,
                                   to: output.appendingPathComponent("pool-\(suffix).png"))
@@ -160,7 +160,7 @@ final class ScreenshotTests: XCTestCase {
         NSApplication.shared.setActivationPolicy(.accessory)
         for language in L10n.languages.map(\.code) {
             for dark in [false, true] {
-                let model = PoolAppModel.demoModel(language: language)
+                let model = PoolAppModel.showcaseModel(language: language)
                 try await capture(MenuPanel(model: model), size: .init(width: 340, height: 980), dark: dark,
                                   to: output.appendingPathComponent("menu-\(language)-\(dark ? "dark" : "light").png"))
                 // The menu bar item at 4x: the usual two lines, and a model limit with less left than the week.
@@ -270,7 +270,7 @@ final class ScreenshotTests: XCTestCase {
         NSApplication.shared.setActivationPolicy(.accessory)
         for language in L10n.languages.map(\.code) {
             for dark in [false, true] {
-                let model = PoolAppModel.demoModel(language: language)
+                let model = PoolAppModel.showcaseModel(language: language)
                 let suffix = "\(language)-\(dark ? "dark" : "light")"
                 model.page = .settings
                 model.runtime.previousVersion = "2.1.300"

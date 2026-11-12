@@ -43,7 +43,7 @@ You have more than one Claude account, and in Claude Desktop:
 - **Works everywhere in Desktop.** Chat, Cowork and Code, with the reasoning effort you pick and Claude's thinking shown as it streams.
 - **Shows what's left and where work goes.** Every account's quota and reset in the menu bar, including model limits such as Fable's; the Routing page shows which account each conversation is on and why; the Usage page shows tokens, cache hits and estimated cost.
 - **Protects your privacy.** Keys, passwords, emails and other private info are hidden on your Mac before anything is sent, and put back in the reply.
-- **Looks after itself.** Starts each weekly limit at its reset so the next one comes sooner, keeps Claude Code up to date, never agrees to usage credits, and clears out old files.
+- **Looks after itself.** Can start each weekly limit at its reset so the next one comes sooner; keeps Claude Code up to date, never agrees to usage credits, and clears out old files.
 - **Connects in one click.** No signing out, no setup; disconnect any time.
 - **Uses the official Claude Code** with your own accounts. No API keys.
 
