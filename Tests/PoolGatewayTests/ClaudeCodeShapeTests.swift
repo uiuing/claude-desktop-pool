@@ -166,6 +166,30 @@ final class ClaudeCodeShapeTests: XCTestCase {
         XCTAssertEqual(marked, [false, true, false])
     }
 
+    /// Subagents of one type, side by side in one Desktop session (a run of 11-12 had three such tasks,
+    /// over 200 messages each): the same session id, model, instructions and tools, told apart only by
+    /// `x-claude-code-agent-id`. Each is a conversation of its own, so one's turn never replaces the run
+    /// that waits on another's calls; the session before the first "#" still names the conversation
+    /// they work for, which keeps them off each other's account.
+    func testRouterKeepsEachSubagentItsOwnConversation() throws {
+        let router = try GatewayRouter(port: 18473, token: String(repeating: "ab", count: 32))
+        let headers = ["host": "127.0.0.1:18473", "authorization": "Bearer " + String(repeating: "ab", count: 32),
+                       "content-type": "application/json"]
+        func id(_ extra: [String: String]) throws -> String {
+            guard case .messages(_, let id, _) = try router.route(.init(method: "POST", path: "/v1/messages",
+                    headers: headers.merging(extra) { $1 }, body: body(turn))) else { XCTFail("A Claude Code request was not served"); return "" }
+            return id
+        }
+        let main = try id([:]), a = try id(["x-claude-code-agent-id": "a1b2c3d4e5f60718"])
+        let again = try id(["x-claude-code-agent-id": "a1b2c3d4e5f60718"]), b = try id(["x-claude-code-agent-id": "f0e1d2c3b4a59687"])
+        XCTAssertEqual(a, again, "A subagent's requests are one conversation")
+        XCTAssertNotEqual(a, b, "Two subagents of one type are two conversations")
+        XCTAssertNotEqual(a, main, "A subagent is not its conversation's own turns")
+        XCTAssertEqual(try id(["x-claude-code-agent-id": "  "]), main, "A blank agent id is the conversation's own turn")
+        XCTAssertEqual(Set([main, a, b].map { $0.split(separator: "#", maxSplits: 1).first.map(String.init) }), ["fixture-session"])
+        XCTAssertFalse(a.contains("a1b2c3d4e5f60718"), "The header's value stays out of the key")
+    }
+
     func testRequestsWithoutToolSearchAreUnchanged() throws {
         let plain = #"""
         [{"name":"Bash","description":"Run a command","input_schema":{"type":"object"}},

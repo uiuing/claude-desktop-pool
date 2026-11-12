@@ -148,10 +148,23 @@ public enum GatewayRequestValidation {
     /// its own conversation, so a side request neither waits behind nor replaces the main one.
     /// Deferred tools load and unload within one conversation, so only the tools the client always
     /// offers, by name, tell its conversations apart.
-    public static func conversationKey(session: String, request: BridgeRequest) -> String {
-        conversationKey(session: session, shape: shape(of: request, tools: request.tools?.map(\.name) ?? []))
+    /// Each of the client's subagents (`x-claude-code-agent-id`) is a conversation of its own within the
+    /// session: subagents of one type ask with the same model, instructions and tools, so by shape alone
+    /// one's turn was taken for another's and replaced the run that waited on that one's calls. The
+    /// agent goes after the shape: the session before the first "#" still names the conversation they
+    /// work for (`PoolCoordinator.conversationTag`), which keeps parallel subagents off each other's account.
+    public static func conversationKey(session: String, request: BridgeRequest, agent: String? = nil) -> String {
+        conversationKey(session: session, shape: shape(of: request, tools: request.tools?.map(\.name) ?? []), agent: agent)
     }
-    public static func conversationKey(session: String, shape: String) -> String { session + "#" + shape }
+    public static func conversationKey(session: String, shape: String, agent: String? = nil) -> String {
+        session + "#" + shape + (agentKey(agent).map { "#agent:" + $0 } ?? "")
+    }
+    /// The subagent a request is of, as a key: a digest, so whatever the header holds stays out of the key.
+    /// Nil for the conversation's own turns, which send none.
+    static func agentKey(_ agent: String?) -> String? {
+        guard let agent = agent?.trimmingCharacters(in: .whitespaces), !agent.isEmpty else { return nil }
+        return SHA256.hash(data: Data(agent.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
     /// How a turn is keyed: the model, instructions and
     /// tools, and what the turn may call, whether it searches and the schema of its answer, so a title or
     /// summary asked with tool_choice none of a long conversation is a conversation of its own.

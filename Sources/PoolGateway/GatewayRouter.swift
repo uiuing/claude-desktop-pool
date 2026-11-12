@@ -50,9 +50,10 @@ public struct GatewayRouter: Sendable {
                 return .check(model: check.model, requestedModel: check.requested, stream: check.stream)
             }
             var (body, requested, shape) = try GatewayRequestValidation.decodeRequest(request.body, models: models)
-            body.subagent = !(request.headers["x-claude-code-agent-id"] ?? "").isEmpty
+            let agent = request.headers["x-claude-code-agent-id"]
+            body.subagent = GatewayRequestValidation.agentKey(agent) != nil
             let id = try GatewayRequestValidation.conversationID(headers: request.headers, request: body)
-                .map { GatewayRequestValidation.conversationKey(session: $0, shape: shape) } ?? "request:\(UUID().uuidString)"
+                .map { GatewayRequestValidation.conversationKey(session: $0, shape: shape, agent: agent) } ?? "request:\(UUID().uuidString)"
             return .messages(body, conversationID: id, requestedModel: requested)
         default: throw GatewayHTTPError(status: 404, message: "This local route is not supported.")
         }

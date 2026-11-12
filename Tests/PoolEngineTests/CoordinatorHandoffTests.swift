@@ -230,6 +230,8 @@ final class CoordinatorHandoffTests: XCTestCase {
         XCTAssertEqual(tags[Diagnostics.tag("desktop-2")], [accounts[1].id])
         XCTAssertEqual(PoolCoordinator.conversationTag("privacy:\(UUID().uuidString)@\(Diagnostics.tag("desktop-1"))"), Diagnostics.tag("desktop-1"))
         XCTAssertNil(PoolCoordinator.conversationTag("request:\(UUID().uuidString)"))
+        // a subagent's key carries its agent after the shape: it is still its conversation's
+        XCTAssertEqual(PoolCoordinator.conversationTag("desktop-1#shape#agent:0011223344556677"), Diagnostics.tag("desktop-1"))
         // The title is a one-off ask (no tools, no earlier reply): its run ended once it answered.
         XCTAssertEqual(sessions.count, 2)
         XCTAssertFalse(sessions.contains { $0.isOneOff })
