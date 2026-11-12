@@ -8,6 +8,18 @@ import ViewInspector
 final class ProductPresentationTests: XCTestCase {
     private static var windows: [NSWindow] = []
 
+    /// Three accounts in use drew the first lane onto the second: it alone was pushed down.
+    func testRouteLanesNeverOverlap() {
+        for count in 1...RoutingFlowView.laneLimit {
+            let total = CGFloat(count) * RoutingFlowView.laneHeight + CGFloat(count - 1) * RoutingFlowView.laneGap
+            let centers = RoutingFlowView.laneCenters(count: count, height: max(104, total))
+            XCTAssertGreaterThanOrEqual(centers.first! - RoutingFlowView.laneHeight / 2, 0, "\(count) lanes")
+            for (upper, lower) in zip(centers, centers.dropFirst()) {
+                XCTAssertGreaterThanOrEqual(lower - upper, RoutingFlowView.laneHeight + RoutingFlowView.laneGap, "\(count) lanes")
+            }
+        }
+    }
+
     func testAboutSaysWhatThePoolDoesInEveryLanguage() {
         for language in ["zh-Hans", "zh-Hant", "ja", "ko"] {
             let model = PoolAppModel.demoModel(language: language)

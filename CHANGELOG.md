@@ -4,6 +4,10 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+### Fixed
+
+- The Routing page no longer draws the first of three accounts in use over the second.
+
 ## [0.2.7] - 2026-11-12
 
 ### Fixed

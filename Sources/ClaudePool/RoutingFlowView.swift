@@ -58,7 +58,8 @@ struct RoutingFlowView: View {
         return conversation.isWorking && conversation.state != .waiting
     }
 
-    private static let laneHeight: CGFloat = 40, laneGap: CGFloat = 8
+    /// A lane holds three lines: the account, its badges and its limits.
+    static let laneHeight: CGFloat = 46, laneGap: CGFloat = 8
     private func flow(lanes: [Lane], hidden: Int, working: Bool) -> some View {
         let count = CGFloat(max(1, lanes.count))
         let height = max(104, count * Self.laneHeight + (count - 1) * Self.laneGap + (hidden > 0 ? 18 : 0))
@@ -98,14 +99,13 @@ struct RoutingFlowView: View {
             }
         }.frame(height: height)
     }
-    private static func laneCenters(count: Int, height: CGFloat) -> [CGFloat] {
+    /// Where each lane's middle goes. The lanes move together: a column taller than the room starts at
+    /// its top rather than pushing its first lane down onto the next.
+    static func laneCenters(count: Int, height: CGFloat) -> [CGFloat] {
         let total = CGFloat(count) * laneHeight + CGFloat(max(0, count - 1)) * laneGap
-        let top = (height - total) / 2 - 10
+        let top = Swift.max(0, (height - total) / 2 - 10)
         let half: CGFloat = laneHeight / 2, step: CGFloat = laneHeight + laneGap
-        return (0..<count).map { index -> CGFloat in
-            let center: CGFloat = top + half + CGFloat(index) * step
-            return Swift.max(half, center)
-        }
+        return (0..<count).map { index in top + half + CGFloat(index) * step }
     }
 
     /// One account on the right: who, and how it is used, with the same badges as everywhere else.
