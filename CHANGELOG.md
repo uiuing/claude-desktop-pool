@@ -8,6 +8,10 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 - Subagents of the same type working at once no longer take each other's place. Each one now keeps its own session, so one subagent's next step no longer ends another that was waiting on a tool, and neither has its whole history sent again.
 
+### Changed
+
+- A conversation starts sooner. An account confirmed signed in within the last five minutes is not checked again before each new session; a failed check, a new sign-in or removing the account still clears that at once.
+
 ## [0.2.12] - 2026-11-13
 
 ### Fixed

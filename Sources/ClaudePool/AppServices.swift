@@ -87,6 +87,12 @@ final class AppServices {
     }
     private var checkingAccounts: Set<UUID> = []
     private var accountChecks: [UUID: Task<AuthStatus, Error>] = [:]
+    /// When a check last found each account signed in, subscribed and ready. A run that starts within
+    /// `checkReuse` of it starts without asking the client again (`prepareWorker`): every run used to
+    /// wait for a check of its own, a side request's included. A failed check, a sign-in and a removal
+    /// clear it, and a run that finds its sign-in lost still says so itself.
+    private var confirmedChecks: [UUID: (at: Date, status: AuthStatus)] = [:]
+    private static let checkReuse: TimeInterval = 300
     private var terminalScreens: [UUID: TerminalScreen] = [:]
     private var terminalLinkCollectors: [UUID: TerminalLinkCollector] = [:]
     private var loaded = false
@@ -744,6 +750,7 @@ final class AppServices {
     private func quiesceAccount(_ id: UUID) async throws {
         guard loginProcesses[id] == nil, !checkingAccounts.contains(id),
               let previous = library.accounts.first(where: { $0.id == id }) else { throw RuntimeError.processBusy }
+        confirmedChecks.removeValue(forKey: id)
         // Stop admitting requests before awaiting either type of owned process.
         try await mutate { next in
             if let index = next.accounts.firstIndex(where: { $0.id == id }) { next.accounts[index].state = .disabled }
@@ -760,6 +767,7 @@ final class AppServices {
     }
 
     private func track(_ child: OwnedPTY, accountID id: UUID, verifyOnExit: Bool) {
+        confirmedChecks.removeValue(forKey: id)
         loginProcesses[id] = child; terminalScreens[id] = TerminalScreen(); terminalLinkCollectors[id] = TerminalLinkCollector()
         presentLogin(id)
         Task { [weak self] in
@@ -916,6 +924,8 @@ final class AppServices {
                 if duplicate { next.accounts[index].state = .disabled }
                 after = next.accounts[index]
             }
+            if status.subscribed, !duplicate, after?.state == .ready { confirmedChecks[id] = (Date(), status) }
+            else { confirmedChecks.removeValue(forKey: id) }
             if !automatic { await quotaService?.resume(accountID: id) }
             if duplicate { model.notice = model.t("This account is already connected. The duplicate sign-in is excluded from routing.") }
             else if automatic, let before, let after {
@@ -932,6 +942,7 @@ final class AppServices {
             return status
         } catch {
             let failure = error
+            confirmedChecks.removeValue(forKey: id)
             if let process = client.activeProcess(accountID: id) as? OwnedPTY, loginProcesses[id] == nil {
                 track(process, accountID: id, verifyOnExit: false)
             }
@@ -1086,11 +1097,17 @@ final class AppServices {
     private func prepareWorker(account: PoolAccount, model: PoolModel, workspace: OwnedWorkspace,
                                helper: URL, runtime: ManagedRuntime) async throws -> any SessionWorker {
         let status: AuthStatus
-        do { status = try await checkAccount(account.id, refreshQuota: false) }
-        catch RuntimeError.signedOut { throw BridgeFailure.accountUnavailable(.signedOut) }
-        catch RuntimeError.unsupportedAuthentication { throw BridgeFailure.accountUnavailable(.needsAttention) }
-        catch RuntimeError.processBusy { throw BridgeFailure.busy }
-        catch RuntimeError.invalidAuthentication { throw BridgeFailure.compatibility }
+        if let confirmed = confirmedChecks[account.id], loginProcesses[account.id] == nil,
+           case let age = Date().timeIntervalSince(confirmed.at), age >= 0, age < Self.checkReuse {
+            status = confirmed.status
+            Diagnostics.record("account.check", ["account": Diagnostics.id(account.id), "outcome": "reused", "age_s": "\(Int(age))"])
+        } else {
+            do { status = try await checkAccount(account.id, refreshQuota: false) }
+            catch RuntimeError.signedOut { throw BridgeFailure.accountUnavailable(.signedOut) }
+            catch RuntimeError.unsupportedAuthentication { throw BridgeFailure.accountUnavailable(.needsAttention) }
+            catch RuntimeError.processBusy { throw BridgeFailure.busy }
+            catch RuntimeError.invalidAuthentication { throw BridgeFailure.compatibility }
+        }
         guard status.subscribed, let current = library.accounts.first(where: { $0.id == account.id }), current.state == .ready else {
             throw BridgeFailure.accountUnavailable(status.subscription == .required ? .subscriptionRequired : .needsAttention)
         }

@@ -744,6 +744,27 @@ final class AppServicesTests: XCTestCase {
         XCTAssertNil(app.services.listeningPort)
     }
 
+    func testRunsSoonAfterAConfirmedCheckReuseItAndAManualCheckStillAsks() async throws {
+        let account = PoolAccount(email: "mi•••ella@example.com", plan: "Pro", state: .ready)
+        let app = try await application(accounts: [account], connected: true, workerFactory: { _, _ in AppWorker() })
+        await eventually("The pool did not start once setup was complete") { app.services.listeningPort != nil }
+        // the fixture client writes its command log at its first command
+        func checks() throws -> Int {
+            do { return try app.auth.commands(account.id).filter { $0 == "auth status" }.count }
+            catch RuntimeError.missingFile { return 0 }
+        }
+        let before = try checks()
+        for text in ["First synthetic question.", "Second synthetic question."] {
+            let answered = try await request(app, text: text)
+            XCTAssertEqual(answered.0, 200)
+        }
+        XCTAssertLessThanOrEqual(try checks() - before, 1, "A run soon after a confirmed check must not ask the client again")
+        let afterRuns = try checks()
+        await app.services.handle(.checkAccount(account.id))
+        XCTAssertEqual(try checks(), afterRuns + 1, "A check the person asks for still asks the client")
+        let closed = await app.services.prepareToQuit(); XCTAssertTrue(closed)
+    }
+
     func testPrivacyNotReadyBlocksStartAndLaterModelFailureSendsWithTheRulesAlone() async throws {
         let account = PoolAccount(email: "mi•••ella@example.com", plan: "Pro", state: .ready)
         let detector = AppPrivacyModel(ready: false), worker = AppWorker()
