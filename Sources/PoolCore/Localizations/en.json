@@ -695,9 +695,9 @@
   "{0} 7 days: {1}% left": "{0} 7 days: {1}% left",
   "The menu bar shows this plan's limits and its tightest model limit.": "The menu bar shows this plan's limits and its tightest model limit.",
   "All your Claude accounts, one pool for Claude Desktop.": "All your Claude accounts, one pool for Claude Desktop.",
-  "A conversation goes to the account with the most left, and moves on when that one runs low.": "A conversation goes to the account with the most left, and moves on when that one runs low.",
+  "Each conversation, subagent and task goes to the account best placed for it: what its limits have left, when they reset, and what the work costs there.": "Each conversation, subagent and task goes to the account best placed for it: what its limits have left, when they reset, and what the work costs there.",
   "Each conversation stays on its account to read its prompt cache, and moves only when that costs less.": "Each conversation stays on its account to read its prompt cache, and moves only when that costs less.",
-  "Subagents and parallel tasks spread across accounts by what each has left.": "Subagents and parallel tasks spread across accounts by what each has left.",
+  "A conversation's subagents run on different accounts at once, by what each has left and how busy it is.": "A conversation's subagents run on different accounts at once, by what each has left and how busy it is.",
   "When every account is at its limit, Desktop is told when the first is back, and you get a notification.": "When every account is at its limit, Desktop is told when the first is back, and you get a notification.",
   "Keys, passwords and personal info are hidden on this Mac before anything is sent.": "Keys, passwords and personal info are hidden on this Mac before anything is sent."
 }

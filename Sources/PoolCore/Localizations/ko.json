@@ -695,9 +695,9 @@
   "{0} 7 days: {1}% left": "{0} 7일: {1}% 남음",
   "The menu bar shows this plan's limits and its tightest model limit.": "메뉴 막대에는 이 플랜의 한도와 남은 양이 가장 적은 모델 한도가 표시됩니다.",
   "All your Claude accounts, one pool for Claude Desktop.": "모든 Claude 계정을 Claude Desktop을 위한 하나의 풀로.",
-  "A conversation goes to the account with the most left, and moves on when that one runs low.": "대화는 남은 양이 가장 많은 계정에서 진행되고, 그 계정이 부족해지면 다음 계정으로 넘어갑니다.",
+  "Each conversation, subagent and task goes to the account best placed for it: what its limits have left, when they reset, and what the work costs there.": "대화, 서브에이전트, 작업마다 가장 알맞은 계정에 배정됩니다. 각 한도의 남은 양, 복구 시각, 그 계정에서 드는 작업 비용을 봅니다.",
   "Each conversation stays on its account to read its prompt cache, and moves only when that costs less.": "대화는 캐시를 읽을 수 있도록 같은 계정에 머물고, 옮기는 편이 더 저렴할 때만 옮깁니다.",
-  "Subagents and parallel tasks spread across accounts by what each has left.": "서브에이전트와 병렬 작업은 각 계정의 남은 양에 따라 나뉘어 실행됩니다.",
+  "A conversation's subagents run on different accounts at once, by what each has left and how busy it is.": "대화의 서브에이전트는 각 계정의 남은 양과 바쁜 정도에 따라 여러 계정에서 동시에 실행됩니다.",
   "When every account is at its limit, Desktop is told when the first is back, and you get a notification.": "모든 계정이 한도에 도달하면 첫 계정이 언제 복구되는지 Desktop에 알리고, 알림으로도 알려 드립니다.",
   "Keys, passwords and personal info are hidden on this Mac before anything is sent.": "키, 비밀번호, 개인 정보는 보내기 전에 이 Mac에서 가려집니다."
 }

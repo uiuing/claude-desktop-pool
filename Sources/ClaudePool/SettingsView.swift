@@ -217,9 +217,9 @@ struct AboutSettings: View {
     }
     /// What the pool does, in the order a person meets it.
     static let features: [(text: String, symbol: String)] = [
-        ("A conversation goes to the account with the most left, and moves on when that one runs low.", "arrow.triangle.branch"),
+        ("Each conversation, subagent and task goes to the account best placed for it: what its limits have left, when they reset, and what the work costs there.", "arrow.triangle.branch"),
         ("Each conversation stays on its account to read its prompt cache, and moves only when that costs less.", "bolt"),
-        ("Subagents and parallel tasks spread across accounts by what each has left.", "square.stack.3d.up"),
+        ("A conversation's subagents run on different accounts at once, by what each has left and how busy it is.", "square.stack.3d.up"),
         ("When every account is at its limit, Desktop is told when the first is back, and you get a notification.", "bell.badge"),
         ("Keys, passwords and personal info are hidden on this Mac before anything is sent.", "lock.shield")
     ]
