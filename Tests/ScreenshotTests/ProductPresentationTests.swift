@@ -8,6 +8,15 @@ import ViewInspector
 final class ProductPresentationTests: XCTestCase {
     private static var windows: [NSWindow] = []
 
+    func testAboutSaysWhatThePoolDoesInEveryLanguage() {
+        for language in ["zh-Hans", "zh-Hant", "ja", "ko"] {
+            let model = PoolAppModel.demoModel(language: language)
+            for feature in AboutSettings.features {
+                XCTAssertNotEqual(model.t(feature.text), feature.text, "\(language): \(feature.text)")
+            }
+        }
+    }
+
     func testNativeEditorKeepsPlaceholderAndInputGeometryAndBinding() async throws {
         var text = ""
         let placeholder = "Paste sample text to preview locally."

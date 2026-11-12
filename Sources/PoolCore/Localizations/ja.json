@@ -693,5 +693,11 @@
   "Redaction is off": "マスキングはオフです",
   "{0} used up · back {1}": "{0} を使い切り · {1} に回復",
   "{0} 7 days: {1}% left": "{0} 7 日間：残り {1}%",
-  "The menu bar shows this plan's limits and its tightest model limit.": "メニューバーには、このプランの上限と、残りが最も少ないモデルの上限を表示します。"
+  "The menu bar shows this plan's limits and its tightest model limit.": "メニューバーには、このプランの上限と、残りが最も少ないモデルの上限を表示します。",
+  "All your Claude accounts, one pool for Claude Desktop.": "すべての Claude アカウントを、Claude Desktop のための 1 つのプールに。",
+  "A conversation goes to the account with the most left, and moves on when that one runs low.": "会話は残りが最も多いアカウントで進み、そのアカウントの残りが少なくなると次へ移ります。",
+  "Each conversation stays on its account to read its prompt cache, and moves only when that costs less.": "会話はキャッシュを読めるよう同じアカウントにとどまり、移る方が安いときだけ移ります。",
+  "Subagents and parallel tasks spread across accounts by what each has left.": "サブエージェントや並列タスクは、各アカウントの残りに応じて分散されます。",
+  "When every account is at its limit, Desktop is told when the first is back, and you get a notification.": "すべてのアカウントが上限に達すると、最初のアカウントがいつ回復するかを Desktop に伝え、通知でもお知らせします。",
+  "Keys, passwords and personal info are hidden on this Mac before anything is sent.": "キー、パスワード、個人情報は送信前にこの Mac 上で隠されます。"
 }

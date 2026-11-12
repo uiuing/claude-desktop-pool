@@ -182,6 +182,18 @@ struct AboutSettings: View {
                 }
             }
             Rectangle().fill(PoolPalette.line).frame(height: 1)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(model.t("All your Claude accounts, one pool for Claude Desktop."))
+                    .font(.system(size: 11, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+                ForEach(Self.features, id: \.text) { feature in
+                    Label {
+                        Text(model.t(feature.text)).fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: feature.symbol).foregroundStyle(PoolPalette.accent).frame(width: 14)
+                    }.font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+            }.padding(.leading, 24).accessibilityElement(children: .combine).accessibilityIdentifier("settings.aboutPool")
+            Rectangle().fill(PoolPalette.line).frame(height: 1)
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     PoolSettingLabel(title: model.t("Check for updates automatically"), systemImage: "arrow.triangle.2.circlepath")
@@ -203,6 +215,14 @@ struct AboutSettings: View {
             }.padding(.leading, 24)
         }
     }
+    /// What the pool does, in the order a person meets it.
+    static let features: [(text: String, symbol: String)] = [
+        ("A conversation goes to the account with the most left, and moves on when that one runs low.", "arrow.triangle.branch"),
+        ("Each conversation stays on its account to read its prompt cache, and moves only when that costs less.", "bolt"),
+        ("Subagents and parallel tasks spread across accounts by what each has left.", "square.stack.3d.up"),
+        ("When every account is at its limit, Desktop is told when the first is back, and you get a notification.", "bell.badge"),
+        ("Keys, passwords and personal info are hidden on this Mac before anything is sent.", "lock.shield")
+    ]
     private func link(_ title: String, symbol: String, url: URL) -> some View {
         Link(destination: url) {
             HStack(spacing: 3) {

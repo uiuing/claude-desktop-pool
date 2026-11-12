@@ -693,5 +693,11 @@
   "Redaction is off": "脱敏已关闭",
   "{0} used up · back {1}": "{0} 已用完 · {1} 恢复",
   "{0} 7 days: {1}% left": "{0} 7 天：剩余 {1}%",
-  "The menu bar shows this plan's limits and its tightest model limit.": "菜单栏显示这个方案的额度和最紧的型号额度。"
+  "The menu bar shows this plan's limits and its tightest model limit.": "菜单栏显示这个方案的额度和最紧的型号额度。",
+  "All your Claude accounts, one pool for Claude Desktop.": "你的所有 Claude 账号汇成一个池，供 Claude Desktop 使用。",
+  "A conversation goes to the account with the most left, and moves on when that one runs low.": "对话交给剩余额度最多的账号，这个账号快用完时换到下一个。",
+  "Each conversation stays on its account to read its prompt cache, and moves only when that costs less.": "每个对话尽量留在原账号上读取缓存，只在换号更省时才换。",
+  "Subagents and parallel tasks spread across accounts by what each has left.": "子代理和并行任务按各账号的剩余额度分散运行。",
+  "When every account is at its limit, Desktop is told when the first is back, and you get a notification.": "所有账号都达到上限时，会告诉 Desktop 第一个账号何时恢复，并发通知提醒你。",
+  "Keys, passwords and personal info are hidden on this Mac before anything is sent.": "密钥、密码和个人信息先在本机隐藏，再发送出去。"
 }

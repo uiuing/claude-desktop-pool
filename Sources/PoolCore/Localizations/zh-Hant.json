@@ -693,5 +693,11 @@
   "Redaction is off": "遮蔽已關閉",
   "{0} used up · back {1}": "{0} 已用完 · {1} 恢復",
   "{0} 7 days: {1}% left": "{0} 7 天：剩餘 {1}%",
-  "The menu bar shows this plan's limits and its tightest model limit.": "選單列顯示這個方案的額度和最緊的型號額度。"
+  "The menu bar shows this plan's limits and its tightest model limit.": "選單列顯示這個方案的額度和最緊的型號額度。",
+  "All your Claude accounts, one pool for Claude Desktop.": "你的所有 Claude 帳號匯成一個池，供 Claude Desktop 使用。",
+  "A conversation goes to the account with the most left, and moves on when that one runs low.": "對話交給剩餘額度最多的帳號，這個帳號快用完時換到下一個。",
+  "Each conversation stays on its account to read its prompt cache, and moves only when that costs less.": "每個對話盡量留在原帳號上讀取快取，只在換帳號更省時才換。",
+  "Subagents and parallel tasks spread across accounts by what each has left.": "子代理與平行任務依各帳號的剩餘額度分散執行。",
+  "When every account is at its limit, Desktop is told when the first is back, and you get a notification.": "所有帳號都達上限時，會告訴 Desktop 第一個帳號何時恢復，並發通知提醒你。",
+  "Keys, passwords and personal info are hidden on this Mac before anything is sent.": "金鑰、密碼與個人資訊先在本機隱藏，再送出去。"
 }
