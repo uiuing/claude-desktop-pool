@@ -1,4 +1,5 @@
 import Foundation
+import PoolCore
 @testable import PoolPrivacy
 import XCTest
 
@@ -34,11 +35,20 @@ final class PrivacyReaderTests: XCTestCase {
     /// being read for it are finished and kept for the next request; the rest is left.
     func testOnlyTheChunksBeingReadAreFinishedAfterTheWait() async throws {
         // The first chunk is held until the wait is over, so a slow machine cannot finish it in time.
+        let lines = PartialLines()
+        Diagnostics.install { lines.add($0) }
+        defer { Diagnostics.install(nil) }
         let detector = GatedDetector()
         let reader = PrivacyReader(detector: detector, wait: .milliseconds(10))
         let texts = (1...4).map { "delta text \($0) " + String(repeating: "d", count: 3_000) }
         let first = await reader.read(texts, until: ContinuousClock.now.advanced(by: .milliseconds(10)))
         XCTAssertTrue(first.read.contains { $0 == nil }, "Not read within the wait")
+        // The log says how much went with the rules alone, in bytes as well as texts.
+        let partial = try XCTUnwrap(lines.all.first { $0.hasPrefix("event=privacy.partial ") })
+        let bytes = texts.map(\.utf8.count).reduce(0, +)
+        let unread = zip(first.read, texts).reduce(0) { $0 + ($1.0 == nil ? $1.1.utf8.count : 0) }
+        for field in ["texts=4", "bytes=\(bytes)", "unread_bytes=\(unread)", "since_last=0"] { XCTAssertTrue(partial.contains(field), partial) }
+        XCTAssertFalse(partial.contains("delta"), "Counts only, never text")
         try await privacyQueueEventually { await detector.texts.count == 1 }
         await detector.release()
         try await privacyQueueEventually { await reader.state == (0, 0) }
@@ -86,6 +96,12 @@ final class PrivacyReaderTests: XCTestCase {
         XCTAssertEqual((1...7).map { PrivacyReader.retryAfter($0) },
                        [.seconds(30), .seconds(60), .seconds(120), .seconds(240), .seconds(480), .seconds(600), .seconds(600)])
     }
+}
+
+private final class PartialLines: @unchecked Sendable {
+    private let lock = NSLock(); private var lines: [String] = []
+    func add(_ line: String) { lock.withLock { lines.append(line) } }
+    var all: [String] { lock.withLock { lines } }
 }
 
 private actor GatedDetector: PrivacyEntityDetector {

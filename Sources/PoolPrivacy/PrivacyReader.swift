@@ -61,6 +61,8 @@ actor PrivacyReader {
     /// Counts failures, so only a chunk asked after the last one tells that the model reads again.
     private var epoch = 0
     private var partialNoted: ContinuousClock.Instant?
+    /// Requests that went with only part read since the last `privacy.partial` line.
+    private var partialsUnnoted = 0
     /// The backlog chunk being read, given up when a request comes: a window is a tenth of a second,
     /// so the request waits that long for it at most, not the whole chunk.
     private var backgroundRead: Task<Void, Never>?
@@ -92,7 +94,11 @@ actor PrivacyReader {
         result.read = plans.map(known)
         result.lookedUp = latePlans.map(known)
         let unread = result.read.filter { $0 == nil }.count
-        if unread > 0, failure == nil { notePartial(read: texts.count - unread, of: texts.count) }
+        if unread > 0, failure == nil {
+            let bytes = texts.map(\.utf8.count)
+            let unreadBytes = zip(result.read, bytes).reduce(0) { $0 + ($1.0 == nil ? $1.1 : 0) }
+            notePartial(read: texts.count - unread, of: texts.count, bytes: bytes.reduce(0, +), unreadBytes: unreadBytes)
+        }
         return result
     }
 
@@ -388,13 +394,17 @@ actor PrivacyReader {
     }
 
     /// At most once a minute, that a request went with the model's finds for
-    /// only part of it. Counts only.
-    private func notePartial(read: Int, of total: Int) {
+    /// only part of it: its texts and their bytes, how many of those the model had not read, and how
+    /// many such requests went unlogged since the last line. Counts only.
+    private func notePartial(read: Int, of total: Int, bytes: Int, unreadBytes: Int) {
         let now = ContinuousClock.now
-        if let last = partialNoted, now - last < .seconds(60) { return }
+        if let last = partialNoted, now - last < .seconds(60) { partialsUnnoted += 1; return }
         partialNoted = now
         Diagnostics.record("privacy.partial", ["read": String(read), "texts": String(total),
+                                               "bytes": String(bytes), "unread_bytes": String(unreadBytes),
+                                               "since_last": String(partialsUnnoted),
                                                "wait_ms": String(Int(wait / .milliseconds(1)))])
+        partialsUnnoted = 0
     }
 }
 
