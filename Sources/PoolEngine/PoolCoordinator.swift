@@ -77,7 +77,8 @@ public actor PoolCoordinator: BridgeBackend {
     private var toolOwners: [String: UUID] = [:]
     private var observationTasks: [UUID: Task<Void, Never>] = [:]
     private var paused = false
-    /// Quitting has begun ending runs. Unlike a pause, nothing goes on: a continuation admitted now
+    /// Quitting has begun ending runs, or an update waits for the replies under way before it
+    /// restarts (`holdForRestart`). Unlike a pause, nothing goes on: a continuation admitted now
     /// would start a run after the others ended and hold quitting for its whole turn.
     private var closing = false
     private var generations: UInt64 = 0
@@ -266,6 +267,14 @@ public actor PoolCoordinator: BridgeBackend {
     public func updateAccounts(_ accounts: [PoolAccount]) { self.accounts = accounts }
     public func updateRoutingPolicy(_ policy: RoutingPolicy) { routingPolicy = policy }
     public func setPaused(_ paused: Bool) { self.paused = paused; if !paused { closing = false } }
+    /// An update is about to restart the app: from now on no request is admitted, neither a new turn
+    /// nor a tool result, and the runs answering go on to the end of their reply. A run waiting on its
+    /// calls or its next turn is left as it is, for `shutdown` to shelve. Returns how many runs are
+    /// still answering; asking again is how the app waits. `setPaused(false)` serves again.
+    public func holdForRestart() -> Int {
+        paused = true; closing = true
+        return bindings.values.filter(\.busy).count
+    }
     public func sessions() -> [PoolSession] { bindings.values.map(\.session).sorted { $0.startedAt < $1.startedAt } }
     public func conversationAlias(for sessionID: UUID) -> String? {
         let matches = aliases.compactMap { $0.value == sessionID && !$0.key.hasPrefix("request:") ? $0.key : nil }

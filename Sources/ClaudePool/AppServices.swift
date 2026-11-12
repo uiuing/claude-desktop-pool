@@ -26,6 +26,13 @@ struct AppServiceDependencies {
     /// Each account's sign-in is checked quietly at launch and every few hours, so a changed plan,
     /// a lapsed subscription or a revoked sign-in is noticed without a click.
     var checkAccountsAutomatically = true
+    /// How long an update waits for replies Claude is still writing before it restarts anyway, in
+    /// seconds. A minute: 99 in 100 streamed replies in measured use took about that long or less
+    /// from start to end, and one already under way has less left. The cap is also why it is no
+    /// longer: Desktop asks again for a request refused while the update waits, waiting longer each
+    /// time, and its conversation goes on after the restart only while those tries last, so the
+    /// wait stays short of them.
+    var updateDrainLimit: TimeInterval = 60
     var now: @Sendable () -> Date = { Date() }
     var showWindow: @MainActor () -> Void = {
         PoolWindowNavigator.shared.show()
@@ -108,8 +115,12 @@ final class AppServices {
     /// written a little later, so a busy pool writes its library once in a while, not per reply.
     private var librarySaveTask: Task<Void, Never>?
 
+    /// An update held the pool for its restart (`drainForUpdate`); a refused quit serves again.
+    private var heldForUpdate = false
+
     init(model: PoolAppModel, workspace: OwnedWorkspace? = nil, dependencies: AppServiceDependencies = .init()) {
         self.model = model; workspaceOverride = workspace; self.dependencies = dependencies
+        model.updates.drain = { [weak self] skip in await self?.drainForUpdate(skip: skip) }
     }
 
     func load() async {
@@ -1635,6 +1646,42 @@ final class AppServices {
         dependencies.showWindow()
     }
 
+    /// Before an update restarts the app, the replies Claude is still writing finish: nothing new is
+    /// admitted, neither a turn nor a tool result, and the wait ends when none is left, when
+    /// `updateDrainLimit` passes or when the person asks to restart now (`skip`). Runs waiting on their
+    /// calls or their next turn are not waited for; quitting shelves them as it always does, and their
+    /// conversations go on from there after the restart.
+    func drainForUpdate(skip: @escaping @MainActor () -> Bool = { false }) async {
+        guard !model.demo else { return }
+        guard let coordinator, model.snapshot.mode == .running else {
+            Diagnostics.record("app.update_drain", ["outcome": "ended", "reason": "not_serving", "waited": "0", "left": "0",
+                                                    "ms": "0", "cap": "no"])
+            return
+        }
+        let began = Date(), limit = dependencies.updateDrainLimit
+        // Held again at each look: a quit refused meanwhile lets the pool serve again.
+        func hold() async -> Int { heldForUpdate = true; return await coordinator.holdForRestart() }
+        let answering = await hold()
+        Diagnostics.record("app.update_drain", ["outcome": "started", "answering": String(answering), "limit_s": String(Int(limit))])
+        var left = answering, reason = "drained"
+        while left > 0 {
+            if skip() { reason = "restart_now"; break }
+            if Date().timeIntervalSince(began) >= limit { reason = "cap"; break }
+            try? await Task.sleep(for: .milliseconds(100))
+            left = await hold()
+        }
+        Diagnostics.record("app.update_drain", ["outcome": "ended", "reason": reason, "waited": String(answering), "left": String(left),
+                                                "ms": String(Int(Date().timeIntervalSince(began) * 1000)),
+                                                "cap": reason == "cap" ? "yes" : "no"])
+    }
+
+    /// An update held the pool and quitting was then refused: the pool serves again.
+    private func resumeAfterUpdateHold() async {
+        guard heldForUpdate else { return }
+        heldForUpdate = false
+        if model.snapshot.mode == .running { await coordinator?.setPaused(false) }
+    }
+
     func prepareToQuit() async -> Bool {
         guard !model.demo else { return true }
         let began = Date()
@@ -1643,11 +1690,13 @@ final class AppServices {
         guard !model.isWorking, privacyInstallTask == nil, !model.privacy.isProcessing else {
             Diagnostics.record("app.quit", ["outcome": "refused", "reason": "busy"])
             model.notice = model.t("Wait for the current operation to finish before quitting.")
+            await resumeAfterUpdateHold()
             showWindow(); return false
         }
         do {
             for id in Array(pendingAccounts.keys) { try await discardPendingLogin(id) }
         } catch {
+            await resumeAfterUpdateHold()
             report(error); showWindow(); return false
         }
         // New conversations wait while quitting. A refused quit returns to serving at once.
@@ -1659,6 +1708,7 @@ final class AppServices {
             Diagnostics.record("app.quit", ["outcome": "refused", "reason": reason, "loginsOpen": String(loginProcesses.count),
                                             "ms": String(Int(Date().timeIntervalSince(began) * 1000))])
             model.notice = model.t(notice)
+            heldForUpdate = false
             if wasRunning { await coordinator?.setPaused(false); model.snapshot.mode = .running; await updateQuotaAvailability() }
             showWindow(); return false
         }

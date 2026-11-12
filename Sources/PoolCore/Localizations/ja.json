@@ -575,6 +575,8 @@
   "Open Claude Pool to update and restart.": "Claude Pool を開いて、アップデートと再起動を行ってください。",
   "Downloading Claude Pool {0}…": "Claude Pool {0} をダウンロード中…",
   "Restarting to finish the update…": "アップデートを完了するため再起動中…",
+  "Waiting for replies to finish, then restarting…": "返信が終わるのを待ってから再起動します…",
+  "Restart now": "今すぐ再起動",
   "Could not install the update. Try again or download it from GitHub.": "アップデートをインストールできませんでした。もう一度お試しいただくか、GitHub からダウンロードしてください。",
   "Update and restart": "アップデートして再起動",
   "Update available": "アップデートあり",

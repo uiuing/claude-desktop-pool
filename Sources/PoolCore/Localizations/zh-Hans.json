@@ -575,6 +575,8 @@
   "Open Claude Pool to update and restart.": "打开 Claude Pool 即可更新并重启。",
   "Downloading Claude Pool {0}…": "正在下载 Claude Pool {0}…",
   "Restarting to finish the update…": "正在重启以完成更新…",
+  "Waiting for replies to finish, then restarting…": "正在等待回复写完，然后重启…",
+  "Restart now": "立即重启",
   "Could not install the update. Try again or download it from GitHub.": "无法安装更新，请重试，或从 GitHub 下载。",
   "Update and restart": "更新并重启",
   "Update available": "有可用更新",

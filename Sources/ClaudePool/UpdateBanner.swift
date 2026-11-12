@@ -18,7 +18,11 @@ struct UpdateBanner: View {
                                           : updates.statusText(model.t))
                 .font(.system(size: compact ? 11 : 12, weight: .medium)).lineLimit(2).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 4)
-            if busy { ProgressView().controlSize(.small) }
+            if updates.install == .waiting {
+                ProgressView().controlSize(.small)
+                Button(model.t("Restart now")) { updates.restartNow() }.controlSize(.small)
+                    .accessibilityIdentifier(compact ? "menu.restartNow" : "banner.restartNow")
+            } else if busy { ProgressView().controlSize(.small) }
             else {
                 Button(model.t(updates.canInstall || model.demo ? "Update and restart" : "Download")) {
                     beforeUpdate(); Task { await updates.installAndRestart() }

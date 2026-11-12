@@ -270,6 +270,15 @@ final class ScreenshotTests: XCTestCase {
                                   to: output.appendingPathComponent("update-banner-\(suffix).png"))
                 try await capture(MenuPanel(model: announced), size: .init(width: 340, height: 980), dark: dark,
                                   to: output.appendingPathComponent("update-menu-\(suffix).png"))
+                // The update waits for the replies under way, with Restart now beside it.
+                announced.updates.previewWaiting()
+                try await capture(MainWindow(model: announced), size: .init(width: 680, height: 560), dark: dark,
+                                  to: output.appendingPathComponent("update-waiting-\(suffix).png"))
+                try await capture(MenuPanel(model: announced), size: .init(width: 340, height: 980), dark: dark,
+                                  to: output.appendingPathComponent("update-waiting-menu-\(suffix).png"))
+                announced.page = .settings; announced.settingsTab = .about
+                try await capture(MainWindow(model: announced), size: .init(width: 640, height: 520), dark: dark,
+                                  to: output.appendingPathComponent("update-waiting-settings-\(suffix).png"))
             }
         }
     }

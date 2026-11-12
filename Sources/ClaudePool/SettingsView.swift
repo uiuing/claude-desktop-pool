@@ -168,7 +168,10 @@ struct AboutSettings: View {
                 }
                 Spacer(minLength: 4)
                 if updates.hasUpdate {
-                    if updates.install == .downloading || updates.install == .restarting { ProgressView().controlSize(.small) }
+                    if updates.install == .waiting {
+                        Button(model.t("Restart now")) { updates.restartNow() }.controlSize(.small)
+                            .accessibilityIdentifier("settings.restartNow")
+                    } else if updates.install == .downloading || updates.install == .restarting { ProgressView().controlSize(.small) }
                     else if updates.canInstall || model.demo {
                         Button(model.t("Update and restart")) { Task { await updates.installAndRestart() } }.controlSize(.small)
                             .disabled(model.demo).accessibilityIdentifier("settings.installUpdate")

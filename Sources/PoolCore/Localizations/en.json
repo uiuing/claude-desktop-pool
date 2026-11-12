@@ -575,6 +575,8 @@
   "Open Claude Pool to update and restart.": "Open Claude Pool to update and restart.",
   "Downloading Claude Pool {0}…": "Downloading Claude Pool {0}…",
   "Restarting to finish the update…": "Restarting to finish the update…",
+  "Waiting for replies to finish, then restarting…": "Waiting for replies to finish, then restarting…",
+  "Restart now": "Restart now",
   "Could not install the update. Try again or download it from GitHub.": "Could not install the update. Try again or download it from GitHub.",
   "Update and restart": "Update and restart",
   "Update available": "Update available",

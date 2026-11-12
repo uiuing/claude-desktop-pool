@@ -4,6 +4,10 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+### Fixed
+
+- Updating Claude Pool no longer cuts off replies Claude is still writing. Once the new version is downloaded, Pool stops taking new requests, lets the replies under way finish for up to a minute, then restarts; conversations waiting on a tool or their next message go on after the restart. "Restart now" skips the wait.
+
 ## [0.2.11] - 2026-11-13
 
 ### Fixed

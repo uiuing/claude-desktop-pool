@@ -85,7 +85,7 @@ struct MainWindow: View {
                             .font(.system(size: 11, weight: .medium)).foregroundStyle(PoolPalette.accent)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 8)
-                    }.buttonStyle(.plain).disabled(model.updates.install == .downloading || model.updates.install == .restarting).help(model.t("Claude Pool {0} is available.", model.updates.latestVersion?.description ?? "—"))
+                    }.buttonStyle(.plain).disabled(model.updates.isInstalling).help(model.t("Claude Pool {0} is available.", model.updates.latestVersion?.description ?? "—"))
                         .accessibilityIdentifier("sidebar.update")
                 }
                 Divider()

@@ -6,9 +6,10 @@ import PoolCore
 import PoolRuntime
 @preconcurrency import UserNotifications
 
-/// Claude Pool's own release check, as Claude Switch does it: the public latest-release redirect on
-/// GitHub, at most once a day while the app is open, and a manual check at most once a minute.
-/// A newer version is announced in the app; it is downloaded and installed by the user.
+/// Claude Pool's own release check: the public latest-release redirect on GitHub, at most once a
+/// day while the app is open, and a manual check at most once a minute. A newer version is
+/// announced in the app; it is downloaded and installed when the person asks, and the restart
+/// waits for the replies Claude is still writing (`drain`).
 @MainActor
 @Observable
 final class AppUpdates {
@@ -33,13 +34,20 @@ final class AppUpdates {
     @ObservationIgnored private var timer: Task<Void, Never>?
     @ObservationIgnored private var lastAttempt: Date?
     @ObservationIgnored private var retryAfter: Date?
-    /// Downloading and swapping in a newer version, then opening it again.
-    enum Install: Equatable { case idle, downloading, restarting, failed }
+    /// Downloading and swapping in a newer version, then opening it again. `waiting`: the new
+    /// version is ready and the restart waits for the replies Claude is still writing.
+    enum Install: Equatable { case idle, downloading, waiting, restarting, failed }
     private(set) var install = Install.idle
+    /// Downloading, waiting or restarting: the install is under way and not asked for again.
+    var isInstalling: Bool { install == .downloading || install == .waiting || install == .restarting }
     @ObservationIgnored private let installer: AppUpdateInstaller?
     @ObservationIgnored private var staged: URL?
     /// Asks the app to quit; the delegate swaps the bundle in once quitting is agreed.
     @ObservationIgnored var restart: @MainActor () -> Void = { PoolQuit.request() }
+    /// Waits, before the restart, for the replies Claude is still writing, admitting nothing new;
+    /// it stops waiting early when its argument says so (`restartNow`). The app's services set it.
+    @ObservationIgnored var drain: @MainActor (@escaping @MainActor () -> Bool) async -> Void = { _ in }
+    @ObservationIgnored private var restartAsked = false
     /// A packaged copy in a folder the user can write updates itself; otherwise the releases page opens.
     var canInstall: Bool { installer?.canReplace == true }
     /// The newer version whose banner was closed; a later version shows its own.
@@ -121,9 +129,12 @@ final class AppUpdates {
             status = .failed
         }
     }
-    /// Downloads the newer version, checks it, and quits so it can take this copy's place.
+    /// Downloads the newer version, checks it, lets the replies Claude is still writing finish, and
+    /// quits so it can take this copy's place. Every way of asking for it waits the same way, since a
+    /// reply cut off loses its turn's work; `restartNow` is there for a person who does not want to wait.
+    /// Quitting meanwhile quits without installing, as a refused restart leaves the update for later.
     func installAndRestart() async {
-        guard !demo, hasUpdate, let latestVersion, install != .downloading, install != .restarting else { return }
+        guard !demo, hasUpdate, let latestVersion, !isInstalling else { return }
         guard let installer, installer.canReplace else { ProjectLink.open(ProjectLink.releases); return }
         if staged == nil {
             install = .downloading
@@ -137,13 +148,27 @@ final class AppUpdates {
                 install = .failed; return
             }
         }
+        install = .waiting; restartAsked = false
+        await drain { [weak self] in self?.restartAsked ?? true }
+        guard install == .waiting else { return }
         install = .restarting
         restart()
+    }
+    /// The person does not want to wait for the replies under way: the update restarts at once.
+    func restartNow() {
+        guard install == .waiting else { return }
+        restartAsked = true
+        Diagnostics.record("update.restart_now", [:])
     }
     /// Previews show an announced version without reading GitHub.
     func previewAvailable(_ version: ReleaseVersion) {
         guard demo else { return }
         latestVersion = version; status = hasUpdate ? .available : .current
+    }
+    /// Previews show the restart waiting for replies to finish.
+    func previewWaiting() {
+        guard demo, hasUpdate else { return }
+        install = .waiting
     }
     /// Quitting was refused; the downloaded version waits for the next click.
     func restartRefused() { if install == .restarting { install = .idle } }
@@ -171,6 +196,7 @@ final class AppUpdates {
     func statusText(_ t: (String, String...) -> String) -> String {
         switch install {
         case .downloading: return t("Downloading Claude Pool {0}…", latestVersion?.description ?? "—")
+        case .waiting: return t("Waiting for replies to finish, then restarting…")
         case .restarting: return t("Restarting to finish the update…")
         case .failed: return t("Could not install the update. Try again or download it from GitHub.")
         case .idle: break

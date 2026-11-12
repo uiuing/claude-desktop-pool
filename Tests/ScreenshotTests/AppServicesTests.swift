@@ -57,7 +57,8 @@ final class AppServicesTests: XCTestCase {
     private func application(accounts: [PoolAccount] = [], installed: Bool = true, connected: Bool = false, desktop: AppDesktopFixture? = nil,
                              privacy: AppPrivacyModel = AppPrivacyModel(), workerFactory: PoolCoordinator.WorkerFactory? = nil,
                              quotaTrust: Bool? = nil, quotaPanel: String = AppQuotaFixture.defaultPanel,
-                             clock: AppTestClock? = nil, automaticUpdates: Bool = false) async throws -> FixtureApplication {
+                             clock: AppTestClock? = nil, automaticUpdates: Bool = false,
+                             updateDrainLimit: TimeInterval? = nil) async throws -> FixtureApplication {
         let workspace = try fixture(), downloads = AppReleaseDownloads(), auth = try AppAuthFixture(workspace: workspace)
         try await downloads.publish("2.1.300")
         let runtime = ManagedRuntime(workspace: workspace, downloader: downloads)
@@ -74,6 +75,7 @@ final class AppServicesTests: XCTestCase {
         dependencies.clientFactory = { _, _ in auth.client }
         dependencies.privacyModelFactory = { _ in privacy }
         dependencies.checkRuntimeUpdatesAutomatically = automaticUpdates
+        if let updateDrainLimit { dependencies.updateDrainLimit = updateDrainLimit }
         if let clock { dependencies.now = { clock.value } }
         dependencies.workerFactory = workerFactory
         dependencies.gatewayPort = 0
@@ -520,6 +522,62 @@ final class AppServicesTests: XCTestCase {
         await eventually("The exited session did not end") { await first.exits == 1 }
         let exits = await first.exits; XCTAssertEqual(exits, 1)
         XCTAssertFalse(app.model.currentSessionAccounts.contains { $0.id == a.id })
+    }
+
+    /// An update restarts only after the replies Claude is still writing: nothing new is admitted
+    /// meanwhile, a held reply is waited for, not cut, and the wait ends at its cap all the same.
+    func testUpdateWaitsForAReplyUnderWayAndRestartsOnceTheCapPasses() async throws {
+        let lock = NSLock()
+        nonisolated(unsafe) var lines: [String] = []
+        Diagnostics.install { line in lock.withLock { lines.append(line) } }
+        defer { Diagnostics.install(nil) }
+        func drains() -> [String] { lock.withLock { lines.filter { $0.hasPrefix("event=app.update_drain ") } } }
+        let account = PoolAccount(email: "mi•••ella@example.com", plan: "Pro", state: .ready)
+        // Long enough that the second wait sees the reply end first on a busy machine; short of the
+        // request helper's 4-second timeout for the held reply.
+        let worker = AppWorker(), cap: TimeInterval = 1.5
+        let app = try await application(accounts: [account], connected: true, workerFactory: { _, _ in worker },
+                                        updateDrainLimit: cap)
+        await eventually("The pool did not start once setup was complete") { app.services.listeningPort != nil }
+        let first = try await request(app, text: "A synthetic task.")
+        XCTAssertEqual(first.0, 200)
+        await worker.holdNextReply()
+        let continuation = BridgeRequest(model: "claude-sonnet", messages: [
+            .init(role: "user", content: .string("A synthetic task.")),
+            .init(role: "assistant", content: try XCTUnwrap(first.1["content"])),
+            .init(role: "user", content: .string("Continue this synthetic task."))
+        ], tools: [.init(name: "Read", inputSchema: .object(["type": .string("object")]))], stream: false)
+        let held = Task { try await self.request(app, body: continuation) }
+        await eventually("The held reply did not start") { await worker.requests.count == 2 }
+
+        // The reply never ends by itself: the update waits for it until the cap, then goes on.
+        let began = Date()
+        let capped = Task { await app.services.drainForUpdate() }
+        await eventually("The update did not begin waiting") { drains().count == 1 }
+        XCTAssertTrue(drains()[0].contains("answering=1"), drains()[0])
+        let refused = try await request(app, text: "A new synthetic conversation.")
+        XCTAssertEqual(refused.0, 503, "Nothing new is admitted while an update waits")
+        await capped.value
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(began), cap, "The update did not wait for the reply under way")
+        let ended = try XCTUnwrap(drains().last)
+        for field in ["outcome=ended", "reason=cap", "waited=1", "left=1", "cap=yes"] { XCTAssertTrue(ended.contains(field), ended) }
+        let cutByWaiting = await worker.cancellations
+        XCTAssertEqual(cutByWaiting, 0, "Waiting must not cut the reply")
+        XCTAssertTrue(app.model.snapshot.sessions.contains { $0.state == .running })
+
+        // Asked again, the wait ends as soon as the reply does, and the reply reaches the client whole.
+        let drained = Task { await app.services.drainForUpdate() }
+        await eventually("The second wait did not begin") { drains().count == 3 }
+        await worker.finishHeldReply("The held reply finished.")
+        await drained.value
+        let finished = try await held.value
+        XCTAssertEqual(finished.0, 200)
+        XCTAssertEqual(finished.1["content"]?.arrayValue?.first?["text"], .string("The held reply finished."))
+        let last = try XCTUnwrap(drains().last)
+        for field in ["reason=drained", "waited=1", "left=0", "cap=no"] { XCTAssertTrue(last.contains(field), last) }
+        let closed = await app.services.prepareToQuit(); XCTAssertTrue(closed)
+        let cancelled = await worker.cancellations
+        XCTAssertEqual(cancelled, 0, "No reply was under way when the app quit")
     }
 
     func testPrivacyInstallPreviewAndClearingAQueuedResultUseOnlyLocalState() async throws {
@@ -1305,6 +1363,12 @@ private actor AppWorker: SessionWorker {
     private var held: AsyncThrowingStream<BridgeEvent, Error>.Continuation?
     init(tool: BridgeToolCall? = nil) { self.tool = tool }
     func holdNextReply() { hold = true }
+    /// Ends the held reply as a finished one ends.
+    func finishHeldReply(_ text: String) {
+        guard let sink = held else { return }
+        held = nil
+        sink.yield(.text(text)); sink.yield(.finished(.endTurn)); sink.finish()
+    }
     func observations() -> AsyncStream<WorkerObservation> { observation.stream }
     func events(for request: BridgeRequest) -> AsyncThrowingStream<BridgeEvent, Error> {
         requests.append(request)
