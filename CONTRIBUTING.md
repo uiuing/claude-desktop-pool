@@ -43,6 +43,7 @@ The demo mode shows synthetic data only and starts no Claude process.
 | Any code | `swift build`, `swift test --parallel` |
 | UI text | `python3 scripts/check-localization.py` |
 | UI layout | `zsh scripts/screenshots.sh`, then look at the images in `.build/screenshots` in light and dark mode |
+| README banner | `zsh scripts/screenshots.sh ScreenshotTests.testRenderBannerScreens`, `zsh scripts/build.sh`, then `python3 scripts/make-banner.py` |
 | Packaging or helpers | `zsh scripts/build.sh --universal`, `python3 scripts/check-package.py`, `python3 scripts/check-packaged-bridge.py` |
 
 Tests never call Claude or any outside service. Use synthetic identities such as `name@example.com` or `.invalid` hosts in fixtures, and model fixtures on the shapes the real client sends.
