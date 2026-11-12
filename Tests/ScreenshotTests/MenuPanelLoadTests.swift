@@ -1,5 +1,7 @@
+import Observation
 import XCTest
 import SwiftUI
+import ViewInspector
 import PoolCore
 @testable import ClaudePool
 
@@ -50,16 +52,34 @@ final class MenuPanelLoadTests: XCTestCase {
         model.snapshot.sessions[index].state = model.snapshot.sessions[index].state == .running ? .waiting : .running
     }
 
+    private final class Fired: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        func set() { lock.withLock { value = true } }
+        var happened: Bool { lock.withLock { value } }
+    }
+    /// Reads the panel as SwiftUI would, every view in it, and says when anything it read changes.
+    private func watchPanel(_ model: PoolAppModel) -> (texts: Int, fired: Fired) {
+        let fired = Fired()
+        let texts = withObservationTracking {
+            (try? MenuPanel(model: model).inspect().findAll(ViewType.Text.self).count) ?? 0
+        } onChange: { fired.set() }
+        return (texts, fired)
+    }
+
     /// A routed request changes nothing the panel shows, so the panel is not worked out again for it.
+    /// Read from what the panel's views observe, not timed, so a busy machine cannot fail or pass it.
     func testARoutedRequestDoesNotSizeThePanelAgain() {
         let model = pool(17)
         let account = model.snapshot.accounts[0].id
-        let routed = cost(of: model, changes: 60) { model, _ in
-            model.recordRoute(.init(accountID: account, model: "Opus", reason: .headroom, strategy: .mostHeadroom))
-        }
-        let changed = cost(of: pool(17), changes: 60, change: flip)
-        print("menu.load routed=\(Int(routed * 1000))ms changed=\(Int(changed * 1000))ms per 60")
-        XCTAssertLessThan(routed, changed * 0.5 + 0.1, "A routed request must not have the panel sized again")
+        let routed = watchPanel(model)
+        XCTAssertGreaterThan(routed.texts, 0, "The panel must have been read")
+        model.recordRoute(.init(accountID: account, model: "Opus", reason: .headroom, strategy: .mostHeadroom))
+        XCTAssertFalse(routed.fired.happened, "A routed request must not have the panel sized again")
+        // What the panel does show still reaches it.
+        let changed = watchPanel(model)
+        flip(model, 0)
+        XCTAssertTrue(changed.fired.happened, "A run's change of state must reach the panel")
     }
 
     /// Sizing the panel does not measure every card: a pool of forty accounts costs about what one of
