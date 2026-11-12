@@ -4,6 +4,8 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.2.12] - 2026-11-13
+
 ### Fixed
 
 - Updating Claude Pool no longer cuts off replies Claude is still writing. Once the new version is downloaded, Pool stops taking new requests, lets the replies under way finish for up to a minute, then restarts; conversations waiting on a tool or their next message go on after the restart. "Restart now" skips the wait.
@@ -261,7 +263,9 @@ First public release.
 - Update checks against GitHub Releases with verified one-click install.
 - Option to hide email addresses throughout the app.
 
-[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.10...HEAD
+[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.12...HEAD
+[0.2.12]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.11...v0.2.12
+[0.2.11]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.7...v0.2.8
