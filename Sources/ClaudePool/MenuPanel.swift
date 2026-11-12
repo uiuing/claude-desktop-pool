@@ -44,9 +44,14 @@ struct MenuPanel: View {
                 let cards = ForEach(accounts) { MenuAccountCard(model: model, account: $0, showsPlan: showsPlan, use: use[$0.id]) }
                 if accounts.count > Self.eagerCards {
                     // A long list fills the panel's full height anyway; only the cards in view are built.
-                    ScrollView {
-                        LazyVStack(spacing: 6) { cards }.padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 10)
-                    }.frame(height: 360)
+                    // It lies over that height rather than standing in the panel's own column: the menu bar
+                    // window sizes the panel at every change, and a list in the column was measured
+                    // card by card each time, however lazily it is built.
+                    Color.clear.frame(height: 360).overlay {
+                        ScrollView {
+                            LazyVStack(spacing: 6) { cards }.padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 10)
+                        }
+                    }
                 } else {
                     ScrollView {
                         VStack(spacing: 6) { cards }.padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 10)
@@ -56,7 +61,8 @@ struct MenuPanel: View {
             }
             footer
         }.frame(width: 340).background(PoolPalette.background).tint(PoolPalette.accent)
-            .onAppear { navigator.configure(opener: sceneOpener) }
+            .onAppear { navigator.configure(opener: sceneOpener); model.menuPanel(open: true) }
+            .onDisappear { model.menuPanel(open: false) }
             // Nothing here shows seconds: the time moves on each minute and at each limit's renewal.
             .task { await model.updateClock(every: 60) }
     }

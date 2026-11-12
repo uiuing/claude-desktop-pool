@@ -172,7 +172,7 @@ struct RoutingFlowView: View {
     }
     private func conversationRow(_ conversation: PoolConversation) -> some View {
         let answering = isAnswering(conversation)
-        let decision = model.snapshot.routeDecisions.last { $0.sessionID.map(conversation.sessionIDs.contains) ?? false }
+        let decision = model.routeDecisions.last { $0.sessionID.map(conversation.sessionIDs.contains) ?? false }
         let moved = decision.map { [.lowQuota, .quotaExhausted, .failover].contains($0.reason) } ?? false
         return HStack(spacing: 8) {
             Group {
@@ -212,9 +212,10 @@ private struct RouteLines: View {
     let flowing: Bool
     let animate: Bool
     let frozen: Bool
+    @State private var windowVisible = true
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30, paused: !animate)) { timeline in
+        TimelineView(.animation(minimumInterval: 1 / 12, paused: !animate || !windowVisible)) { timeline in
             Canvas { context, _ in
                 let phase = frozen ? 0.43 : timeline.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.8) / 1.8
                 let inbound = Path { $0.move(to: CGPoint(x: start.x, y: start.y)); $0.addLine(to: CGPoint(x: middle.x - 26, y: middle.y)) }
@@ -238,6 +239,7 @@ private struct RouteLines: View {
                 }
             }
         }
+        .poolTrackWindowVisible($windowVisible)
     }
     private func point(on _: Path, from a: CGPoint, to b: CGPoint, t: Double) -> CGPoint {
         CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)

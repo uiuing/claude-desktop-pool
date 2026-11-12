@@ -751,12 +751,10 @@ public struct PoolSnapshot: Equatable, Sendable {
     public var executableReady: Bool
     public var desktop: DesktopLink
     public var notice: String?
-    public var routeDecisions: [RouteDecision]
     public init(mode: PoolMode = .stopped, accounts: [PoolAccount] = [], sessions: [PoolSession] = [],
-                executableReady: Bool = false, desktop: DesktopLink = .disconnected, notice: String? = nil, routeDecisions: [RouteDecision] = []) {
+                executableReady: Bool = false, desktop: DesktopLink = .disconnected, notice: String? = nil) {
         self.mode = mode; self.accounts = accounts; self.sessions = sessions
         self.executableReady = executableReady; self.desktop = desktop; self.notice = notice
-        self.routeDecisions = routeDecisions
     }
 }
 

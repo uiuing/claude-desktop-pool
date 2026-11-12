@@ -36,15 +36,15 @@ struct RoutingPage: View {
             VStack(alignment: .leading, spacing: 9) {
                 Text(model.t("Recent decisions")).font(.system(size: 12, weight: .semibold))
                 PoolCard(padding: 0) {
-                    if model.snapshot.routeDecisions.isEmpty {
+                    if model.routeDecisions.isEmpty {
                         Text(model.t("Routing decisions will appear here as requests arrive."))
                             .font(.system(size: 11)).foregroundStyle(.secondary).padding(14)
                     } else {
                         VStack(spacing: 0) {
-                            ForEach(Array(model.snapshot.routeDecisions.suffix(8).reversed())) { decision in
+                            ForEach(Array(model.routeDecisions.suffix(8).reversed())) { decision in
                                 decisionRow(decision).transition(.opacity.combined(with: .move(edge: .top)))
                             }
-                        }.animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: model.snapshot.routeDecisions.last?.id)
+                        }.animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: model.routeDecisions.last?.id)
                     }
                 }
             }
@@ -66,7 +66,7 @@ struct RoutingPage: View {
                                   range: 0...25, unit: "%", identifier: "routing.reserve", integerOnly: true) {
                     await model.saveRoutingReserve($0)
                 }
-                Text(model.t("Below this, a conversation moves to an account with more left at your next message. A reply under way finishes first."))
+                Text(model.t("Below this, or below what its last turns took, a conversation moves to an account with more left at your next message. A long conversation costs more to move, so it stays longer. A reply under way finishes first."))
                     .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if model.preferences.routingPolicy.strategy == .ordered {
                     Divider()

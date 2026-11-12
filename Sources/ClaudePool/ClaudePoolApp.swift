@@ -8,6 +8,11 @@ import SwiftUI
 enum ClaudePoolEntry {
     static func main() {
         if let status = EngineHelpers.dispatch(arguments: Array(CommandLine.arguments.dropFirst())) { exit(status) }
+        // Each session holds a terminal, its files and their watches: macOS starts an app at 256 open files.
+        var limit = rlimit()
+        if getrlimit(RLIMIT_NOFILE, &limit) == 0, limit.rlim_cur < 4096 {
+            limit.rlim_cur = min(4096, limit.rlim_max); _ = setrlimit(RLIMIT_NOFILE, &limit)
+        }
         ClaudePoolApplication.main()
     }
 }
@@ -28,6 +33,9 @@ struct ClaudePoolApplication: App {
             model.onSettingAction = { [services] action in await services.handle(action) }
             model.updates.start()
         }
+        #if DEBUG
+        MenuStress.startIfAsked(model)
+        #endif
     }
 
     var body: some Scene {

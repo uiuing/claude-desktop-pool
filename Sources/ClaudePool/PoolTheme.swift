@@ -91,16 +91,60 @@ struct PoolPressStyle: ButtonStyle {
     }
 }
 
+/// Reports whether the window holding the view is visible (not covered, minimized or closed), so
+/// continuous animations can pause while nobody can see them. Assumes visible until a window says otherwise.
+private struct PoolWindowVisibilityReader: NSViewRepresentable {
+    @Binding var visible: Bool
+
+    final class Probe: NSView {
+        var onChange: (Bool) -> Void = { _ in }
+        private var observer: NSObjectProtocol?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+            observer = nil
+            guard let window else { return }
+            observer = NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main) { [weak self] _ in
+                self?.report()
+            }
+            report()
+        }
+        private func report() {
+            let value = window?.occlusionState.contains(.visible) ?? true
+            DispatchQueue.main.async { [onChange] in onChange(value) }
+        }
+        deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
+    }
+
+    func makeNSView(context: Context) -> Probe {
+        let probe = Probe()
+        probe.onChange = { value in if visible != value { visible = value } }
+        return probe
+    }
+    func updateNSView(_ probe: Probe, context: Context) {
+        probe.onChange = { value in if visible != value { visible = value } }
+    }
+}
+
+extension View {
+    /// Keeps `visible` in step with whether this view's window can be seen.
+    func poolTrackWindowVisible(_ visible: Binding<Bool>) -> some View {
+        background(PoolWindowVisibilityReader(visible: visible).frame(width: 0, height: 0))
+    }
+}
+
 /// What is being read right now breathes gently; it holds still under Reduce Motion.
 private struct PoolReadingPulse: ViewModifier {
     let active: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var windowVisible = true
     @ViewBuilder func body(content: Content) -> some View {
         if active && !reduceMotion {
-            TimelineView(.animation) { context in
+            TimelineView(.animation(minimumInterval: 1 / 12, paused: !windowVisible)) { context in
                 let phase = (sin(context.date.timeIntervalSinceReferenceDate * 2 * .pi / 1.4) + 1) / 2
                 content.opacity(0.45 + 0.55 * phase)
             }
+            .poolTrackWindowVisible($windowVisible)
         } else {
             content.opacity(active ? 0.6 : 1)
         }
@@ -145,6 +189,25 @@ struct PoolGauge: View {
             }
         }.frame(height: height).poolAnimation(PoolMotion.value, value: value).accessibilityHidden(true)
     }
+}
+
+/// Takes the room it is offered without asking what is inside it. A window works out its smallest and
+/// largest sizes at every change by trying widths and heights on its content, a width of nothing among
+/// them, and a scroll view lays out all it holds for each: with many runs working that was most of the
+/// main thread. Only a size nobody set, the page's own, is still asked of the page.
+struct PoolFill: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        if let width = proposal.width, let height = proposal.height { return CGSize(width: width, height: height) }
+        let own = subviews.first?.sizeThatFits(proposal) ?? .zero
+        return CGSize(width: proposal.width ?? own.width, height: proposal.height ?? own.height)
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for subview in subviews { subview.place(at: bounds.origin, anchor: .topLeading, proposal: .init(bounds.size)) }
+    }
+    // It has no guides of its own either: the stack around it asks for them while it sizes itself,
+    // and working them out from what is inside would lay the page out at every size the window tries.
+    func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
+    func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
 }
 
 struct PoolSecondaryButton: ButtonStyle {

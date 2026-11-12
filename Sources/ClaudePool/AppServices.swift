@@ -87,12 +87,17 @@ final class AppServices {
     private var recoveryTask: Task<Void, Never>?
     private var accountCheckTask: Task<Void, Never>?
     private var runtimeCheckTask: Task<Void, Never>?
+    private var rememberTask: Task<Void, Never>?
+    private var limitTask: Task<Void, Never>?
+    private var limitNotice = PoolLimitNotice()
+    private var rememberedLast: Data?
     private var lastQuietCheck = Date.distantPast
     /// When each account was last checked because a read failed, so a failing read checks it at most hourly.
     private var failedReadChecks: [UUID: Date] = [:]
     /// When the account next in line was last read ahead of a switch.
     private var nextConfirmations: [Date] = []
     private var diagnosticsLog: DiagnosticsLog?
+    private var mainThreadWatch: MainThreadWatch?
     /// The full log's recorder while it records.
     private var developerRecorder: DeveloperRecorder?
     private var fullLogRoot: URL?
@@ -128,6 +133,12 @@ final class AppServices {
                     let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
                     if (try? log.install(version: version)) != nil { diagnosticsLog = log }
                 }
+                // A frozen menu or window is in the log the first time it happens.
+                let watch = MainThreadWatch { [weak model] in
+                    .init(menuOpen: model?.menuOpen ?? false, windowOpen: NSApp?.activationPolicy() == .regular,
+                          page: model?.page.rawValue ?? "-", runs: model?.liveRuns ?? 0, accounts: model?.snapshot.accounts.count ?? 0)
+                }
+                watch.start(); mainThreadWatch = watch
                 resumeFullLog(workspace)
             }
             let store = PoolStore(workspace: workspace)
@@ -170,6 +181,7 @@ final class AppServices {
                model.privacy.phase == .notInstalled {
                 do { try await installPrivacyModel() } catch { report(error) }
             }
+            await cleanStorage(launch: true)
             do { try await prepareQuotaService() } catch { report(error) }
             await prepareWarmUp()
             if model.snapshot.executableReady {
@@ -1056,6 +1068,7 @@ final class AppServices {
         listeningPort = try await server.start()
         privacyBridge = protection
         self.coordinator = coordinator; self.server = server; model.snapshot.mode = .running
+        keepRemembering(); keepWatchingLimit()
         await updateQuotaAvailability()
     }
 
@@ -1139,9 +1152,85 @@ final class AppServices {
             model.usage.record(usage, accountID: scope.accountID, model: id, name: name, at: at, seconds: seconds)
             scheduleUsageSave()
         case .route(let decision):
-            model.snapshot.routeDecisions.append(decision)
-            if model.snapshot.routeDecisions.count > 200 { model.snapshot.routeDecisions.removeFirst(model.snapshot.routeDecisions.count - 200) }
+            model.recordRoute(decision)
         }
+    }
+
+    /// Removes what Pool left behind and no longer uses, off the main thread. At launch, before anything
+    /// runs: run folders a forced quit left, the folders of accounts no longer in the library, and client
+    /// versions that are neither the one in use nor the one before it. At launch and from time to time:
+    /// session files nothing has written for `staleSession`, longer than any run or shelved session
+    /// lasts (an hour), so none in use is among them.
+    private func cleanStorage(launch: Bool) async {
+        guard !model.demo, let workspace else { return }
+        let accounts = library.accounts.map(\.id), runtime = launch ? managedRuntime : nil
+        // An account being signed in is not in the library yet: its folder is not an orphan.
+        let kept = Set(accounts).union(pendingAccounts.keys).union(loginProcesses.keys).union(checkingAccounts)
+        let began = Date(), stale = Self.staleSession
+        let result = await Task.detached(priority: .utility) { () -> (runs: Int, accounts: Int, sessions: Int, bytes: Int64) in
+            var runs = 0, orphans = 0
+            if launch {
+                runs = workspace.removeStaleRuns(keeping: [])
+                // An empty library says nothing about which folders are whose: nothing is removed for it.
+                if !accounts.isEmpty { orphans = workspace.removeOrphanAccounts(keeping: kept) }
+            }
+            var sessions = 0, bytes: Int64 = 0
+            for account in accounts {
+                let removed = workspace.removeStaleSessions(account: account, keeping: [], olderThan: stale)
+                sessions += removed.count; bytes += removed.bytes
+            }
+            return (runs, orphans, sessions, bytes)
+        }.value
+        let versions = await runtime?.pruneVersions() ?? []
+        guard result.runs + result.accounts + result.sessions + versions.count > 0 else { return }
+        Diagnostics.record("storage.cleaned", ["at": launch ? "launch" : "timed", "runs": String(result.runs), "accounts": String(result.accounts),
+            "sessions": String(result.sessions), "session_mb": String(result.bytes / 1_048_576), "client_versions": String(versions.count),
+            "ms": String(Int(Date().timeIntervalSince(began) * 1000))])
+    }
+    static let staleSession: TimeInterval = 3 * 3600
+
+    /// What quit saves so conversations go on from their sessions (their accounts, the shelf, how their
+    /// history was redacted) is also saved every few minutes while the pool serves: an app that was
+    /// forced to quit, or crashed, then still finds the sessions shelved before it.
+    private func keepRemembering() {
+        rememberTask?.cancel()
+        rememberTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(Self.rememberEvery)) } catch { return }
+                await self?.saveRemembered()
+            }
+        }
+    }
+    static let rememberEvery: Double = 180
+    /// Looks every half minute whether the pool as a whole came to its limit or left it. A limit ends
+    /// by the clock, with no reading, so a look by time is what notices it.
+    private func keepWatchingLimit() {
+        limitTask?.cancel()
+        limitTask = Task { [weak self] in
+            while !Task.isCancelled {
+                self?.checkPoolLimit()
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            }
+        }
+    }
+    private func checkPoolLimit() {
+        guard model.snapshot.mode == .running, awake else { return }
+        guard let change = limitNotice.update(library.accounts, policy: library.preferences.routingPolicy, now: Date()) else { return }
+        Diagnostics.record("pool.limit", ["to": change.state.rawValue, "accounts": String(library.accounts.count),
+            "back_s": change.back.map { String(Int($0.timeIntervalSinceNow)) } ?? "-"])
+        PoolLimitNotice.post(change, language: library.preferences.language) { [model] in model.clockTime($0) }
+    }
+    private func saveRemembered() async {
+        guard model.snapshot.mode == .running, let coordinator, let workspace,
+              let saved = await coordinator.rememberedAccounts(), saved != rememberedLast, !Task.isCancelled else { return }
+        rememberedLast = saved
+        try? workspace.write(saved, to: workspace.root.appendingPathComponent(Self.conversationAccountsFile))
+        var bytes = 0
+        if let privacyBridge, let contexts = await privacyBridge.savedContexts(), !Task.isCancelled, model.snapshot.mode == .running {
+            try? workspace.write(contexts, to: workspace.root.appendingPathComponent(Self.privacyContextsFile), limit: 64 << 20)
+            bytes = contexts.count
+        }
+        Diagnostics.record("app.remembered", ["conversation_bytes": String(saved.count), "privacy_bytes": String(bytes)])
     }
 
     private func scheduleUsageSave() {
@@ -1436,6 +1525,7 @@ final class AppServices {
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(30 * 60)) } catch { return }
                 await self?.checkRuntimeUpdateIfNeeded()
+                await self?.cleanStorage(launch: false)
             }
         }
     }
@@ -1618,7 +1708,7 @@ final class AppServices {
         }
         privacyPreviewTask?.cancel(); previewGeneration += 1; model.privacyPreview = .init()
         await privacyDetector?.unload()
-        recoveryTask?.cancel(); accountCheckTask?.cancel(); runtimeCheckTask?.cancel()
+        recoveryTask?.cancel(); accountCheckTask?.cancel(); runtimeCheckTask?.cancel(); rememberTask?.cancel(); limitTask?.cancel()
         // Every run has ended by now, so what is left is a reply saying so; a client that does not
         // read it does not hold the app open.
         await server?.stop(waitingAtMost: 3); listeningPort = nil; pathMonitor?.cancel()

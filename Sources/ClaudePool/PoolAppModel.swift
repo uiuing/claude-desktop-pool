@@ -198,6 +198,13 @@ final class PoolAppModel {
     var snapshot: PoolSnapshot {
         didSet { if !demo, oldValue.accounts != snapshot.accounts { displayDate = Date() } }
     }
+    /// The last 200 routing decisions. Every request adds one, so they are kept apart from `snapshot`:
+    /// only the Routing page reads them, and nothing else is worked out again when one arrives.
+    var routeDecisions: [RouteDecision] = []
+    func recordRoute(_ decision: RouteDecision) {
+        routeDecisions.append(decision)
+        if routeDecisions.count > 200 { routeDecisions.removeFirst(routeDecisions.count - 200) }
+    }
     var preferences: PoolPreferences
     let demo: Bool
     var page = PoolPage.pool
@@ -237,6 +244,13 @@ final class PoolAppModel {
     @ObservationIgnored var onAction: (@MainActor (UIAction) -> Void)?
     @ObservationIgnored var onSettingAction: (@MainActor (UIAction) async -> Void)?
     @ObservationIgnored var referenceDate: Date?
+    /// Whether the menu bar panel is open now, for the log: no view is worked out again when it changes.
+    @ObservationIgnored var menuOpen = false
+    func menuPanel(open: Bool) {
+        guard !demo, menuOpen != open else { return }
+        menuOpen = open
+        Diagnostics.record(open ? "menu.open" : "menu.close", ["runs": String(liveRuns), "accounts": String(snapshot.accounts.count)])
+    }
 
     init(snapshot: PoolSnapshot = .init(), preferences: PoolPreferences = .init(), demo: Bool = false) {
         self.snapshot = snapshot; self.preferences = preferences; self.demo = demo
@@ -291,16 +305,40 @@ final class PoolAppModel {
     var preferredColorScheme: ColorScheme? {
         switch preferences.appearance { case "light": return .light; case "dark": return .dark; default: return nil }
     }
+    /// What the accounts, the clock and the settings give is worked out once and kept until one of them
+    /// changes: a run's state changes many times a second while many work, and every view that shows the
+    /// pool asks for these each time, the menu panel for some of them several times over.
+    private struct PoolFacts: Equatable { var accounts: [PoolAccount]; var now: Date; var preferences: PoolPreferences }
+    private struct RoutedFacts: Equatable { var facts: PoolFacts; var load: [UUID: Int] }
+    private struct Kept<Key: Equatable, Value> {
+        var key: Key?, value: Value?
+        mutating func value(for key: Key, _ make: () -> Value) -> Value {
+            if let value, self.key == key { return value }
+            let made = make(); self.key = key; value = made; return made
+        }
+    }
+    private var poolFacts: PoolFacts { .init(accounts: snapshot.accounts, now: now, preferences: preferences) }
+    @ObservationIgnored private var keptReady = Kept<RoutedFacts, [PoolAccount]>()
+    @ObservationIgnored private var keptRanked = Kept<RoutedFacts, [PoolAccount]>()
+    @ObservationIgnored private var keptSummary = Kept<PoolFacts, QuotaPoolSummary>()
+    @ObservationIgnored private var keptPlans = Kept<PoolFacts, [PlanQuota]>()
     var readyAccounts: [PoolAccount] {
-        PoolRouting.candidates(snapshot.accounts, model: PoolRouting.anyModel, now: now, policy: preferences.routingPolicy, load: conversationLoad)
+        let facts = poolFacts
+        return keptReady.value(for: .init(facts: facts, load: conversationLoad)) {
+            PoolRouting.candidates(facts.accounts, model: PoolRouting.anyModel, now: facts.now, policy: facts.preferences.routingPolicy, load: conversationLoad)
+        }
     }
     /// Conversations each account serves now, counted as routing counts them.
     var conversationLoad: [UUID: Int] {
         PoolRouting.conversationLoad(snapshot.sessions)
     }
-    var quotaSummary: QuotaPoolSummary { QuotaPoolSummary.evaluate(snapshot.accounts, model: PoolRouting.anyModel, now: now) }
+    var quotaSummary: QuotaPoolSummary {
+        let facts = poolFacts
+        return keptSummary.value(for: facts) { QuotaPoolSummary.evaluate(facts.accounts, model: PoolRouting.anyModel, now: facts.now) }
+    }
     var confirmedReadyCount: Int { quotaSummary.usableAccounts }
-    var planQuotas: [PlanQuota] {
+    var planQuotas: [PlanQuota] { keptPlans.value(for: poolFacts) { makePlanQuotas() } }
+    private func makePlanQuotas() -> [PlanQuota] {
         let buckets = Dictionary(grouping: quotaSummary.groups) { String($0.id.split(separator: "/", maxSplits: 1).first ?? "") }
         return buckets.map { key, groups in
             let ordered = groups.sorted { quotaWindowOrder($0.windowID) < quotaWindowOrder($1.windowID) }
@@ -364,7 +402,10 @@ final class PoolAppModel {
     }
     /// Accounts best first: usable by what is left, then unread, then coming back soonest, unusable last.
     var rankedAccounts: [PoolAccount] {
-        AccountOrdering.ranked(snapshot.accounts, now: now, policy: preferences.routingPolicy, load: conversationLoad)
+        let facts = poolFacts
+        return keptRanked.value(for: .init(facts: facts, load: conversationLoad)) {
+            AccountOrdering.ranked(facts.accounts, now: facts.now, policy: facts.preferences.routingPolicy, load: conversationLoad)
+        }
     }
     /// The account a turn moves to when its conversation's account runs low: the first usable account
     /// no conversation is on. Its quota is confirmed before the move; it is not shown as a label.
@@ -663,11 +704,19 @@ final class PoolAppModel {
             ? t("Resets {0} · {1}", clockTime(reset), countdown(reset)) : t("Resets {0}", clockTime(reset))
     }
     func exactTime(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = locale
-        formatter.timeZone = demo ? TimeZone(identifier: "Asia/Taipei") : .current
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss z"
-        return formatter.string(from: date)
+        dateFormatter("yyyy-MM-dd HH:mm:ss z", zone: shortDateZone).string(from: date)
+    }
+    /// A formatter for one pattern in the shown language and zone, made once: every card and row
+    /// writes its times again at each change, and making a formatter costs far more than using one.
+    @ObservationIgnored private var dateFormatters: [String: DateFormatter] = [:]
+    private func dateFormatter(_ pattern: String, template: Bool = false, zone: TimeZone) -> DateFormatter {
+        let language = L10n.resolvedLanguage(preferences.language)
+        let key = language + "|" + zone.identifier + (template ? "|t|" : "|f|") + pattern
+        if let kept = dateFormatters[key] { return kept }
+        let made = DateFormatter(); made.locale = Locale(identifier: language); made.timeZone = zone
+        if template { made.setLocalizedDateFormatFromTemplate(pattern) } else { made.dateFormat = pattern }
+        dateFormatters[key] = made
+        return made
     }
     func countdown(_ date: Date) -> String {
         let seconds = max(0, Int(date.timeIntervalSince(now)))
@@ -695,9 +744,7 @@ final class PoolAppModel {
     /// Never a time-zone code; `exactTime` keeps the full time for tooltips.
     func clockTime(_ date: Date) -> String {
         let calendar = displayCalendar
-        let formatter = DateFormatter(); formatter.locale = locale; formatter.timeZone = calendar.timeZone
-        formatter.dateFormat = "HH:mm"
-        let time = formatter.string(from: date)
+        let time = dateFormatter("HH:mm", zone: calendar.timeZone).string(from: date)
         if calendar.isDate(date, inSameDayAs: now) { return time }
         if let tomorrow = calendar.date(byAdding: .day, value: 1, to: now), calendar.isDate(date, inSameDayAs: tomorrow) {
             return t("Tomorrow {0}", time)
@@ -707,14 +754,11 @@ final class PoolAppModel {
         }
         let template = calendar.isDate(date, equalTo: now, toGranularity: .weekOfYear) ? "EEEHHmm"
             : calendar.isDate(date, equalTo: now, toGranularity: .year) ? "MMMdHHmm" : "yMMMdHHmm"
-        formatter.setLocalizedDateFormatFromTemplate(template)
-        return formatter.string(from: date)
+        return dateFormatter(template, template: true, zone: calendar.timeZone).string(from: date)
     }
     /// A day as month and day in the shown language: "11/16".
     func shortDate(_ date: Date) -> String {
-        let formatter = DateFormatter(); formatter.locale = locale; formatter.timeZone = displayCalendar.timeZone
-        formatter.setLocalizedDateFormatFromTemplate("Md")
-        return formatter.string(from: date)
+        dateFormatter("Md", template: true, zone: shortDateZone).string(from: date)
     }
     /// "02:00 reset (in 2h 0m)", for one limit of one account.
     func shortReset(_ account: PoolAccount, window: String) -> String {
@@ -950,7 +994,7 @@ final class PoolAppModel {
         }
         if !setup {
             let session = model.snapshot.sessions[0].id
-            model.snapshot.routeDecisions = [
+            model.routeDecisions = [
                 .init(timestamp: date.addingTimeInterval(-480), sessionID: session, accountID: ids[2], model: "Sonnet", reason: .quotaExhausted, strategy: .mostHeadroom),
                 .init(timestamp: date.addingTimeInterval(-479), sessionID: session, accountID: ids[0], model: "Sonnet", reason: .failover, strategy: .mostHeadroom),
                 .init(timestamp: date.addingTimeInterval(-200), sessionID: model.snapshot.sessions[1].id, accountID: ids[1], model: "Opus", reason: .headroom, strategy: .mostHeadroom),

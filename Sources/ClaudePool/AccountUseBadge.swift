@@ -25,16 +25,21 @@ struct AccountUseBadges: View {
 struct WorkingDot: View {
     let color: Color
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var on = false
+    @State private var windowVisible = true
     var body: some View {
-        Circle().fill(color).frame(width: 5, height: 5)
-            .opacity(reduceMotion ? 1 : (on ? 1 : 0.35))
-            .onAppear {
-                guard !reduceMotion else { return }
-                withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) { on = true }
+        if reduceMotion {
+            dot.opacity(1).accessibilityHidden(true)
+        } else {
+            TimelineView(.animation(minimumInterval: 1 / 8, paused: !windowVisible)) { context in
+                // 1.6 s breathing cycle between 0.35 and 1.
+                let phase = (sin(context.date.timeIntervalSinceReferenceDate * 2 * .pi / 1.6) + 1) / 2
+                dot.opacity(0.35 + 0.65 * phase)
             }
+            .poolTrackWindowVisible($windowVisible)
             .accessibilityHidden(true)
+        }
     }
+    private var dot: some View { Circle().fill(color).frame(width: 5, height: 5) }
 }
 
 extension View {

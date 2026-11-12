@@ -497,9 +497,9 @@ final class AppServicesTests: XCTestCase {
         let next = try await request(app, text: "A different synthetic task.")
         XCTAssertEqual(next.0, 200)
         await eventually("Edited account order did not reach live routing") {
-            app.model.currentSessionAccounts.count == 2 && app.model.snapshot.routeDecisions.contains { $0.accountID == b.id && $0.reason == .accountOrder }
+            app.model.currentSessionAccounts.count == 2 && app.model.routeDecisions.contains { $0.accountID == b.id && $0.reason == .accountOrder }
         }
-        XCTAssertTrue(app.model.snapshot.routeDecisions.contains { $0.accountID == b.id && $0.reason == .accountOrder })
+        XCTAssertTrue(app.model.routeDecisions.contains { $0.accountID == b.id && $0.reason == .accountOrder })
         // Claude sessions are the pool's own: nothing opens one, and no input reaches it by hand.
         await app.services.handle(.sendTerminalInput("Idle input must remain in Desktop."))
         for key in ["\u{1b}[A", "\r"] { await app.services.handle(.sendTerminalKey(key)) }

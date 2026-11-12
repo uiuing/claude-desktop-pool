@@ -27,7 +27,8 @@ struct MainWindow: View {
                     } else if model.snapshot.mode != .running { PoolBadge(title: model.modeTitle, color: PoolPalette.amber) }
                 }.padding(.horizontal, 16).frame(height: 52)
                     .overlay(alignment: .bottom) { Rectangle().fill(PoolPalette.line).frame(height: 1) }
-                ScrollView {
+                // The page fills what the window gives it: the window never measures the page to size itself.
+                PoolFill { ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
                         // Settings › About already says it in full.
                         if model.updates.showsBanner, model.page != .settings {
@@ -50,7 +51,7 @@ struct MainWindow: View {
                         .poolAnimation(PoolMotion.page, value: model.page)
                         .poolAnimation(PoolMotion.quick, value: model.notice ?? model.snapshot.notice)
                         .poolAnimation(PoolMotion.quick, value: model.updates.showsBanner)
-                }
+                } }
             }.frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(PoolPalette.background).frame(minWidth: 640, minHeight: 520)
