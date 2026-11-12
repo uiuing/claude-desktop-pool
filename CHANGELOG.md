@@ -4,6 +4,8 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.2.13] - 2026-11-13
+
 ### Fixed
 
 - Subagents of the same type working at once no longer take each other's place. Each one now keeps its own session, so one subagent's next step no longer ends another that was waiting on a tool, and neither has its whole history sent again.
@@ -271,7 +273,8 @@ First public release.
 - Update checks against GitHub Releases with verified one-click install.
 - Option to hide email addresses throughout the app.
 
-[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.12...HEAD
+[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.13...HEAD
+[0.2.13]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.12...v0.2.13
 [0.2.12]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.11...v0.2.12
 [0.2.11]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.9...v0.2.10
