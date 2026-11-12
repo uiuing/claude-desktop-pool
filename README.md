@@ -15,7 +15,7 @@
 
 <h3 align="center">All your Claude accounts share their quota in one Claude Desktop.</h3>
 
-<p align="center">When one runs out, another takes over. Your private info stays protected.</p>
+<p align="center">When one runs low, another takes over, and each conversation keeps its prompt cache. Your private info stays protected.</p>
 
 <table>
   <tr>
@@ -28,17 +28,22 @@
 
 You have more than one Claude account, and in Claude Desktop:
 
-- Your conversation stops when an account runs out.
+- Your conversation stops when an account runs out, and a Pro account runs out within hours.
 - Switching accounts means signing out and in, and losing the conversation.
+- Subagents and parallel tasks use up one account in minutes while the others sit idle.
 - You can't see how much each account has left.
 - You worry about keys, passwords or personal info in what you paste.
 
 ## What it does
 
-- **Shares the quota of all your accounts.** When one runs out, another takes over and the conversation keeps going.
-- **Works everywhere in Desktop.** Chat, Cowork and Code all use it.
+- **Pools the quota of all your accounts.** A conversation goes to the account with the most left and moves on before that one runs out, so it keeps going.
+- **Keeps the prompt cache.** Each conversation stays on the account that has it cached and moves only when moving costs less than staying. A long conversation is not written again on account after account.
+- **Spreads parallel work.** Subagents and parallel tasks go to different accounts by what each has left and how busy it is.
+- **Handles a full pool.** When every account is at its limit, Desktop is told when the first one is back and you get a notification. Claude Code set to wait for a reset goes on by itself.
+- **Works everywhere in Desktop.** Chat, Cowork and Code, with the reasoning effort you pick and Claude's thinking shown as it streams.
+- **Shows what's left and where work goes.** Every account's quota and reset in the menu bar, including model limits such as Fable's; the Routing page shows which account each conversation is on and why; the Usage page shows tokens, cache hits and estimated cost.
 - **Protects your privacy.** Keys, passwords, emails and other private info are hidden on your Mac before anything is sent, and put back in the reply.
-- **Shows what's left.** Every account's quota and reset time in the menu bar, including each model's own weekly limit such as Fable's.
+- **Looks after itself.** Starts each weekly limit at its reset so the next one comes sooner, keeps Claude Code up to date, never agrees to usage credits, and clears out old files.
 - **Connects in one click.** No signing out, no setup; disconnect any time.
 - **Uses the official Claude Code** with your own accounts. No API keys.
 
@@ -80,12 +85,12 @@ Claude Desktop
       │
       ▼
 Claude Pool            ← hides your private info
-      │
+      │                  keeps each conversation on its cached account
       ▼
-your Claude accounts   ← uses one with quota left
+your Claude accounts   ← the one with the most left, tasks spread across them
 ```
 
-Claude Desktop hands your question to Pool. Pool hides your private info, picks an account that still has quota, asks through the official Claude Code, and sends the answer back to Desktop. See [architecture](docs/architecture.md) for the details.
+Claude Desktop hands your question to Pool. Pool hides your private info, keeps the conversation on the account that already has it cached while that account has room, or picks the one with the most left, asks through the official Claude Code, and sends the answer back to Desktop. See [architecture](docs/architecture.md) for the details.
 
 ## Build from source
 
