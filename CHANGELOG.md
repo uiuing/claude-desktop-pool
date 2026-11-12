@@ -4,6 +4,12 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-11-13
+
+### Fixed
+
+- Parallel subagents of one conversation no longer slow each other down. When one of them compacts its context, the others go on in their own sessions at once, instead of waiting and having their whole history told again.
+
 ## [0.2.10] - 2026-11-12
 
 ### Added
