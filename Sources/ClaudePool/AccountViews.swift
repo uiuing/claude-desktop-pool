@@ -141,7 +141,7 @@ struct AccountsPage: View {
                 if !signedIn {
                     actionLine(model.t("Sign in to use this account."), button: model.t("Sign in"), prominent: true) { model.perform(.signIn(account.id)) }
                 } else if account.state == .subscriptionRequired {
-                    actionLine(model.t("This account needs a Claude subscription to join the pool."), button: model.t("Check sign-in")) { model.perform(.checkAccount(account.id)) }
+                    actionLine(model.t("This account's Claude subscription can't be used: it may have ended, or a payment may be past due. Check it again once that is settled."), button: model.t("Check sign-in")) { model.perform(.checkAccount(account.id)) }
                 } else if account.state == .suspended {
                     actionLine(model.t("Anthropic restricted this account, so the pool leaves it out. Check it again once that is resolved."),
                                button: model.t("Check sign-in")) { model.perform(.checkAccount(account.id)) }

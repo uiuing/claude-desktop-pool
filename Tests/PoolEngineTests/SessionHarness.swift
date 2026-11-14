@@ -289,12 +289,17 @@ final class SessionHarness: @unchecked Sendable {
         try row(["type": .string("assistant"), "message": .object(body)])
     }
     func turnEnded() throws { try row(["type": .string("system"), "subtype": .string("turn_duration"), "durationMs": .number(1200)]) }
-    func apiError(status: Int?, text: String, info: JSONValue? = nil, stop: String? = nil, apiError: String? = nil) throws {
+    func apiError(status: Int?, text: String, info: JSONValue? = nil, stop: String? = nil, apiError: String? = nil, code: String? = nil) throws {
         var message: [String: JSONValue] = ["id": .string("x"), "model": .string("<synthetic>"),
                                             "content": .array([.object(["type": .string("text"), "text": .string(text)])])]
         if let stop { message["stop_reason"] = .string(stop) }
         var fields: [String: JSONValue] = ["type": .string("assistant"), "isApiErrorMessage": .bool(true), "message": .object(message)]
         if let apiError { fields["apiError"] = .string(apiError) }
+        if let code {
+            // as Claude Code 2.1.325 writes a 403: the code, its short form and the error's type
+            fields["apiErrorCode"] = .string(code); fields["error"] = .string("oauth_org_not_allowed")
+            fields["apiErrorType"] = .string("permission_error"); fields["failedResponseHadNoToolCall"] = .bool(true)
+        }
         if let status { fields["apiErrorStatus"] = .number(Double(status)) }
         if let info { fields["apiErrorParams"] = .object(["rate_limit_info": info]) }
         try row(fields)

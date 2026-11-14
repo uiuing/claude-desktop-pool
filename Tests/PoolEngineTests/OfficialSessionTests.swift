@@ -190,14 +190,22 @@ final class OfficialSessionTests: XCTestCase {
     }
 
     func testClientReportedErrorsAreClassified() async throws {
-        let cases: [(Int?, String, BridgeFailure)] = [
+        let pastDue = "Claude Code can't use your Claude subscription, usually because a payment is past due · Pay or renew at https://claude.ai/settings/billing (if you just paid, try again shortly), or use an Anthropic API key instead"
+        // Anthropic turned the account's subscription away (11-14): the account's state, so the turn moves
+        let coded: [(Int?, String, BridgeFailure, String?)] = [
+            (403, pastDue, .accountUnavailable(.subscriptionRequired), "oauth_not_allowed_for_organization"),
+            (403, "Request not allowed", .accountUnavailable(.subscriptionRequired), "oauth_not_allowed_for_organization"),
+            (403, pastDue, .accountUnavailable(.subscriptionRequired), nil),
+            (403, "Request not allowed", .accountUnavailable(.needsAttention), nil)]
+        let plain: [(Int?, String, BridgeFailure)] = [
             (nil, "Prompt is too long", .clientReported(status: 0, message: "Prompt is too long")),
             (429, "You've hit your limit · resets 7pm", .rateLimited(nil)),
             (nil, "Claude usage limit reached", .rateLimited(nil)),
             (401, "Please run /login", .accountUnavailable(.signedOut)),
             (529, "Overloaded", .clientReported(status: 529, message: "Overloaded")),
             (400, "Third-party apps now draw from your extra usage", .clientReported(status: 400, message: "Third-party apps now draw from your extra usage"))]
-        for (status, text, expected) in cases {
+        let cases = coded + plain.map { ($0.0, $0.1, $0.2, nil) }
+        for (status, text, expected, code) in cases {
             let harness = try SessionHarness(); defer { harness.clean() }
             let session = harness.session(), recorder = SessionObservations()
             let observing = Task { for await event in await session.observations() { await recorder.add(event) } }
@@ -206,7 +214,7 @@ final class OfficialSessionTests: XCTestCase {
             try await waitFor { harness.sentCount == 1 }
             // A refusal whose info names no window says nothing of which limit
             let info: JSONValue? = status == 429 ? .object(["status": .string("rejected")]) : nil
-            try harness.apiError(status: status, text: text, info: info)
+            try harness.apiError(status: status, text: text, info: info, code: code)
             try harness.turnEnded()
             do { _ = try await reply.value; XCTFail("An API error row finished a turn: \(text)") }
             catch { XCTAssertEqual(error as? BridgeFailure, expected, text) }

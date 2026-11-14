@@ -299,6 +299,8 @@ final class ClaudeReplayTests: XCTestCase {
                        .apiError(status: 429, text: "You've hit your limit", rateLimits: .object(["status": .string("rejected")])))
         XCTAssertEqual(row(#"{"type":"assistant","isApiErrorMessage":true,"message":{"id":"x","model":"<synthetic>","content":[{"type":"text","text":"Prompt is too long"}]}}"#),
                        .apiError(status: nil, text: "Prompt is too long", rateLimits: nil))
+        XCTAssertEqual(row(#"{"type":"assistant","isApiErrorMessage":true,"apiErrorStatus":403,"apiErrorType":"permission_error","apiErrorCode":"oauth_not_allowed_for_organization","error":"oauth_org_not_allowed","message":{"id":"x","model":"<synthetic>","content":[{"type":"text","text":"Claude Code can't use your Claude subscription"}]}}"#),
+                       .apiError(status: 403, text: "Claude Code can't use your Claude subscription", rateLimits: nil, code: "oauth_not_allowed_for_organization"))
         XCTAssertNil(row(#"{"type":"assistant","message":{"id":"x","model":"<synthetic>","content":[{"type":"text","text":"No response requested."}]}}"#))
     }
 

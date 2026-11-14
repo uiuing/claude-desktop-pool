@@ -1068,7 +1068,7 @@ public actor OfficialSession: SessionWorker {
         case .accepted: trace.note("row.accepted")
         case .queueHandedOn: trace.note("row.queue_handed_on")
         case .assistant(_, let blocks, _, let stop): trace.note("row.assistant:\(blocks.count):" + (stop ?? "-"))
-        case .apiError(let status, _, _): trace.note("row.api_error:" + (status.map(String.init) ?? "-"))
+        case .apiError(let status, _, _, _): trace.note("row.api_error:" + (status.map(String.init) ?? "-"))
         case .refused: trace.note("row.refused")
         case .turnEnded: trace.note("row.turn_ended")
         }
@@ -1104,7 +1104,7 @@ public actor OfficialSession: SessionWorker {
             Diagnostics.record("session.refused", ["run": runTag])
             finish(.refusal)
             observer?.yield(.idle)
-        case .apiError(let status, let text, let rateLimits):
+        case .apiError(let status, let text, let rateLimits, let code):
             officialIdle = true; turnFailed = true; invalidated = true
             removeAttachmentFiles()
             endTurn()
@@ -1112,7 +1112,7 @@ public actor OfficialSession: SessionWorker {
             guard response != nil else { return }
             failed("api_error:\(status ?? 0)")
             observer?.yield(.attention)
-            fail(classify(status: status ?? 0, text: text))
+            fail(classify(status: status ?? 0, text: text, code: code))
         case .turnEnded:
             officialIdle = true
             if let since = queuedWordsSince {
@@ -1162,9 +1162,10 @@ public actor OfficialSession: SessionWorker {
         if tap?.going(bare: false) == false { tap?.compact() }
     }
 
-    /// The client's error for a turn, as Pool tells it on: an account's limit or sign-in is account evidence;
-    /// anything else is the client's own words and status, 0 when it never asked Anthropic.
-    private func classify(status: Int, text: String) -> BridgeFailure {
+    /// The client's error for a turn, as Pool tells it on: an account's limit, sign-in or refused subscription
+    /// is account evidence, so the turn goes to another account; anything else is the client's own words
+    /// and status, 0 when it never asked Anthropic.
+    private func classify(status: Int, text: String, code: String?) -> BridgeFailure {
         if status == 429 || (status < 400 && ClientErrorWords.quotaSaid(text)) {
             let limits = knownQuota.values.filter { $0.applies(to: model.cliAlias) && $0.isExhausted(at: Date()) }.sorted { $0.id < $1.id }
             return limits.isEmpty ? .rateLimited(nil) : .quotaLimited(limits)
@@ -1172,6 +1173,11 @@ public actor OfficialSession: SessionWorker {
         if status == 401 || (status < 400 && text.lowercased().contains("authentication")) {
             return .accountUnavailable(.signedOut)
         }
+        // Anthropic turned the account's subscription away (a payment past due): every request of the
+        // account meets it, and `claude auth status` still reads it subscribed. Another 403 is the account's
+        // too, checked again before its next turn.
+        if ClientErrorWords.subscriptionRefused(status: status, code: code, text) { return .accountUnavailable(.subscriptionRequired) }
+        if status == 403 { return .accountUnavailable(.needsAttention) }
         return .clientReported(status: status, message: text)
     }
 

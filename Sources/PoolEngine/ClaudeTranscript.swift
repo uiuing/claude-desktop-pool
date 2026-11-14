@@ -22,8 +22,9 @@ struct ClaudeTranscript {
         /// Content blocks of an answer (Claude Code writes one a row), under its message's id, with
         /// the message's usage so far.
         case assistant(message: String, blocks: [Block], usage: BridgeUsage?, stop: String?)
-        /// The client's own error for the turn: a `<synthetic>` message.
-        case apiError(status: Int?, text: String, rateLimits: JSONValue?)
+        /// The client's own error for the turn: a `<synthetic>` message, with Anthropic's error code when
+        /// Claude Code kept one (`apiErrorCode`, else `error`).
+        case apiError(status: Int?, text: String, rateLimits: JSONValue?, code: String? = nil)
         /// Claude refused the request, which Claude Code writes as an error row of its own (a
         /// `refusal` stop, or a request its safety checks blocked): an answer, never one to ask again.
         case refused
@@ -52,7 +53,8 @@ struct ClaudeTranscript {
                     || ["dlp_request_denied", "safety_monitor_blocked"].contains(value["apiError"]?.stringValue ?? "") { return .refused }
                 let status = value["apiErrorStatus"]?.doubleValue.flatMap { $0.isFinite && $0 >= 0 && $0 < 1000 ? Int($0) : nil }
                 let info = value["apiErrorParams"]?["rate_limit_info"]
-                return .apiError(status: status, text: text, rateLimits: info == .null ? nil : info)
+                let code = value["apiErrorCode"]?.stringValue ?? value["error"]?.stringValue
+                return .apiError(status: status, text: text, rateLimits: info == .null ? nil : info, code: code)
             }
             let told: [Block] = blocks.compactMap { block in
                 switch block["type"]?.stringValue {
@@ -209,6 +211,16 @@ enum ClientErrorWords {
     }
     /// Words that say out of quota or slow down, unless they say the conversation is too long.
     static func quotaSaid(_ text: String) -> Bool { matches(quota, text) && !tooLong(status: 400, text) }
+
+    private static let subscriptionWords = try! NSRegularExpression(pattern:
+        #"(?i)subscription|past due|payment|billing|renew|oauth_(org_)?not_allowed"#)
+    /// A 403 that says the account's subscription cannot be used now, most often a payment past due
+    /// (2.1.325: `apiErrorCode` "oauth_not_allowed_for_organization", "...can't use your Claude
+    /// subscription, usually because a payment is past due"). It holds every request of the account
+    /// alike, so it is the account's state, never the conversation's error.
+    static func subscriptionRefused(status: Int, code: String?, _ text: String) -> Bool {
+        status == 403 && (code.map { matches(subscriptionWords, $0) } ?? false || matches(subscriptionWords, text))
+    }
 
     /// The allowance windows a refusal's rate-limit info tells (claude_subscription.go claudeLimits).
     static func windows(_ info: JSONValue, at now: Date) -> [QuotaWindow] {

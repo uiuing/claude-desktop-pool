@@ -524,6 +524,63 @@ final class AppServicesTests: XCTestCase {
         XCTAssertFalse(app.model.currentSessionAccounts.contains { $0.id == a.id })
     }
 
+    /// Anthropic turned a request of one account away for its subscription (a payment past due, 11-14):
+    /// the turn is answered on another account, the person is told which account is out, a quiet check,
+    /// which still reads the sign-in subscribed, leaves it out, and the person's own check brings it back.
+    func testASubscriptionTurnedAwayMovesTheTurnAndHoldsTheAccountUntilChecked() async throws {
+        let a = PoolAccount(email: "mi•••ella@example.com", plan: "Pro", state: .ready)
+        let b = PoolAccount(email: "sa•••ahmad@example.org", plan: "Pro", state: .ready)
+        let refused = AppWorker(failure: .accountUnavailable(.subscriptionRequired)), other = AppWorker()
+        let app = try await application(accounts: [a, b], connected: true, workerFactory: { account, _ in
+            account.id == a.id ? refused : other
+        })
+        try app.auth.setStatus(a.id, email: "mi•••ella@example.com"); try app.auth.setStatus(b.id, email: "sa•••ahmad@example.org")
+        await app.services.handle(.routePolicy(.init(strategy: .ordered, accountOrder: [a.id, b.id], reservePercent: 12)))
+        await eventually("The pool did not start") { app.services.listeningPort != nil }
+        let reply = try await request(app, text: "A synthetic task.")
+        XCTAssertEqual(reply.0, 200, "The turn went on on the other account")
+        let asked = await other.requests; XCTAssertEqual(asked.count, 1)
+        await eventually("The refused account was not left out") { app.model.snapshot.accounts.first { $0.id == a.id }?.state == .subscriptionRequired }
+        XCTAssertEqual(app.model.notice, app.model.t("{0} can't use its Claude subscription right now, usually because a payment is past due. The pool leaves it out until it is checked again.",
+                                                     app.model.accountName(a.id)))
+        _ = try await app.services.checkAccount(a.id, refreshQuota: false, automatic: true)
+        XCTAssertEqual(app.model.snapshot.accounts.first { $0.id == a.id }?.state, .subscriptionRequired, "A quiet check leaves the hold")
+        await app.services.handle(.checkAccount(a.id))
+        XCTAssertEqual(app.model.snapshot.accounts.first { $0.id == a.id }?.state, .ready, "The person's own check brings it back")
+    }
+
+    /// An account whose limit has just passed takes the next conversation though its last sign-in check is
+    /// still recent: a check is reused only for an account that is ready, so one still marked limited is
+    /// checked again instead of taken for a fault (11-14: an account back at 10:00 was marked as needing
+    /// attention, and the pool answered at its limit until the next one was back at 10:10).
+    func testAnAccountBackFromItsLimitTakesTheNextConversation() async throws {
+        let a = PoolAccount(email: "mi•••ella@example.com", plan: "Pro", state: .ready)
+        let b = PoolAccount(email: "sa•••ahmad@example.org", plan: "Pro", state: .ready)
+        let recovery = Date().addingTimeInterval(1.5)
+        let limited = AppWorker(failure: .rateLimited(recovery)), back = AppWorker(), other = AppWorker()
+        let starts = StartCount()
+        let app = try await application(accounts: [a, b], connected: true, workerFactory: { account, _ in
+            guard account.id == a.id else { return other }
+            return await starts.next() == 1 ? limited : back
+        })
+        try app.auth.setStatus(a.id, email: "mi•••ella@example.com"); try app.auth.setStatus(b.id, email: "sa•••ahmad@example.org")
+        await app.services.handle(.routePolicy(.init(strategy: .ordered, accountOrder: [a.id, b.id], reservePercent: 12)))
+        await eventually("The pool did not start") { app.services.listeningPort != nil }
+        let first = try await request(app, text: "A synthetic task.")
+        XCTAssertEqual(first.0, 200, "The turn went on on the other account")
+        await eventually("The account was not held at its limit") { app.model.snapshot.accounts.first { $0.id == a.id }?.state == .limited }
+        try await Task.sleep(for: .seconds(max(0, recovery.timeIntervalSinceNow) + 0.3))
+        let next = try await request(app, text: "Another synthetic task.")
+        XCTAssertEqual(next.0, 200)
+        let asked = await back.requests
+        XCTAssertEqual(asked.count, 1, "The account back from its limit took the conversation")
+        XCTAssertEqual(app.model.snapshot.accounts.first { $0.id == a.id }?.state, .ready)
+    }
+    private actor StartCount {
+        private var count = 0
+        func next() -> Int { count += 1; return count }
+    }
+
     /// An update restarts only after the replies Claude is still writing: nothing new is admitted
     /// meanwhile, a held reply is waited for, not cut, and the wait ends at its cap all the same.
     func testUpdateWaitsForAReplyUnderWayAndRestartsOnceTheCapPasses() async throws {
@@ -1380,9 +1437,10 @@ private actor AppWorker: SessionWorker {
     private(set) var exits = 0
     private(set) var requests: [BridgeRequest] = []
     private var tool: BridgeToolCall?
+    private var failure: BridgeFailure?
     private var hold = false
     private var held: AsyncThrowingStream<BridgeEvent, Error>.Continuation?
-    init(tool: BridgeToolCall? = nil) { self.tool = tool }
+    init(tool: BridgeToolCall? = nil, failure: BridgeFailure? = nil) { self.tool = tool; self.failure = failure }
     func holdNextReply() { hold = true }
     /// Ends the held reply as a finished one ends.
     func finishHeldReply(_ text: String) {
@@ -1396,7 +1454,9 @@ private actor AppWorker: SessionWorker {
         let text = request.messages.last?.content.stringValue ?? "Fixture completed."
         let call = tool; tool = nil
         let waiting = hold; hold = false
+        let failing = failure
         return AsyncThrowingStream { sink in
+            if let failing { sink.finish(throwing: failing); return }
             sink.yield(.usage(.init(inputTokens: 9, outputTokens: 4)))
             if waiting { held = sink; return }
             if let call { sink.yield(.toolUse(call)); sink.yield(.finished(.toolUse)) }

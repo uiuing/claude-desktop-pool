@@ -875,8 +875,9 @@ final class AppServices {
         }
     }
 
+    /// Internal, not private, so tests can run the quiet check that a timer or a failed read starts.
     @discardableResult
-    private func checkAccount(_ id: UUID, refreshQuota: Bool = true, automatic: Bool = false) async throws -> AuthStatus {
+    func checkAccount(_ id: UUID, refreshQuota: Bool = true, automatic: Bool = false) async throws -> AuthStatus {
         guard library.accounts.contains(where: { $0.id == id }) else { throw BridgeFailure.unavailable }
         guard loginProcesses[id] == nil else { throw RuntimeError.processBusy }
         let status: AuthStatus
@@ -895,7 +896,9 @@ final class AppServices {
     }
 
     /// `automatic` is a quiet check nobody asked for: it leaves a hold Anthropic placed, and the
-    /// account's reads, as they are, and acts only on a definite answer.
+    /// account's reads, as they are, and acts only on a definite answer. A subscription a request was
+    /// turned away for is such a hold: `claude auth status` still reads it subscribed while a payment is
+    /// past due, so only the person's own check brings it back.
     private func performAccountCheck(_ id: UUID, automatic: Bool = false) async throws -> AuthStatus {
         let client = try await cli()
         do {
@@ -911,7 +914,7 @@ final class AppServices {
                 }
                 switch status.subscription {
                 case .subscribed:
-                    if !(automatic && next.accounts[index].state == .suspended) { next.accounts[index].state = .ready }
+                    if !(automatic && [.suspended, .subscriptionRequired].contains(next.accounts[index].state)) { next.accounts[index].state = .ready }
                 case .required: next.accounts[index].state = .subscriptionRequired
                 case .unknown: next.accounts[index].state = .needsAttention
                 }
@@ -933,8 +936,6 @@ final class AppServices {
                     model.notice = model.t("{0} is now on {1}. Its quota is read again.", model.displayEmail(status.email), model.t(plan))
                 } else if before.state != .subscriptionRequired, after.state == .subscriptionRequired {
                     model.notice = model.t("{0} no longer has a Claude subscription, so the pool leaves it out.", model.displayEmail(status.email))
-                } else if before.state == .subscriptionRequired, after.state == .ready {
-                    model.notice = model.t("{0} has a subscription again and is back in the pool.", model.displayEmail(status.email))
                 }
             }
             Diagnostics.record("account.check", ["account": Diagnostics.id(id), "automatic": automatic ? "yes" : "no",
@@ -1097,7 +1098,10 @@ final class AppServices {
     private func prepareWorker(account: PoolAccount, model: PoolModel, workspace: OwnedWorkspace,
                                helper: URL, runtime: ManagedRuntime) async throws -> any SessionWorker {
         let status: AuthStatus
+        // Only a ready account starts on a recent check: one still marked limited whose reset has
+        // passed is checked again, which marks it ready, instead of being taken for a fault below.
         if let confirmed = confirmedChecks[account.id], loginProcesses[account.id] == nil,
+           library.accounts.first(where: { $0.id == account.id })?.state == .ready,
            case let age = Date().timeIntervalSince(confirmed.at), age >= 0, age < Self.checkReuse {
             status = confirmed.status
             Diagnostics.record("account.check", ["account": Diagnostics.id(account.id), "outcome": "reused", "age_s": "\(Int(age))"])
@@ -1159,13 +1163,22 @@ final class AppServices {
                 if applied { await quotaService?.observe(scope: scope, windows: windows); await confirmNextAccount() }
             } catch { report(error) }
         case .accountState(let scope, let state, let cooldown):
+            var refused: PoolAccount?
             do { try await mutate { next in
                 scope.applyObservation(to: &next.accounts) { account in
+                    if state == .subscriptionRequired, account.state != .subscriptionRequired { refused = account }
                     account.state = state; account.cooldownUntil = cooldown
                     // a cooldown still ahead holds the account limited, whatever state came with it
                     if state == .ready, let cooldown, cooldown > Date() { account.state = .limited }
                 }
             } } catch { report(error) }
+            // Anthropic turned a request of the account away for its subscription: the turn went on
+            // elsewhere, and the person is told which account is out and why.
+            if let refused {
+                Diagnostics.record("account.refused", ["account": Diagnostics.id(refused.id), "state": "\(state)"])
+                model.notice = model.t("{0} can't use its Claude subscription right now, usually because a payment is past due. The pool leaves it out until it is checked again.",
+                                       model.accountName(refused.id))
+            }
         case .limitUnconfirmed(let scope):
             guard let account = library.accounts.first(where: scope.matches) else { return }
             await quotaService?.requestRefresh(accountID: account.id, reason: .recovery)
