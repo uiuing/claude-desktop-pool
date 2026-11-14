@@ -62,6 +62,10 @@ public final class OfficialCLI: @unchecked Sendable {
         // brings later with nothing waiting for it. Desktop's own Claude Code decides what runs in
         // the background.
         result["CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS"] = "0"
+        // the client's tool results come as sized by Desktop's own Claude Code: past 12,500 estimated
+        // tokens the run would otherwise stop to count each one with an extra request, and cut one
+        // past 25,000. Each mirrored tool also declares the highest result ceiling (OfficialSession).
+        result["MAX_MCP_OUTPUT_TOKENS"] = "1000000"
         return result
     }
 

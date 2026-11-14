@@ -127,6 +127,12 @@ public actor OfficialSession: SessionWorker {
     /// A reply open this long with nothing from the client at all (no hook, stream event or
     /// transcript row) is logged as stalled, with its steps. Only logged: nothing is ended for it.
     static let stallAfter: TimeInterval = 90
+    /// A result of the client's tools is the client's to size: Desktop's Claude Code has already applied
+    /// its own limits. Each mirrored tool declares Claude Code's highest per-tool ceiling (characters), so
+    /// a long file or command output reaches the model whole instead of as a 2 KB preview of a file
+    /// saved in the account's directory, which the model's client cannot read.
+    static let resultCeilingKey = "anthropic/maxResultSizeChars"
+    static let resultCeiling = 500_000
     /// Another run on this account was refused at a limit every model shares, until its reset: a
     /// reply this run waits on that has had nothing of a message streamed and heard nothing for
     /// `limitedQuiet` ends with that refusal, so it moves to another account. A reply that has begun
@@ -536,6 +542,7 @@ public actor OfficialSession: SessionWorker {
             guard names.count <= 4096, tool.inputSchema.objectValue != nil else { throw BridgeFailure.invalidRequest("Invalid tool catalog.") }
             var definition: [String: JSONValue] = ["name": .string(alias), "inputSchema": tool.inputSchema]
             definition["description"] = .string(tool.name + (tool.description.map { ": " + $0 } ?? ""))
+            definition["_meta"] = .object([Self.resultCeilingKey: .number(Double(Self.resultCeiling))])
             tools.append(.object(definition))
         }
         let revision = UUID().uuidString

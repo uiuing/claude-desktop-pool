@@ -43,7 +43,9 @@ final class OfficialSessionTests: XCTestCase {
                                 "CLAUDE_CODE_PROMPT_CACHE_TTL": "5m",
                                 // a call past two minutes still waits for Desktop's result (11-10: runs ended
                                 // their turn at 120 s and held the late result until Desktop gave up)
-                                "CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS": "0"] {
+                                "CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS": "0",
+                                // Desktop's client sized its tool results already: none is counted again or cut
+                                "MAX_MCP_OUTPUT_TOKENS": "1000000"] {
             XCTAssertEqual(plan.environment[key], expected, key)
         }
         for key in ["CLAUDE_CODE_SKIP_PROMPT_HISTORY", "ANTHROPIC_API_KEY", "CLAUDECODE"] {

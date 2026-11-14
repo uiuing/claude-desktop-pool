@@ -33,6 +33,24 @@ final class TurnChoiceSessionTests: XCTestCase {
         _ = await session.close()
     }
 
+    /// Each mirrored tool declares Claude Code's highest result ceiling and the run's MCP output limit
+    /// is lifted, so a long result of the client's tool reaches the model whole, not as a 2 KB preview
+    /// of a file saved in the account's directory (11-14: a 69 KB file read came back as a preview).
+    func testEveryToolKeepsTheClientsResultWhole() async throws {
+        let harness = try SessionHarness(); defer { harness.clean() }
+        let session = harness.session()
+        _ = EventLog.recording(try await session.events(for: request("Read the long synthetic file.", tools: tools)))
+        try await waitFor { harness.sentCount == 1 }
+        let listed = try XCTUnwrap(harness.catalog()["tools"]?.arrayValue)
+        XCTAssertEqual(listed.count, 2)
+        for tool in listed {
+            XCTAssertEqual(tool["_meta"]?["anthropic/maxResultSizeChars"], .number(500_000), "Claude Code's own per-tool ceiling")
+        }
+        XCTAssertEqual(try XCTUnwrap(harness.plan).environment["MAX_MCP_OUTPUT_TOKENS"], "1000000")
+        _ = await session.cancel()
+        _ = await session.requestExit()
+    }
+
     /// A named tool choice offers that tool alone and asks for its call in the instructions.
     func testANamedToolChoiceOffersThatToolAndAsksForIt() async throws {
         let harness = try SessionHarness(); defer { harness.clean() }
