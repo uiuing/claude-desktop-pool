@@ -778,8 +778,8 @@ public enum PoolRouting {
     }
     /// How well an account suits a new conversation, from 0 to about 100. Nothing decides alone:
     /// what is left of the 5-hour limit and of the week weigh about the same; a 5-hour limit that is
-    /// about to renew (`sessionSoon`) counts for a little more than it reads, and one nearly used up
-    /// (`sessionSpent`) ranks behind every account that is not, since a conversation started on it meets
+    /// about to renew (`sessionSoon`) counts for a little more than it reads, and an account whose 5 hours
+    /// or week is nearly used up (`sessionSpent`) ranks behind every account that is not, since a conversation started on it meets
     /// the limit within a turn or two and is then written whole on another account; a week within two days of its reset
     /// counts what it has used less and less, as that comes back, and its unused share is worth spending first; and each conversation already on the account weighs against it.
     /// A week nearly used up caps the 5-hour limit: below `weekCaps` percent left, the 5-hour share
@@ -843,7 +843,10 @@ public enum PoolRouting {
         var expiring = 0.0
         if let (value, until) = week, let until { expiring = value * max(0, 1 - until / weekSoon) }
         var total = 0.45 * sessionValue + 0.40 * weekValue + 0.15 * expiring - 8 * Double(max(0, load))
-        if let (value, _) = session, value < max(sessionSpent, spentBelow) { total -= spentPenalty }
+        // Nearly used up, its 5 hours or its week, an account meets the limit within a turn or two and the
+        // conversation is then written whole on another: it ranks behind every account that is not,
+        // however soon what it used comes back (`handoff` would leave it at the next turn).
+        if min(session?.0 ?? 100, week?.0 ?? 100) < max(sessionSpent, spentBelow) { total -= spentPenalty }
         return total
     }
     /// Points a warm prompt cache adds to an account's score: one per `warmTokensPerPoint` tokens of

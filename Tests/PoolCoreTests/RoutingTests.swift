@@ -512,6 +512,27 @@ final class RoutingTests: XCTestCase {
         XCTAssertEqual(AccountOrdering.ranked([earlier, midWeek], now: now).first?.id, midWeek.id)
     }
 
+    /// A real pool (11-13): a Pro account with full 5 hours and 1% of a week resetting within hours
+    /// scored above accounts with 40% of both, as its used week counted as coming back. A conversation
+    /// started there meets the weekly limit within a turn or two and is written whole on another account:
+    /// a week nearly gone ranks behind every account that is not, and is still taken when none other can.
+    func testAWeekNearlyGoneRanksBehindHealthyAccountsEvenWhenItRenewsSoon() {
+        func pool(_ email: String, session: Double, week: Double, weekResetIn: TimeInterval) -> PoolAccount {
+            .init(email: email, plan: "Pro", state: .ready, windows: [
+                .init(id: "five_hour", usedPercent: 100 - session, observedAt: now, resetsAt: now.addingTimeInterval(4 * 3600)),
+                .init(id: "seven_day", usedPercent: 100 - week, observedAt: now, resetsAt: now.addingTimeInterval(weekResetIn))], createdAt: now)
+        }
+        let nearlyGone = pool("spent@example.com", session: 100, week: 1, weekResetIn: 6 * 3600)
+        let healthy = pool("healthy@example.com", session: 40, week: 40, weekResetIn: 5 * 86400)
+        XCTAssertEqual(PoolRouting.candidates([nearlyGone, healthy], model: "sonnet", now: now).map(\.email),
+                       ["healthy@example.com", "spent@example.com"])
+        XCTAssertEqual(AccountOrdering.ranked([nearlyGone, healthy], now: now).first?.id, healthy.id)
+        XCTAssertEqual(PoolRouting.candidates([nearlyGone], model: "sonnet", now: now).first?.id, nearlyGone.id)
+        // A week with a little more than a turn's share left is read as before.
+        let enough = pool("enough@example.com", session: 100, week: 8, weekResetIn: 6 * 3600)
+        XCTAssertEqual(PoolRouting.candidates([enough, healthy], model: "sonnet", now: now).first?.id, enough.id)
+    }
+
     /// A real pool (11-06): a conversation's new run started while the run it replaced wound down, so
     /// its account counted two conversations for five minutes and sank below accounts with far less week.
     func testAConversationCountsOnceWhileItsRunsOverlap() {
