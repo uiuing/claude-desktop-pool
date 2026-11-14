@@ -39,6 +39,27 @@ final class UIInteractionTests: XCTestCase {
         XCTAssertTrue(try view.inspect().findAll(ViewType.Button.self, where: { try $0.accessibilityLabel().string() == "Refresh quota" }).isEmpty)
     }
 
+    func testAccountControlsCombineFiltersAndKeepTheSelectedSort() throws {
+        let model = PoolAppModel.showcaseModel()
+        let view = AccountsPage(model: model)
+        let inspector = try view.inspect()
+        func select<T: Hashable>(_ id: String, _ value: T) throws {
+            try view.inspect().find(ViewType.Picker.self, where: { try $0.accessibilityIdentifier() == id }).select(value: value)
+        }
+        try select("accounts.sort", AccountListOrder.expirySoonest)
+        try select("accounts.filter.plan", AccountListPlan.plan("Pro"))
+        try select("accounts.filter.status", AccountListStatus.usable)
+        try select("accounts.filter.expiry", AccountListExpiry.soon)
+        try inspector.find(ViewType.TextField.self, where: { try $0.accessibilityIdentifier() == "accounts.search" }).setInput(" BLAKE ")
+        XCTAssertEqual(model.listedAccounts.map(\.email), ["blake@example.org"])
+        try view.inspect().find(ViewType.TextField.self, where: { try $0.accessibilityIdentifier() == "accounts.search" }).setInput("avery")
+        XCTAssertNoThrow(try view.inspect().find(text: "No matching accounts"))
+        try view.inspect().find(button: "Clear filters").tap()
+        XCTAssertFalse(model.accountListFilters.isActive)
+        XCTAssertEqual(model.accountListOrder, .expirySoonest)
+        XCTAssertEqual(model.listedAccounts.count, model.snapshot.accounts.count)
+    }
+
     func testSettingsTogglesAndLanguageUseBindings() throws {
         let model = PoolAppModel.demoModel()
         let view = PoolSettingsPage(model: model)
@@ -139,7 +160,9 @@ final class UIInteractionTests: XCTestCase {
         model.isWorking = true
         XCTAssertTrue(try PoolSettingsPage(model: model).inspect().find(ViewType.Picker.self, where: { try $0.accessibilityIdentifier() == "settings.language" }).isDisabled())
         XCTAssertThrowsError(try QuotaOverview(model: model).inspect().find(button: "Refresh all").tap())
-        XCTAssertTrue(try AccountsPage(model: model).inspect().find(ViewType.Menu.self).isDisabled())
+        XCTAssertTrue(try AccountsPage(model: model).inspect().find(ViewType.Menu.self, where: {
+            try $0.accessibilityIdentifier() == "accounts.actions"
+        }).isDisabled())
     }
 
     private func waitForSetting(_ predicate: () -> Bool) async {

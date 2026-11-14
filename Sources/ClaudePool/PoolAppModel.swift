@@ -224,6 +224,8 @@ final class PoolAppModel {
     var quotaCadence: [UUID: QuotaCadenceSnapshot] = [:]
     var warmUp: [UUID: WarmUpPresentation] = [:]
     var terminal: PoolTerminal?
+    var accountListFilters = AccountListFilters()
+    var accountListOrder = AccountListOrder.ranked
     /// Tokens of the replies Pool served, by day, account and model.
     var usage = UsageLedger() { didSet { usageRevision &+= 1 } }
     var usageRange = UsageRange.today
@@ -573,7 +575,8 @@ final class PoolAppModel {
         case .attention: return t("Needs attention")
         }
     }
-    func accountName(_ id: UUID) -> String { snapshot.accounts.first { $0.id == id }?.email.map(displayEmail) ?? t("Sign-in pending") }
+    func accountName(_ id: UUID) -> String { accountName(snapshot.accounts.first { $0.id == id }) }
+    func accountName(_ account: PoolAccount?) -> String { account?.email.map(displayEmail) ?? t("Sign-in pending") }
     /// An email as shown in the app: masked before "@" when the person asked for it.
     func displayEmail(_ email: String) -> String { preferences.maskEmail ? EmailMask.masked(email) : email }
     var quotaWindowIDs: [String] {
@@ -774,7 +777,7 @@ final class PoolAppModel {
         } else {
             daysLeft = t("{0} days left", "\(Int((remaining / day).rounded(.up)))")
         }
-        return (t("Expires {0}", formattedDate) + " · " + daysLeft, remaining <= 3 * day)
+        return (t("Expires {0}", formattedDate) + " · " + daysLeft, remaining <= AccountListExpiry.soonInterval)
     }
     /// "02:00 reset (in 2h 0m)", for one limit of one account.
     func shortReset(_ account: PoolAccount, window: String) -> String {

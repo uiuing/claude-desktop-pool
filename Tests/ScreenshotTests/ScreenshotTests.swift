@@ -26,6 +26,11 @@ final class ScreenshotTests: XCTestCase {
                     try await capture(MainWindow(model: model), size: .init(width: 640, height: 520), dark: dark,
                                       to: output.appendingPathComponent("\(page.rawValue)-narrow-\(suffix).png"))
                 }
+                model.page = .accounts
+                model.accountListOrder = .sessionMost
+                model.accountListFilters.plan = .plan("Pro")
+                try await capture(MainWindow(model: model), size: .init(width: 640, height: 520), dark: dark,
+                                  to: output.appendingPathComponent("accounts-filtered-\(suffix).png"))
                 if let account = model.snapshot.accounts.first(where: { $0.expiresAt != nil }) {
                     try await capture(AccountExpirationSheet(model: model, account: account).environment(\.locale, model.locale),
                                       size: .init(width: 320, height: 160), dark: dark,

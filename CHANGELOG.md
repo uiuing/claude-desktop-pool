@@ -4,6 +4,10 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+### Added
+
+- Search Accounts and filter by plan, status or expiry. Sort by expiry, remaining 5-hour or weekly quota, account name or date added.
+
 ## [0.2.17] - 2026-11-15
 
 ### Added

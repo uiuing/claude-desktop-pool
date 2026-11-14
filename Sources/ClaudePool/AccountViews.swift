@@ -87,11 +87,19 @@ struct AccountsPage: View {
                     }.frame(maxWidth: .infinity).padding(.vertical, 16)
                 }
             } else {
-                // Best first, as in the menu: usable accounts lead and unusable ones sink to the end.
-                let accounts = model.rankedAccounts
-                VStack(spacing: 12) {
-                    ForEach(accounts) { account in accountCard(account) }
-                }.poolAnimation(PoolMotion.list, value: accounts.map(\.id))
+                let accounts = model.listedAccounts
+                listControls(count: accounts.count)
+                if accounts.isEmpty {
+                    PoolCard(padding: 20) {
+                        Text(model.t("No matching accounts"))
+                            .font(.system(size: 12)).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                    }
+                } else {
+                    VStack(spacing: 12) {
+                        ForEach(accounts) { account in accountCard(account) }
+                    }.poolAnimation(PoolMotion.list, value: accounts.map(\.id))
+                }
             }
         }
         .sheet(item: $editingExpiration) { account in
@@ -106,15 +114,72 @@ struct AccountsPage: View {
                 Button(model.t("Cancel"), role: .cancel) { removing = nil }
             } message: { Text(model.t("This account will no longer be used by the pool.")) }
     }
+
+    private func listControls(count: Int) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                TextField(model.t("Search accounts"), text: $model.accountListFilters.search)
+                    .textFieldStyle(.roundedBorder).controlSize(.small)
+                    .accessibilityIdentifier("accounts.search")
+                Menu {
+                    Menu(model.t("Plan")) {
+                        Picker(model.t("Plan"), selection: $model.accountListFilters.plan) {
+                            ForEach(model.accountListPlanOptions, id: \.self) { plan in
+                                Text(model.t(plan.title)).tag(plan)
+                            }
+                        }.pickerStyle(.inline).accessibilityIdentifier("accounts.filter.plan")
+                    }
+                    Menu(model.t("Status")) {
+                        Picker(model.t("Status"), selection: $model.accountListFilters.status) {
+                            ForEach(AccountListStatus.allCases, id: \.self) { status in
+                                Text(model.t(status.rawValue)).tag(status)
+                            }
+                        }.pickerStyle(.inline).accessibilityIdentifier("accounts.filter.status")
+                    }
+                    Menu(model.t("Expiry date")) {
+                        Picker(model.t("Expiry date"), selection: $model.accountListFilters.expiry) {
+                            ForEach(AccountListExpiry.allCases, id: \.self) { expiry in
+                                Text(model.t(expiry.rawValue)).tag(expiry)
+                            }
+                        }.pickerStyle(.inline).accessibilityIdentifier("accounts.filter.expiry")
+                    }
+                } label: {
+                    Label(model.t("Filter"), systemImage: "line.3.horizontal.decrease.circle")
+                }.controlSize(.small).fixedSize()
+                Menu {
+                    Picker(model.t("Sort by"), selection: $model.accountListOrder) {
+                        ForEach(AccountListOrder.allCases, id: \.self) { order in
+                            Text(model.t(order.rawValue)).tag(order)
+                        }
+                    }.pickerStyle(.inline).accessibilityIdentifier("accounts.sort")
+                } label: {
+                    Label(model.t(model.accountListOrder == .ranked ? "Sort" : model.accountListOrder.rawValue),
+                          systemImage: "arrow.up.arrow.down")
+                }.controlSize(.small).fixedSize()
+            }
+            if model.accountListFilters.isActive {
+                HStack(spacing: 8) {
+                    Text(model.t("Showing {0} of {1} accounts", count.formatted(.number.locale(model.locale)),
+                                 model.snapshot.accounts.count.formatted(.number.locale(model.locale))))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    Button(model.t("Clear filters")) { model.accountListFilters = .init() }
+                        .buttonStyle(.plain).foregroundStyle(PoolPalette.accent)
+                }.font(.system(size: 11))
+            }
+        }
+    }
+
     private func accountCard(_ account: PoolAccount) -> some View {
         let signedIn = account.email?.isEmpty == false && account.state != .signedOut
         let refresh = model.quotaRefresh[account.id]
+        let name = model.accountName(account)
         return PoolCard(padding: 11) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 7) {
                     Circle().fill(model.accountColor(account)).frame(width: 7, height: 7)
-                    Text(model.accountName(account.id)).font(.system(size: 12, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
-                        .help(model.lastQuotaUpdate(account).map { model.t("Last updated {0}", model.exactTime($0)) } ?? model.accountName(account.id))
+                    Text(name).font(.system(size: 12, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                        .help(model.lastQuotaUpdate(account).map { model.t("Last updated {0}", model.exactTime($0)) } ?? name)
                     Text(account.plan.map { model.t($0) } ?? model.t("Plan not reported")).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize()
                     AccountUseBadges(model: model, use: model.accountUse[account.id])
                     Spacer(minLength: 6)
@@ -137,6 +202,7 @@ struct AccountsPage: View {
                         Image(systemName: "ellipsis").font(.system(size: 12, weight: .semibold)).frame(width: 18, height: 18)
                     }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                         .accessibilityLabel(model.t("Account actions")).disabled(model.isWorking)
+                        .accessibilityIdentifier("accounts.actions")
                 }
                 if let expiry = account.expiresAt {
                     let expiration = model.accountExpiration(expiry)
