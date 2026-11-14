@@ -52,12 +52,15 @@ public enum DevRecord {
         for (key, value) in ids { object[key] = .string(value) }
         let body = data()
         if !body.isEmpty { object["data"] = .object(body) }
-        // The number is taken last and under the lock, so it orders records as they were made.
+        // Encoded before the lock: a long request's record takes a while to encode, and every log
+        // line of every thread, the main thread's too, goes through this lock (11-13: the window and
+        // the routing waited up to a second behind one). The number is taken last and under the
+        // lock, so it orders records as they were handed on.
+        guard var line = try? JSONEncoder().encode(JSONValue.object(object)), line.last == UInt8(ascii: "}") else { return }
+        line.removeLast()
         lock.withLock {
             sequence += 1
-            object["seq"] = .number(Double(sequence))
-            guard var line = try? JSONEncoder().encode(JSONValue.object(object)) else { return }
-            line.append(10)
+            line.append(contentsOf: Data(",\"seq\":\(sequence)}\n".utf8))
             sink(Entry(channel: channel, line: line))
         }
     }

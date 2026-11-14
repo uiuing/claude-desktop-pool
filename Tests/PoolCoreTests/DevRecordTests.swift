@@ -45,6 +45,27 @@ final class DevRecordTests: XCTestCase {
         XCTAssertEqual(records[2].value["data"]?["outcome"], .string("ok"))
     }
 
+    /// A long record is encoded before the recording's lock: a log line made meanwhile, on any thread,
+    /// is handed on at once instead of waiting behind it (11-13: the window and the routing waited up
+    /// to a second behind the redaction record of a long request).
+    func testALongRecordDoesNotHoldUpALogLineMadeMeanwhile() {
+        let collector = DevRecordCollector()
+        DevRecord.install { collector.take($0) }
+        let review = JSONValue.array((0..<100_000).map { .object(["location": .string("messages/\($0)/content/0/text"), "n": .number(Double($0))]) })
+        let gathered = DispatchSemaphore(value: 0), done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            DevRecord.record(.privacy, "privacy.prepared") { defer { gathered.signal() }; return ["review": review] }
+            done.signal()
+        }
+        gathered.wait()
+        Diagnostics.record("coordinator.decision", ["reason": "headroom"])
+        done.wait()
+        let records = collector.records.sorted { ($0.value["seq"]?.doubleValue ?? 0) < ($1.value["seq"]?.doubleValue ?? 0) }
+        XCTAssertEqual(records.map { $0.value["kind"]?.stringValue }, ["log.coordinator.decision", "privacy.prepared"],
+                       "The log line went on while the long record was encoded")
+        XCTAssertEqual(records.last?.value["data"]?["review"]?.arrayValue?.count, 100_000, "The long record is whole")
+    }
+
     /// A real full log (11-07): every request kept its conversation whole, so 283 turns of a few
     /// conversations took 540 MB. Each record keeps what changed since the thread's last one.
     func testAConversationIsKeptAsWhatChangedSinceItsLastRecord() {

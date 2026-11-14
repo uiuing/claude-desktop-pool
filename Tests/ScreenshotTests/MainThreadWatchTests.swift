@@ -51,6 +51,24 @@ final class MainThreadWatchTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(200))
         XCTAssertEqual(stacks.all.count, 2)
     }
+    /// A stall too short to be a freeze says once where the main thread was, while it lasts, and not
+    /// again within `shortReadingGap`: the window's half-second pauses (11-13) left no reading at all.
+    @MainActor func testAShortStallSaysOnceWhereTheMainThreadWas() async throws {
+        let stacks = Stacks(), seen = Seen()
+        let watch = MainThreadWatch(interval: 0.02, threshold: 0.15, hung: 10, facts: { .init() },
+                                    record: { event, waited, _ in seen.add(event, waited, false) }) { reading, stack in stacks.add(reading, stack) }
+        watch.start()
+        try await Task.sleep(for: .milliseconds(80))
+        hold(0.5)
+        try await Task.sleep(for: .milliseconds(100))
+        hold(0.5)
+        try await Task.sleep(for: .milliseconds(150))
+        watch.stop()
+        XCTAssertEqual(stacks.all.map(\.reading), [0], "Read once in the first stall, not again within the gap")
+        let frames = try XCTUnwrap(stacks.all.first?.stack.frames)
+        XCTAssertTrue(frames.contains { $0.contains("PackageTests+") || $0.contains("xctest+") }, "The test's own code is among the frames")
+        XCTAssertEqual(seen.all.map(\.event), ["ui.stall", "ui.stall"], "Each stall is still said")
+    }
     private final class Stacks: @unchecked Sendable {
         private let lock = NSLock()
         private var items: [(reading: Int, stack: MainThreadWatch.Stack)] = []

@@ -8,7 +8,9 @@ import PoolCore
 /// answer; an answer that took `threshold` or more is logged as `ui.stall` with how long, and one
 /// still not given after `hung` is logged once as `ui.stalled`, as a freeze that ends in a forced
 /// quit never answers. A freeze is then followed by `ui.stack` lines: where the main thread is,
-/// read a few times so a loop can be told from a wait. Time is counted in uptime, so sleep is not a stall.
+/// read a few times so a loop can be told from a wait. A stall too short for that is read once while
+/// it lasts (`reading=0`), at most every `shortReadingGap`, so the brief pauses that never reach `hung`
+/// say where they were too. Time is counted in uptime, so sleep is not a stall.
 final class MainThreadWatch: @unchecked Sendable {
     /// What the app was showing and doing, read on the main thread when it answers.
     struct Facts: Sendable {
@@ -37,10 +39,14 @@ final class MainThreadWatch: @unchecked Sendable {
     private var mainThread: mach_port_t = 0
     private var readings = 0
     private var readAt: DispatchTime?
+    private var shortReadAt: DispatchTime?
 
     /// Readings of the main thread taken during one freeze, and the time between them.
     static let readingsMost = 3
     static let readingGap: TimeInterval = 0.5
+    /// The least time between readings of stalls shorter than a freeze: one is enough to name a cause
+    /// that comes back, and the log stays small when it comes back every second.
+    static let shortReadingGap: TimeInterval = 30
     /// Frames kept of one reading: the innermost say what the thread is doing.
     static let framesMost = 48
 
@@ -71,6 +77,11 @@ final class MainThreadWatch: @unchecked Sendable {
     private func tick() {
         if let asked {
             let waited = Self.seconds(since: asked)
+            if waited >= threshold, waited < hung, !reportedHung,
+               shortReadAt.map({ Self.seconds(since: $0) >= Self.shortReadingGap }) ?? true {
+                shortReadAt = .now()
+                if let stack = Self.read(mainThread) { trace(0, stack) }
+            }
             if waited >= hung, !reportedHung { reportedHung = true; readings = 0; readAt = nil; record("ui.stalled", waited, last) }
             if reportedHung, readings < Self.readingsMost, readAt.map({ Self.seconds(since: $0) >= Self.readingGap }) ?? true {
                 readings += 1; readAt = .now()
