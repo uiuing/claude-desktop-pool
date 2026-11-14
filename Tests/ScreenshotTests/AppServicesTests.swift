@@ -356,6 +356,24 @@ final class AppServicesTests: XCTestCase {
         XCTAssertEqual(saved.accounts, app.model.snapshot.accounts)
     }
 
+    func testAccountExpirationCanBeSetChangedAndClearedWithoutChangingItsStanding() async throws {
+        let now = Date(), account = PoolAccount(email: "avery@example.com", plan: "Pro", state: .ready,
+            windows: [.init(id: "five_hour", usedPercent: 20, observedAt: now, resetsAt: now.addingTimeInterval(3_600))])
+        let app = try await application(accounts: [account], installed: false)
+        let store = PoolStore(workspace: app.workspace)
+        XCTAssertEqual(app.model.snapshot.accounts, [account])
+
+        for date in [now.addingTimeInterval(-3_600), now.addingTimeInterval(3_600), nil] {
+            await app.services.handle(.setAccountExpiration(account.id, date))
+            var expected = account
+            expected.expiresAt = date
+            let saved = try await store.load()
+            XCTAssertEqual(saved.accounts, [expected])
+            XCTAssertEqual(app.model.snapshot.accounts, [expected])
+            XCTAssertEqual(app.model.readyAccounts.map(\.id), [account.id])
+        }
+    }
+
     func testAccountChecksClearChangedPlanQuotaAndKeepFreeDistinctFromSignOut() async throws {
         let now = Date(), account = PoolAccount(email: "mi•••ella@example.com", plan: "Pro", state: .ready,
             windows: [.init(id: "five_hour", usedPercent: 80, observedAt: now, resetsAt: now.addingTimeInterval(3_600))])

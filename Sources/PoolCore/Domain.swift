@@ -226,6 +226,8 @@ public struct PoolAccount: Codable, Equatable, Sendable, Identifiable {
     public var windows: [QuotaWindow]
     public var cooldownUntil: Date?
     public var createdAt: Date
+    /// A date entered by the user for display.
+    public var expiresAt: Date?
     public init(id: UUID = UUID(), email: String? = nil, identityFingerprint: String? = nil,
                 plan: String? = nil, state: AccountState = .signedOut,
                 windows: [QuotaWindow] = [], cooldownUntil: Date? = nil, createdAt: Date = Date()) {

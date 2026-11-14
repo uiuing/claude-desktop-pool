@@ -6,6 +6,7 @@ import SwiftUI
 
 enum UIAction: Equatable {
     case installRuntime, checkRuntimeUpdate, checkAndUpdateRuntime, updateRuntime, rollbackRuntime, addAccount, signIn(UUID), checkAccount(UUID), removeAccount(UUID)
+    case setAccountExpiration(UUID, Date?)
     case connectDesktop, disconnectDesktop, restartDesktop, menuBarPlan(String?), sendTerminalInput(String), sendTerminalKey(String), cancelSession(UUID)
     case requestSessionExit(UUID), closeTerminal(UUID)
     case installPrivacyModel, previewPrivacy(String), clearPrivacyPreview, clearPrivacyReview
@@ -760,6 +761,9 @@ final class PoolAppModel {
     func shortDate(_ date: Date) -> String {
         dateFormatter("Md", template: true, zone: shortDateZone).string(from: date)
     }
+    func accountExpirationText(_ date: Date) -> String {
+        t("Expires {0}", dateFormatter("yMdHHmm", template: true, zone: shortDateZone).string(from: date))
+    }
     /// "02:00 reset (in 2h 0m)", for one limit of one account.
     func shortReset(_ account: PoolAccount, window: String) -> String {
         guard let reading = account.windows.first(where: { $0.id == window }) else { return t("Not reported yet") }
@@ -909,6 +913,8 @@ final class PoolAppModel {
         case .signIn(let id), .checkAccount(let id):
             terminal = .init(id: id, title: accountName(id), output: t("Preview only. Official sign-in will appear here."))
         case .removeAccount(let id): snapshot.accounts.removeAll { $0.id == id }
+        case .setAccountExpiration(let id, let date):
+            if let index = snapshot.accounts.firstIndex(where: { $0.id == id }) { snapshot.accounts[index].expiresAt = date }
         case .connectDesktop, .restartDesktop: snapshot.desktop = .connected
         case .disconnectDesktop: snapshot.desktop = .disconnected
         case .menuBarPlan(let plan): preferences.menuBarPlan = plan
@@ -1032,6 +1038,7 @@ final class PoolAppModel {
             PoolAccount(id: ids[6], email: "harper@example.com", plan: "Max 5x", state: .ready, windows: limits(41, 27) + [fable(28)], createdAt: date),
             PoolAccount(id: ids[7], email: "jordan@example.org", plan: "Ultra", state: .ready, windows: limits(nil, 36) + [fable(10)], createdAt: date)
         ]
+        model.snapshot.accounts[4].expiresAt = date.addingTimeInterval(604_800)
         let sessions = (1...6).map { UUID(uuidString: "1a1b2c3d-3333-4aaa-8bbb-00000000000\($0)")! }
         model.snapshot.sessions = [
             .init(id: sessions[0], accountID: ids[0], name: "Refactor the parser", model: "Opus", state: .waiting, startedAt: date.addingTimeInterval(-900), conversation: "showcase-1"),

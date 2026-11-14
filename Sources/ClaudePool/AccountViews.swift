@@ -63,6 +63,7 @@ struct SetupCard: View {
 struct AccountsPage: View {
     @Bindable var model: PoolAppModel
     @State private var removing: PoolAccount?
+    @State private var editingExpiration: PoolAccount?
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if model.snapshot.accounts.isEmpty {
@@ -93,6 +94,9 @@ struct AccountsPage: View {
                 }.poolAnimation(PoolMotion.list, value: accounts.map(\.id))
             }
         }
+        .sheet(item: $editingExpiration) { account in
+            AccountExpirationSheet(model: model, account: account)
+        }
         .confirmationDialog(model.t("Remove {0}?", removing.map { model.accountName($0.id) } ?? ""),
             isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), titleVisibility: .visible) {
                 Button(model.t("Remove account"), role: .destructive) {
@@ -102,7 +106,6 @@ struct AccountsPage: View {
                 Button(model.t("Cancel"), role: .cancel) { removing = nil }
             } message: { Text(model.t("This account will no longer be used by the pool.")) }
     }
-    /// Two lines per account: who and in what state, then each limit with what is left and when it resets.
     private func accountCard(_ account: PoolAccount) -> some View {
         let signedIn = account.email?.isEmpty == false && account.state != .signedOut
         let refresh = model.quotaRefresh[account.id]
@@ -123,6 +126,8 @@ struct AccountsPage: View {
                             .help(model.t("Refresh quota")).accessibilityLabel(model.t("Refresh quota"))
                     }
                     Menu {
+                        Button(model.t("Set expiry…")) { editingExpiration = account }
+                        Divider()
                         Button(model.t("Check sign-in")) { model.perform(.checkAccount(account.id)) }
                         Button(model.t("Sign in again")) { model.perform(.signIn(account.id)) }
                         Divider()
@@ -132,6 +137,9 @@ struct AccountsPage: View {
                         Image(systemName: "ellipsis").font(.system(size: 12, weight: .semibold)).frame(width: 18, height: 18)
                     }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                         .accessibilityLabel(model.t("Account actions")).disabled(model.isWorking)
+                }
+                if let expiry = account.expiresAt {
+                    Text(model.accountExpirationText(expiry)).font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 // The limits below already say what is left; this line speaks only when the account cannot be used.
                 if account.standing(at: model.now) != .usable && account.standing(at: model.now) != .unread {
@@ -188,5 +196,47 @@ struct AccountsPage: View {
                          valueText: remaining.map { model.t("{0}% left", "\(Int($0.rounded()))") } ?? model.quotaText(account, window: id), value: remaining)
             .help(model.refusedNote(account, window: id) ?? account.windows.first(where: { $0.id == id })?.resetsAt.map { model.t("Resets {0}", model.exactTime($0)) + " · " + model.countdown($0) } ?? model.resetText(account, window: id))
             .accessibilityElement(children: .combine)
+    }
+}
+
+struct AccountExpirationSheet: View {
+    let model: PoolAppModel
+    let account: PoolAccount
+    @Environment(\.dismiss) private var dismiss
+    @State private var date: Date
+
+    init(model: PoolAppModel, account: PoolAccount) {
+        self.model = model
+        self.account = account
+        _date = State(initialValue: account.expiresAt ?? model.now)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(model.t("Expiry date and time")).font(.system(size: 14, weight: .semibold))
+                Text(model.accountName(account.id)).font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+            HStack(spacing: 8) {
+                DatePicker(model.t("Expiry date"), selection: $date, displayedComponents: .date)
+                DatePicker(model.t("Time"), selection: $date, displayedComponents: .hourAndMinute)
+                    .environment(\.locale, Locale(identifier: "en_GB"))
+            }.labelsHidden().datePickerStyle(.field)
+                .environment(\.timeZone, model.shortDateZone)
+            HStack(spacing: 8) {
+                if account.expiresAt != nil {
+                    Button(model.t("Clear")) { save(nil) }
+                }
+                Spacer(minLength: 8)
+                Button(model.t("Cancel")) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(model.t("Save")) { save(date) }
+                    .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+            }
+        }.padding(20).frame(width: 320).background(PoolPalette.background)
+    }
+
+    private func save(_ date: Date?) {
+        model.perform(.setAccountExpiration(account.id, date))
+        dismiss()
     }
 }

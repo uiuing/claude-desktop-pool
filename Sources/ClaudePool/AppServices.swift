@@ -229,7 +229,7 @@ final class AppServices {
         let serial: Bool
         switch action {
         case .sendTerminalInput, .sendTerminalKey, .cancelSession, .requestSessionExit,
-             .previewPrivacy, .clearPrivacyPreview, .clearPrivacyReview, .closeTerminal, .warmUpNow, .showLog,
+             .previewPrivacy, .clearPrivacyPreview, .clearPrivacyReview, .closeTerminal, .setAccountExpiration, .warmUpNow, .showLog,
              .showFullLog, .clearFullLog, .measureFullLog, .fullLog: serial = false
         default: serial = true
         }
@@ -277,6 +277,10 @@ final class AppServices {
                 }
             case .signIn(let id): try await signIn(id)
             case .checkAccount(let id): try await checkAccount(id)
+            case .setAccountExpiration(let id, let date):
+                try await mutate(updateServices: false) { next in
+                    if let index = next.accounts.firstIndex(where: { $0.id == id }) { next.accounts[index].expiresAt = date }
+                }
             case .refreshQuota(let accountID):
                 try await prepareQuotaService()
                 // A session held for the user opens for them; a reading in progress or a warm session is just read again.
@@ -410,7 +414,7 @@ final class AppServices {
     private static func actionSubject(_ action: UIAction) -> UUID? {
         switch action {
         case .signIn(let id), .checkAccount(let id), .removeAccount(let id), .warmUpNow(let id),
-             .cancelSession(let id), .requestSessionExit(let id), .closeTerminal(let id): return id
+             .cancelSession(let id), .requestSessionExit(let id), .closeTerminal(let id), .setAccountExpiration(let id, _): return id
         case .refreshQuota(let id): return id
         default: return nil
         }
@@ -421,6 +425,7 @@ final class AppServices {
         case .quotaRefreshPreferences(let preferences): return ["quota_refresh": DevRecord.value(preferences)]
         case .warmUpPreferences(let preferences): return ["warm_up": DevRecord.value(preferences)]
         case .menuBarPlan(let plan): return ["plan": DevRecord.string(plan)]
+        case .setAccountExpiration(_, let date): return ["expires_at": DevRecord.value(date)]
         case .language(let value), .appearance(let value): return ["value": .string(value)]
         case .maskEmail(let value), .redaction(let value), .fullLog(let value): return ["on": .bool(value)]
         case .previewPrivacy(let text): return ["chars": .number(Double(text.count))]
@@ -429,7 +434,7 @@ final class AppServices {
         }
     }
 
-    private func mutate(later: Bool = false, _ edit: @escaping @MainActor (inout PoolLibrary) -> Void) async throws {
+    private func mutate(later: Bool = false, updateServices: Bool = true, _ edit: @escaping @MainActor (inout PoolLibrary) -> Void) async throws {
         let previous = pendingMutation
         let task = Task { @MainActor in
             _ = try? await previous?.value
@@ -459,11 +464,13 @@ final class AppServices {
                 Diagnostics.record("account.state", ["account": Diagnostics.id(account.id), "from": account.state.rawValue, "to": "removed"])
             }
             library = next; model.preferences = next.preferences; model.snapshot.accounts = next.accounts
+            guard updateServices else { return }
             await coordinator?.updateAccounts(next.accounts)
             await coordinator?.updateRoutingPolicy(next.preferences.routingPolicy)
         }
         pendingMutation = task
         try await task.value
+        guard updateServices else { return }
         await quotaService?.setPreferences(library.preferences.quotaRefresh)
         await quotaService?.setReserve(library.preferences.routingPolicy.reservePercent)
         await quotaService?.setAccounts(library.accounts)
