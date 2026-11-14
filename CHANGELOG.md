@@ -4,6 +4,12 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.2.15] - 2026-11-14
+
+### Changed
+
+- Redaction adds less to each request: about 13 ms instead of 60 in a long conversation, as its keys of the request's texts are written much faster. What is masked, and what a restart keeps, is the same.
+
 ## [0.2.14] - 2026-11-14
 
 ### Fixed
@@ -287,7 +293,8 @@ First public release.
 - Update checks against GitHub Releases with verified one-click install.
 - Option to hide email addresses throughout the app.
 
-[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.14...HEAD
+[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.15...HEAD
+[0.2.15]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.14...v0.2.15
 [0.2.14]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.13...v0.2.14
 [0.2.13]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.12...v0.2.13
 [0.2.12]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.11...v0.2.12
