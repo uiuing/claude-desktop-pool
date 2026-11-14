@@ -139,7 +139,10 @@ struct AccountsPage: View {
                         .accessibilityLabel(model.t("Account actions")).disabled(model.isWorking)
                 }
                 if let expiry = account.expiresAt {
-                    Text(model.accountExpirationText(expiry)).font(.system(size: 11)).foregroundStyle(.secondary)
+                    let expiration = model.accountExpiration(expiry)
+                    Text(expiration.text)
+                        .font(.system(size: 11, weight: expiration.isSoon ? .semibold : .regular))
+                        .foregroundStyle(expiration.isSoon ? PoolPalette.amber : .secondary)
                 }
                 // The limits below already say what is left; this line speaks only when the account cannot be used.
                 if account.standing(at: model.now) != .usable && account.standing(at: model.now) != .unread {

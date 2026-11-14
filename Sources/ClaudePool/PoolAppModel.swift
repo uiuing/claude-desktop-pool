@@ -761,8 +761,20 @@ final class PoolAppModel {
     func shortDate(_ date: Date) -> String {
         dateFormatter("Md", template: true, zone: shortDateZone).string(from: date)
     }
-    func accountExpirationText(_ date: Date) -> String {
-        t("Expires {0}", dateFormatter("yMdHHmm", template: true, zone: shortDateZone).string(from: date))
+    func accountExpiration(_ date: Date) -> (text: String, isSoon: Bool) {
+        let formattedDate = dateFormatter("yMdHHmm", template: true, zone: shortDateZone).string(from: date)
+        let day: TimeInterval = 86_400
+        let remaining = date.timeIntervalSince(now)
+        guard remaining > 0 else { return (t("Expired {0}", formattedDate), false) }
+        let daysLeft: String
+        if remaining < day {
+            daysLeft = t("Less than 1 day left")
+        } else if remaining == day {
+            daysLeft = t("1 day left")
+        } else {
+            daysLeft = t("{0} days left", "\(Int((remaining / day).rounded(.up)))")
+        }
+        return (t("Expires {0}", formattedDate) + " · " + daysLeft, remaining <= 3 * day)
     }
     /// "02:00 reset (in 2h 0m)", for one limit of one account.
     func shortReset(_ account: PoolAccount, window: String) -> String {
@@ -1039,6 +1051,8 @@ final class PoolAppModel {
             PoolAccount(id: ids[7], email: "jordan@example.org", plan: "Ultra", state: .ready, windows: limits(nil, 36) + [fable(10)], createdAt: date)
         ]
         model.snapshot.accounts[4].expiresAt = date.addingTimeInterval(604_800)
+        model.snapshot.accounts[1].expiresAt = date.addingTimeInterval(172_800)
+        model.snapshot.accounts[6].expiresAt = date.addingTimeInterval(-86_400)
         let sessions = (1...6).map { UUID(uuidString: "1a1b2c3d-3333-4aaa-8bbb-00000000000\($0)")! }
         model.snapshot.sessions = [
             .init(id: sessions[0], accountID: ids[0], name: "Refactor the parser", model: "Opus", state: .waiting, startedAt: date.addingTimeInterval(-900), conversation: "showcase-1"),
