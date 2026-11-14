@@ -251,6 +251,16 @@ public actor PrivacyBridge: BridgeBackend {
         let aliased = alias.hasPrefix("request:") ? nil : taskContext(alias: alias, request: request)
         if aliases[alias] != nil, aliased == nil, renewed == nil { renewed = "other_task" }
         if let id = aliased, let held = contexts[id], renewed != "answered_elsewhere" {
+            if held.busy, results.isEmpty, Self.goesOnFromNothing(request) {
+                // Nothing the busy request answers is this one's history: it goes now, in a spare copy of
+                // what the context knows, let go of when it ends (Claude Code's auto-mode check of each
+                // tool call comes this way, two often at once).
+                let source = held.spareOf.flatMap { contexts[$0] == nil ? nil : $0 } ?? id
+                let spareID = UUID(); contexts[spareID] = held.spare(of: source)
+                Diagnostics.record("privacy.route", ["decision": "context_wait", "outcome": "spare", "waited_ms": "0",
+                                                     "conversation": Diagnostics.tag(alias), "contexts": String(contexts.count)])
+                return spareID
+            }
             if request.messages.count == 1 && results.isEmpty && held.busy {
                 // A new task of the conversation has no history to share with the busy one: no wait.
                 Diagnostics.record("privacy.route", ["decision": "context_wait", "outcome": "skipped_single",
@@ -263,8 +273,9 @@ public actor PrivacyBridge: BridgeBackend {
             let matching = contexts.filter { !$0.value.busy && $0.value.pending.isEmpty && $0.value.historyFingerprint == fingerprint }
             if matching.count == 1, let id = matching.keys.first { return id }
         }
-        if contexts.count >= 32 {
-            // A context whose calls nobody answered for parkLongest no longer holds its place.
+        while contexts.count >= 32 {
+            // A context whose calls nobody answered for parkLongest no longer holds its place. Spares
+            // answering may stand above the limit for their request's while.
             let idle = contexts.filter { !$0.value.busy && ($0.value.pending.isEmpty || Date().timeIntervalSince($0.value.lastUsed) >= 300) }
             guard let oldest = idle.min(by: { $0.value.lastUsed < $1.value.lastUsed }) else { throw PrivacyFailure.capacityReached }
             remove(oldest.key)
@@ -767,12 +778,33 @@ public actor PrivacyBridge: BridgeBackend {
         onUpdate(.requestState(conversationID: context.backendID, active: false))
         if alias.hasPrefix("request:") { aliases.removeValue(forKey: alias); context.aliases.remove(alias) }
         wake(id)
+        if let source = context.spareOf {
+            // A spare goes with its request while the context it was copied from is there; else it stays
+            // as the conversation's own.
+            let released = contexts[source] != nil && context.pending.isEmpty
+            if released { remove(id) } else { context.spareOf = nil }
+            Diagnostics.record("privacy.route", ["decision": "spare_ended", "outcome": released ? "released" : "kept",
+                                                 "conversation": Diagnostics.tag(alias), "contexts": String(contexts.count)])
+        }
     }
+    /// Takes a context out. Its conversation ids go with it, except a spare's: those its source still has
+    /// go on in that context, which knew all the spare was copied with.
     private func remove(_ id: UUID) {
         defer { wake(id) }
         guard let context = contexts.removeValue(forKey: id) else { return }
-        for alias in context.aliases { aliases.removeValue(forKey: alias) }
+        let source = context.spareOf.flatMap { sourceID in contexts[sourceID].map { (id: sourceID, context: $0) } }
+        for alias in context.aliases {
+            if let source {
+                guard aliases[alias] == id else { continue }
+                aliases[alias] = source.id; source.context.aliases.insert(alias)
+            } else { aliases.removeValue(forKey: alias) }
+        }
         for call in context.pending { toolOwners.removeValue(forKey: call) }
+    }
+    /// A request that goes on from nothing a context answered: no reply in it and no tools to call, so no
+    /// result of a call comes back to it (a one-off such as a title or an auto-mode check).
+    static func goesOnFromNothing(_ request: BridgeRequest) -> Bool {
+        (request.tools ?? []).isEmpty && !request.messages.contains { $0.role == "assistant" }
     }
     private func historyFingerprint(_ history: [BridgeMessage]) throws -> String {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]

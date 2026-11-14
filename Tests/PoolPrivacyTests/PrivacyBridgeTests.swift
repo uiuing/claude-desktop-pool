@@ -1223,6 +1223,57 @@ extension PrivacyBridgeTests {
             _ = try await busy.value; _ = try await waiting.value
         }
     }
+
+    /// Claude Code's auto-mode check of a tool call, as it comes: unstreamed, no tools and no reply, its
+    /// instructions in one message and the conversation's transcript as blocks in the next. Synthetic text.
+    private func autoModeCheck(_ entries: [String]) -> BridgeRequest {
+        func blocks(_ texts: [String]) -> JSONValue { .array(texts.map { .object(["type": .string("text"), "text": .string($0)]) }) }
+        var request = BridgeRequest(model: "claude-sonnet", messages: [.init(role: "user", content: blocks(["Judge the transcript's last action."])),
+                                                                     .init(role: "user", content: blocks(entries))])
+        request.system = blocks(["You classify synthetic actions.", "Answer allow or block."])
+        request.stream = false
+        return request
+    }
+
+    /// Two checks at once: the second goes without waiting for the context the first holds, in a spare
+    /// copy of it (the same stand-ins, nothing read before read again, its own id for the pool in the same
+    /// conversation), let go of when it ends, so the next check goes on in that context.
+    func testAnAutoModeCheckBesideABusyOneGoesAtOnceInASpareCopy() async throws {
+        let detector = FixtureDetector(words: ["Synthetic Person": .person])
+        let backend = PrivacyBackendFixture(), bridge = PrivacyBridge(backend: backend, detector: detector, wait: .seconds(5))
+        let alias = "session-check#classifier"
+        let entries = ["User: ask Synthetic Person about the synthetic report", "Assistant: reading https://docs.example.com"]
+        let first = Task { try await collectPrivacy(try await bridge.events(for: autoModeCheck(entries + ["Action: ls"]), conversationID: alias)) }
+        try await privacyEventually { await backend.requests.count == 1 }
+        await backend.finish(0, [.text("allow"), .finished(.endTurn)])
+        _ = try await first.value
+        let second = Task { try await collectPrivacy(try await bridge.events(for: autoModeCheck(entries + ["Action: cat a"]), conversationID: alias)) }
+        try await privacyEventually { await backend.requests.count == 2 }
+        let readBefore = await detector.inspected.filter { $0.key.contains("Synthetic Person") }.values.reduce(0, +)
+        let began = ContinuousClock.now
+        let third = Task { try await collectPrivacy(try await bridge.events(for: autoModeCheck(entries + ["Action: cat b"]), conversationID: alias)) }
+        try await privacyEventually { await backend.requests.count == 3 }
+        XCTAssertLessThan(ContinuousClock.now - began, .milliseconds(700), "No wait for the busy check")
+        let sent = await backend.requests, ids = await backend.identities
+        XCTAssertEqual(ids[1], ids[0], "The second check goes on in the first's context")
+        XCTAssertNotEqual(ids[2], ids[1], "The spare has its own id for the pool")
+        XCTAssertEqual(ids[2]?.split(separator: "@").last, ids[1]?.split(separator: "@").last, "in the same conversation")
+        let transcript = { (index: Int) in sent[index].messages[1].content.arrayValue.map { Array($0.prefix(2)) } }
+        XCTAssertEqual(transcript(2), transcript(1), "The same stand-ins")
+        XCTAssertTrue(transcript(2)?.first?["text"]?.stringValue?.contains("{{") ?? false)
+        let readAfter = await detector.inspected.filter { $0.key.contains("Synthetic Person") }.values.reduce(0, +)
+        XCTAssertEqual(readAfter, readBefore, "What the context read is not read again")
+        await backend.finish(2, [.text("allow"), .finished(.endTurn)])
+        _ = try await third.value
+        await backend.finish(1, [.text("allow"), .finished(.endTurn)])
+        _ = try await second.value
+        let fourth = Task { try await collectPrivacy(try await bridge.events(for: autoModeCheck(entries + ["Action: pwd"]), conversationID: alias)) }
+        try await privacyEventually { await backend.requests.count == 4 }
+        let last = await backend.identities
+        XCTAssertEqual(last[3], ids[1], "The spare was let go: the next check goes on in the context it was copied from")
+        await backend.finish(3, [.text("allow"), .finished(.endTurn)])
+        _ = try await fourth.value
+    }
 }
 
 extension PrivacyBridgeTests {

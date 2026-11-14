@@ -121,6 +121,31 @@ final class PrivacyConversation {
         backendID = "privacy:" + UUID().uuidString + (self.conversationTag.map { "@" + $0 } ?? "")
     }
 
+    /// The context a spare was copied from (`spare(of:)`), let go of when the spare's request ends.
+    var spareOf: UUID?
+    /// A copy for one request that goes on from nothing this context answered — no reply, no tools —
+    /// while this context still answers another: Claude Code's auto-mode check of each tool call comes this
+    /// way, often two at once. It knows what this context learnt, so text sent before is not read again and
+    /// goes with the same stand-ins; the pool sees it under an id of its own. None of this context's
+    /// requests, results or tasks is its.
+    func spare(of source: UUID) -> PrivacyConversation {
+        let copy = PrivacyConversation(copying: self)
+        copy.spareOf = source
+        return copy
+    }
+    private init(copying other: PrivacyConversation) {
+        key = other.key
+        conversationTag = other.conversationTag
+        backendID = "privacy:" + UUID().uuidString + (other.conversationTag.map { "@" + $0 } ?? "")
+        byValue = other.byValue; counters = other.counters; reservedWords = other.reservedWords
+        heldKeys = other.heldKeys; values = other.values; cache = other.cache; sentCacheKeys = other.sentCacheKeys
+        numberByOriginal = other.numberByOriginal; numbers = other.numbers; originalNumbers = other.originalNumbers
+        numberCache = other.numberCache; sentNumberKeys = other.sentNumberKeys; sentUnread = other.sentUnread
+        bytes = other.bytes; places = other.places; numberPlaces = other.numberPlaces; restored = other.restored
+        restoredNumbers = other.restoredNumbers; unbound = other.unbound; unboundNumbers = other.unboundNumbers
+        machineUsers = other.machineUsers
+    }
+
     // MARK: Across a restart
 
     /// What a restart keeps of a conversation: no value it masked, and nothing keyed by one. Each text
