@@ -4,6 +4,20 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.2.14] - 2026-11-14
+
+### Fixed
+
+- Long tool results reach Claude whole. A file or command output of more than about 50,000 characters arrived as a short preview of a saved file Claude could not open, and each long result cost an extra request to count its tokens.
+- The window and the menu no longer pause for up to a second while developer recording is on and a long conversation is prepared. A pause that still happens is logged with where the app was.
+- An account whose Claude subscription can't be used, most often because a payment is past due, no longer shows its error in Claude Desktop. The turn moves to another account, Claude Pool says which account is out and why, and the account stays out until you check it again. Before, the error reached the conversation, and the account was put back in the pool a moment later and failed again.
+- An account takes conversations again as soon as its limit resets. Since 0.2.13 an account that had just come back could be marked as needing attention at its first new conversation, and the pool kept answering at its limit until the next account was back, ten minutes later in one log.
+- With redaction on, auto mode's check of a tool call no longer waits behind another check of the same conversation. It waited up to 1.5 seconds and then had the whole conversation read again; it now starts at once with what was already masked.
+
+### Changed
+
+- An account with almost nothing left of its week is used last, even when its week renews soon. A conversation started there met the weekly limit within a turn or two and was then written whole on another account.
+
 ## [0.2.13] - 2026-11-13
 
 ### Fixed
@@ -273,7 +287,8 @@ First public release.
 - Update checks against GitHub Releases with verified one-click install.
 - Option to hide email addresses throughout the app.
 
-[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.13...HEAD
+[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.14...HEAD
+[0.2.14]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.13...v0.2.14
 [0.2.13]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.12...v0.2.13
 [0.2.12]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.11...v0.2.12
 [0.2.11]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.10...v0.2.11
