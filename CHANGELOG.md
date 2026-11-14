@@ -4,6 +4,8 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.2.18] - 2026-11-15
+
 ### Added
 
 - Search Accounts and filter by plan, status or expiry. Sort by expiry, remaining 5-hour or weekly quota, account name or date added.
@@ -309,7 +311,8 @@ First public release.
 - Update checks against GitHub Releases with verified one-click install.
 - Option to hide email addresses throughout the app.
 
-[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.17...HEAD
+[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.18...HEAD
+[0.2.18]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.17...v0.2.18
 [0.2.17]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.16...v0.2.17
 [0.2.16]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.15...v0.2.16
 [0.2.15]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.14...v0.2.15
