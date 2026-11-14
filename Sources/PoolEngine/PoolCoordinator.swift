@@ -336,7 +336,7 @@ public actor PoolCoordinator: BridgeBackend {
         hasher.update(data: Data(request.model.utf8)); hasher.update(data: Data([0]))
         hasher.update(data: (try? encoder.encode(request.system ?? .null)) ?? Data()); hasher.update(data: Data([0]))
         hasher.update(data: (try? encoder.encode(request.tools ?? [])) ?? Data())
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        return hasher.finalize().lowercaseHex
     }
     /// The account's cache holds the model's opening for the run's hour, renewed at each reply.
     private func rememberWarm(_ binding: Binding) {
@@ -1652,7 +1652,7 @@ public actor PoolCoordinator: BridgeBackend {
     static func toolsDigest(_ tools: [BridgeTool]?) -> String {
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
         let data = (try? encoder.encode(tools ?? [])) ?? Data()
-        return SHA256.hash(data: data).prefix(8).map { String(format: "%02x", $0) }.joined()
+        return SHA256.hash(data: data).prefix(8).lowercaseHex
     }
     /// The shelf's key for a session let go on its calls: the conversation it was told before them.
     private func callShelfKey(_ told: String, model: String) -> String { "calls\u{0}" + model + "\u{0}" + told }

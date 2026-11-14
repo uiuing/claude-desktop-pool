@@ -163,7 +163,7 @@ public enum GatewayRequestValidation {
     /// Nil for the conversation's own turns, which send none.
     static func agentKey(_ agent: String?) -> String? {
         guard let agent = agent?.trimmingCharacters(in: .whitespaces), !agent.isEmpty else { return nil }
-        return SHA256.hash(data: Data(agent.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
+        return SHA256.hash(data: Data(agent.utf8)).prefix(8).lowercaseHex
     }
     /// How a turn is keyed: the model, instructions and
     /// tools, and what the turn may call, whether it searches and the schema of its answer, so a title or
@@ -177,7 +177,7 @@ public enum GatewayRequestValidation {
             shape += Data("\u{0}\(request.toolChoice ?? "")\u{0}\(request.webSearch)\u{0}".utf8)
             shape += (try? encoder.encode(request.answerSchema)) ?? Data()
         }
-        return SHA256.hash(data: shape).prefix(12).map { String(format: "%02x", $0) }.joined()
+        return SHA256.hash(data: shape).prefix(12).lowercaseHex
     }
 
     public static func conversationID(headers: [String: String], request: BridgeRequest) throws -> String? {

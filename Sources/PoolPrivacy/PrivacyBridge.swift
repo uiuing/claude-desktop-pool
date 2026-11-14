@@ -809,7 +809,7 @@ public actor PrivacyBridge: BridgeBackend {
     private func historyFingerprint(_ history: [BridgeMessage]) throws -> String {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(history)
-        return HMAC<SHA256>.authenticationCode(for: data, using: fingerprintKey).map { String(format: "%02x", $0) }.joined()
+        return HMAC<SHA256>.authenticationCode(for: data, using: fingerprintKey).lowercaseHex
     }
     private func component(_ key: String) -> String { key.replacingOccurrences(of: "~", with: "~0").replacingOccurrences(of: "/", with: "~1") }
     /// The keys a block's protocol reads.

@@ -240,7 +240,7 @@ final class PrivacyConversation {
         lastUsed = saved.lastUsed; pending = Set(saved.pending); aliases = Set(saved.aliases)
     }
 
-    static func sha(_ text: String) -> String { SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined() }
+    static func sha(_ text: String) -> String { SHA256.hash(data: Data(text.utf8)).lowercaseHex }
     private static func place(_ location: String, _ field: String?) -> String {
         location + "\u{0}" + (field.flatMap(PrivacyRules.fieldCategory)?.rawValue ?? "")
     }
@@ -336,7 +336,7 @@ final class PrivacyConversation {
     }
 
     func digest(_ text: String) -> String {
-        HMAC<SHA256>.authenticationCode(for: Data(text.utf8), using: key).map { String(format: "%02x", $0) }.joined()
+        HMAC<SHA256>.authenticationCode(for: Data(text.utf8), using: key).lowercaseHex
     }
 
     /// The key the model's and the rules' finds for `text` are kept by in a preparation.

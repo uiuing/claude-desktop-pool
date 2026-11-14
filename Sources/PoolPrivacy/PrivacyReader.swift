@@ -166,7 +166,7 @@ actor PrivacyReader {
     private struct Unit { let digest: String; let text: String; let bytes: Int }
 
     private func digest(_ text: String) -> String {
-        HMAC<SHA256>.authenticationCode(for: Data(text.utf8), using: key).map { String(format: "%02x", $0) }.joined()
+        HMAC<SHA256>.authenticationCode(for: Data(text.utf8), using: key).lowercaseHex
     }
     private func plan(_ text: String) -> Plan {
         let whole = digest(text)
