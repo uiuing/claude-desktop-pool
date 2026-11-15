@@ -4,6 +4,8 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.2.19] - 2026-11-15
+
 ### Fixed
 
 - Fix a freeze when opening the menu bar panel with more than eight accounts. The account list scrolls in a fixed-height area and no longer lays out rows on demand.
@@ -315,7 +317,8 @@ First public release.
 - Update checks against GitHub Releases with verified one-click install.
 - Option to hide email addresses throughout the app.
 
-[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.18...HEAD
+[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.19...HEAD
+[0.2.19]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.18...v0.2.19
 [0.2.18]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.17...v0.2.18
 [0.2.17]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.16...v0.2.17
 [0.2.16]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.15...v0.2.16
