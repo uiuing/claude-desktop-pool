@@ -4,6 +4,10 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+### Fixed
+
+- Stop masking rows of numbers in logs and tables as bank cards. A card number now has to be written whole or in a card's usual groups.
+
 ## [0.2.19] - 2026-11-15
 
 ### Fixed

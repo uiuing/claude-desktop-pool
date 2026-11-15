@@ -56,6 +56,38 @@ final class PrivacyRulesTests: XCTestCase {
         XCTAssertTrue(PrivacyRules.spans(in: "ID 110105199001011232, then").contains { $0.category == .identityCard })
     }
 
+    /// A card is written whole or in a card's groups, one separator throughout. Numbers that pass the
+    /// checksum by chance in a row of a table or a log (one in ten does) are not a card.
+    func testCardsNeedACardsGroupingAndNotARowOfNumbers() {
+        func card(_ body: String) -> String {
+            let digits = body.compactMap(\.wholeNumberValue)
+            let sum = digits.reversed().enumerated().reduce(0) { sum, pair in
+                let number = pair.offset % 2 == 0 ? pair.element * 2 : pair.element
+                return sum + (number > 9 ? number - 9 : number)
+            }
+            return body + String((10 - sum % 10) % 10)
+        }
+        func grouped(_ number: String, _ sizes: [Int], by separator: String = " ") -> String {
+            var rest = Substring(number), parts: [String] = []
+            for size in sizes { parts.append(String(rest.prefix(size))); rest = rest.dropFirst(size) }
+            return parts.joined(separator: separator)
+        }
+        func isCard(_ text: String) -> Bool { PrivacyRules.spans(in: text).contains { $0.category == .bankCard } }
+        let sixteen = card("453201511283036"), fifteen = card("37144963539843"), nineteen = card("622202123456789012")
+        let thirteen = card("356001234567")
+
+        for text in ["Card " + sixteen, "Card " + grouped(sixteen, [4, 4, 4, 4]), "Card " + grouped(sixteen, [4, 4, 4, 4], by: "-"),
+                     "Amex " + grouped(fifteen, [4, 6, 5]), "\u{5361}\u{53F7} " + grouped(nineteen, [4, 4, 4, 4, 3]),
+                     "Card " + grouped(sixteen, [4, 4, 4, 4]) + " 12/28"] {
+            XCTAssertTrue(isCard(text), text)
+        }
+        for text in ["2026-11-14T07 1962 " + grouped(thirteen, [4, 4, 5]) + " 12077 126932 0",
+                     grouped(sixteen, [4, 5, 4, 3]), grouped(sixteen, [4, 4]) + "-" + grouped(String(sixteen.dropFirst(8)), [4, 4]),
+                     "1962 " + grouped(sixteen, [4, 4, 4, 4]), grouped(sixteen, [4, 4, 4, 4]) + " 2048 7"] {
+            XCTAssertFalse(isCard(text), text)
+        }
+    }
+
     func testNamedCredentialsAndQuotedValuesAreWholeSecrets() async throws {
         let context = PrivacyConversation(), detector = FixtureDetector()
         for field in ["access_key", "client_key", "DB_PASS", "SERVICE_X_KEY", "pin_code"] {

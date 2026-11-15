@@ -68,8 +68,10 @@ enum PrivacyRules {
         Rule(.password, on: ["://"], #"[A-Za-z][A-Za-z0-9+.-]*://[^\s:@/?#"'<>]*:([^\s@/?#"'<>]{3,})@"#, group: 1, accepts: notVariable),
         Rule(.email, on: ["@"], #"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,63}(?![A-Za-z0-9_-])"#, accepts: realEmail),
         Rule(.identityCard, on: [digit], #"(?<![A-Za-z0-9])(?<![0-9][.,])[1-9][0-9]{5}(?:18|19|20)[0-9]{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12][0-9]|3[01])[0-9]{3}[0-9Xx](?![A-Za-z0-9])(?![.,][0-9])"#, accepts: chineseID),
-        // not a run of digits inside a UUID, a hash or a longer word
-        Rule(.bankCard, on: [digit], #"(?<![A-Za-z0-9_-])(?<![0-9][.,])[3-6][0-9](?:[ -]?[0-9]){11,17}(?![A-Za-z0-9_-])(?![.,][0-9])"#, accepts: luhn),
+        // not a run of digits inside a UUID, a hash or a longer word; written whole or in a card's groups
+        // (4-4-4-4 and three more on a 19-digit card, 4-6-5, 4-6-4) with one separator, and not one group
+        // in a row of numbers: a table's or a log's numbers pass the checksum one time in ten
+        Rule(.bankCard, on: [digit], #"(?<![A-Za-z0-9_-])(?<![0-9][.,])(?<![0-9][ -])(?:[3-6][0-9]{12,18}|[3-6][0-9]{3}([ -])[0-9]{4}\1[0-9]{4}\1[0-9]{4}(?:\1[0-9]{3})?|3[0-9]{3}([ -])[0-9]{6}\2[0-9]{4,5})(?![A-Za-z0-9_-])(?![.,][0-9])(?![ -][0-9]{4})"#, accepts: luhn),
         Rule(.ssn, on: ["-"], #"(?<![0-9])[0-9]{3}-[0-9]{2}-[0-9]{4}(?![0-9])"#, accepts: ssn),
         Rule(.ssn, on: ["ssn", "social"], #"(?i)\b(?:ssn|social security(?: number)?)[ \t]*[:=#]?[ \t]*([0-9]{9})(?![0-9])"#, group: 1, accepts: ssn),
         Rule(.passport, on: ["passport", "\u{62A4}\u{7167}", "\u{8B77}\u{7167}"], #"(?:(?i:\bpassport(?:[ \t]*(?:no\.?|number|num|#))?)|\u62A4\u7167(?:\u53F7\u7801|\u53F7)?|\u8B77\u7167(?:\u865F\u78BC|\u865F)?)["']?[ \t]*(?:[:=#\uFF1A][ \t]*)?(?:(?i:is|was)[ \t]+)?["']?([A-Z0-9]{6,9})(?![A-Z0-9])"#, group: 1, accepts: passportOK),
