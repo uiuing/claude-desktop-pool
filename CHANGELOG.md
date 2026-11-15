@@ -4,6 +4,8 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.2.20] - 2026-11-16
+
 ### Fixed
 
 - Stop masking rows of numbers in logs and tables as bank cards. A card number now has to be written whole or in a card's usual groups.
@@ -321,7 +323,8 @@ First public release.
 - Update checks against GitHub Releases with verified one-click install.
 - Option to hide email addresses throughout the app.
 
-[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.19...HEAD
+[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.20...HEAD
+[0.2.20]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.19...v0.2.20
 [0.2.19]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.18...v0.2.19
 [0.2.18]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.17...v0.2.18
 [0.2.17]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.16...v0.2.17
