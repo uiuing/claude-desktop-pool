@@ -4,6 +4,8 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.2.22] - 2026-11-16
+
 ### Fixed
 
 - Use an account whose subscription ends soon, or whose week resets soon, even when little of its week is left. Before, its priority shrank with what was left, so an account ending the same day with 9% of its week ranked below accounts with days to go.
@@ -333,7 +335,8 @@ First public release.
 - Update checks against GitHub Releases with verified one-click install.
 - Option to hide email addresses throughout the app.
 
-[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.21...HEAD
+[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.22...HEAD
+[0.2.22]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.21...v0.2.22
 [0.2.21]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.20...v0.2.21
 [0.2.20]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.19...v0.2.20
 [0.2.19]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.18...v0.2.19
