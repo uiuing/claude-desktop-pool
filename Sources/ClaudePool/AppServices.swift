@@ -281,6 +281,8 @@ final class AppServices {
                 try await mutate(updateServices: false) { next in
                     if let index = next.accounts.firstIndex(where: { $0.id == id }) { next.accounts[index].expiresAt = date }
                 }
+                // routing weighs it from the next conversation on, not from the next reading
+                await coordinator?.updateAccounts(library.accounts)
             case .refreshQuota(let accountID):
                 try await prepareQuotaService()
                 // A session held for the user opens for them; a reading in progress or a warm session is just read again.

@@ -512,6 +512,38 @@ final class RoutingTests: XCTestCase {
         XCTAssertEqual(AccountOrdering.ranked([earlier, midWeek], now: now).first?.id, midWeek.id)
     }
 
+    /// A subscription that ends tomorrow takes what its week has left with it, as a week resetting
+    /// tomorrow does: it is spent first. Most accounts have no end entered, and an end already passed
+    /// (an account renewed since) or days away changes nothing.
+    func testASubscriptionEndingSoonIsSpentFirstAndAnUnmaintainedEndChangesNothing() {
+        func pro(_ email: String, session: Double = 100, week: Double, ends: TimeInterval? = nil) -> PoolAccount {
+            var account = PoolAccount(email: email, plan: "Pro", state: .ready, windows: [
+                .init(id: "five_hour", usedPercent: 100 - session, observedAt: now, resetsAt: now.addingTimeInterval(4 * 3600)),
+                .init(id: "seven_day", usedPercent: 100 - week, observedAt: now, resetsAt: now.addingTimeInterval(5 * 86400))], createdAt: now)
+            account.expiresAt = ends.map { now.addingTimeInterval($0) }
+            return account
+        }
+        let fresh = pro("fresh@example.com", session: 86, week: 96)
+        let ending = pro("ending@example.com", week: 50, ends: 20 * 3600)
+        XCTAssertEqual(PoolRouting.candidates([fresh, ending], model: "sonnet", now: now).first?.id, ending.id)
+        XCTAssertEqual(AccountOrdering.ranked([fresh, ending], now: now, load: [fresh.id: 1]).first?.id, ending.id)
+        // Without the end it is read as it is, behind the fresh week.
+        XCTAssertEqual(PoolRouting.candidates([fresh, pro("plain@example.com", week: 50)], model: "sonnet", now: now).first?.id, fresh.id)
+        // Scored as a week resetting at the same time would be.
+        let resetting = PoolAccount(email: "resetting@example.com", plan: "Pro", state: .ready, windows: [
+            .init(id: "five_hour", usedPercent: 0, observedAt: now, resetsAt: now.addingTimeInterval(4 * 3600)),
+            .init(id: "seven_day", usedPercent: 50, observedAt: now, resetsAt: now.addingTimeInterval(20 * 3600))], createdAt: now)
+        XCTAssertEqual(PoolRouting.score(ending, model: "sonnet", now: now), PoolRouting.score(resetting, model: "sonnet", now: now))
+        // An end not entered, passed or days away scores the account as it reads.
+        let plain = PoolRouting.score(pro("plain@example.com", week: 50), model: "sonnet", now: now)
+        for ends: TimeInterval in [-86_400, 3 * 86_400, 30 * 86_400] {
+            XCTAssertEqual(PoolRouting.score(pro("other@example.com", week: 50, ends: ends), model: "sonnet", now: now), plain)
+        }
+        // A week nearly gone still ranks behind healthy accounts, however soon its subscription ends.
+        let nearlyGone = pro("gone@example.com", week: 1, ends: 3600)
+        XCTAssertEqual(PoolRouting.candidates([nearlyGone, fresh], model: "sonnet", now: now).first?.id, fresh.id)
+    }
+
     /// A real pool (11-13): a Pro account with full 5 hours and 1% of a week resetting within hours
     /// scored above accounts with 40% of both, as its used week counted as coming back. A conversation
     /// started there meets the weekly limit within a turn or two and is written whole on another account:

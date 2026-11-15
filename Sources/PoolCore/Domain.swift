@@ -226,7 +226,8 @@ public struct PoolAccount: Codable, Equatable, Sendable, Identifiable {
     public var windows: [QuotaWindow]
     public var cooldownUntil: Date?
     public var createdAt: Date
-    /// A date entered by the user for display.
+    /// When the subscription ends, as entered by the user; nil for most accounts. Shown, and within
+    /// `PoolRouting.weekSoon` of it routing spends what the account has left before it lapses.
     public var expiresAt: Date?
     public init(id: UUID = UUID(), email: String? = nil, identityFingerprint: String? = nil,
                 plan: String? = nil, state: AccountState = .signedOut,
@@ -820,6 +821,13 @@ public enum PoolRouting {
         return percent * Double(reserveFullTokens) / Double(tokens)
     }
     static let spentPenalty = 100.0
+    /// Seconds until the subscription end the person entered, nil when none is entered or it has passed
+    /// (an account still working after it was renewed). Many never enter one: it only adds, as a week
+    /// reset does, and never holds an account back.
+    static func subscriptionEnds(_ account: PoolAccount, now: Date) -> TimeInterval? {
+        guard let end = account.expiresAt, end > now else { return nil }
+        return end.timeIntervalSince(now)
+    }
     public static func score(_ account: PoolAccount, model: String, now: Date = Date(), load: Int = 0, spentBelow: Double = sessionSpent) -> Double? {
         guard assessment(account, model: model, now: now).state == .available else { return nil }
         let windows = account.windows.filter { $0.applies(to: model) && !$0.isNotApplicable(at: now) }
@@ -838,12 +846,15 @@ public enum PoolRouting {
         }
         if let (value, _) = week { sessionValue *= min(1, max(0, value) / weekCaps) }
         var weekValue = week?.0 ?? sessionValue
-        if let (value, until) = week, let until {
-            // What the week has used comes back at its reset: over its last two days it weighs less and less.
-            weekValue = value + (100 - value) * max(0, 1 - until / weekSoon)
-        }
         var expiring = 0.0
-        if let (value, until) = week, let until { expiring = value * max(0, 1 - until / weekSoon) }
+        // What the week has left lapses at its reset, or with the subscription if that ends first; until
+        // then what it has used costs nothing to come. Over the last two days the used share weighs
+        // less and less and the unused share is worth spending first.
+        if let (value, until) = week, let lapse = [until, subscriptionEnds(account, now: now)].compactMap({ $0 }).min() {
+            let soon = max(0, 1 - lapse / weekSoon)
+            weekValue = value + (100 - value) * soon
+            expiring = value * soon
+        }
         var total = 0.45 * sessionValue + 0.40 * weekValue + 0.15 * expiring - 8 * Double(max(0, load))
         // Nearly used up, its 5 hours or its week, an account meets the limit within a turn or two and the
         // conversation is then written whole on another: it ranks behind every account that is not,

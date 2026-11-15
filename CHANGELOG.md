@@ -4,6 +4,10 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+### Changed
+
+- Spend an account whose subscription ends within two days first, the way a week about to reset is spent first, when its expiry date is entered. Accounts with no expiry date, or one already passed, are routed as before.
+
 ## [0.2.20] - 2026-11-16
 
 ### Fixed
