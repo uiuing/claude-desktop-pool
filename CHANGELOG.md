@@ -4,6 +4,10 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+### Fixed
+
+- Fix a freeze when opening the menu bar panel with more than eight accounts. The account list scrolls in a fixed-height area and no longer lays out rows on demand.
+
 ## [0.2.18] - 2026-11-15
 
 ### Added

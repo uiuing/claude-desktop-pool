@@ -42,14 +42,13 @@ struct MenuPanel: View {
                     sectionTitle(count: accounts.count)
                 }.padding(.horizontal, 12)
                 let cards = ForEach(accounts) { MenuAccountCard(model: model, account: $0, showsPlan: showsPlan, use: use[$0.id]) }
-                if accounts.count > Self.eagerCards {
-                    // A long list fills the panel's full height anyway; only the cards in view are built.
-                    // It lies over that height rather than standing in the panel's own column: the menu bar
-                    // window sizes the panel at every change, and a list in the column was measured
-                    // card by card each time, however lazily it is built.
+                if accounts.count > Self.compactCardLimit {
+                    // Keep the list out of the menu window's size calculation. Use ordinary layout
+                    // inside that viewport: on macOS 26, the menu can stop responding while SwiftUI
+                    // repeatedly places and prefetches its lazy rows, even with no quota or run updates.
                     Color.clear.frame(height: 360).overlay {
                         ScrollView {
-                            LazyVStack(spacing: 6) { cards }.padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 10)
+                            VStack(spacing: 6) { cards }.padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 10)
                         }
                     }
                 } else {
@@ -66,8 +65,8 @@ struct MenuPanel: View {
             // Nothing here shows seconds: the time moves on each minute and at each limit's renewal.
             .task { await model.updateClock(every: 60) }
     }
-    /// More cards than this overflow the 360-point list, so the list is built lazily at full height.
-    static let eagerCards = 8
+    /// More cards than this overflow the 360-point list, so the viewport stays at full height.
+    static let compactCardLimit = 8
 
     private var header: some View {
         HStack(spacing: 8) {

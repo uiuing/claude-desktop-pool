@@ -158,7 +158,7 @@ final class ScreenshotTests: XCTestCase {
                                                     detail: model.t("Ending Claude sessions. This takes a few seconds."))
                     .padding(16).environment(\.locale, model.locale), size: .init(width: 380, height: 92), dark: dark,
                                   to: output.appendingPathComponent("quit-\(language)-\(dark ? "dark" : "light").png"))
-                // A large pool takes the lazily built list; this render stays out of docs/images.
+                // A large pool uses a fixed-height scroll area; this render stays out of docs/images.
                 let large = PoolAppModel.demoModel(language: language)
                 let base = large.snapshot.accounts[1]
                 for index in 0..<30 {
