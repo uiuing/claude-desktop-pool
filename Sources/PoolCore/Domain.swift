@@ -784,7 +784,8 @@ public enum PoolRouting {
     /// about to renew (`sessionSoon`) counts for a little more than it reads, and an account whose 5 hours
     /// or week is nearly used up (`sessionSpent`) ranks behind every account that is not, since a conversation started on it meets
     /// the limit within a turn or two and is then written whole on another account; a week within two days of its reset
-    /// counts what it has used less and less, as that comes back, and its unused share is worth spending first; and each conversation already on the account weighs against it.
+    /// (or a subscription ending first) counts what it has used less and less, as that comes back, and the
+    /// account gains points as the lapse nears, however little is left; and each conversation already on the account weighs against it.
     /// A week nearly used up caps the 5-hour limit: below `weekCaps` percent left, the 5-hour share
     /// counts only in proportion, since the account stops when its week does, however full the 5 hours.
     /// Nil when a limit's figure is unknown.
@@ -821,6 +822,11 @@ public enum PoolRouting {
         return percent * Double(reserveFullTokens) / Double(tokens)
     }
     static let spentPenalty = 100.0
+    /// Points an account gains as what it has left nears lapsing (`weekSoon`), whatever that share is.
+    /// Measured on the pool of 11-16: a Pro account whose subscription ended that afternoon, its five
+    /// hours full and 9% of its week left, scored below an account with days to go; at about a day
+    /// before it lapses it now passes an account with all of both left that keeps them for later.
+    public static let lapseMost = 60.0
     /// Seconds until the subscription end the person entered, nil when none is entered or it has passed
     /// (an account still working after it was renewed). Many never enter one: it only adds, as a week
     /// reset does, and never holds an account back.
@@ -846,16 +852,18 @@ public enum PoolRouting {
         }
         if let (value, _) = week { sessionValue *= min(1, max(0, value) / weekCaps) }
         var weekValue = week?.0 ?? sessionValue
-        var expiring = 0.0
+        var lapsing = 0.0
         // What the week has left lapses at its reset, or with the subscription if that ends first; until
         // then what it has used costs nothing to come. Over the last two days the used share weighs
-        // less and less and the unused share is worth spending first.
+        // less and less, and the account gains up to `lapseMost` points: work done there costs nothing
+        // later, however little is left, while work done on an account with days to go spends its
+        // future. A small share left must not make it worth less: that is the share that is lost.
         if let (value, until) = week, let lapse = [until, subscriptionEnds(account, now: now)].compactMap({ $0 }).min() {
             let soon = max(0, 1 - lapse / weekSoon)
             weekValue = value + (100 - value) * soon
-            expiring = value * soon
+            lapsing = lapseMost * soon
         }
-        var total = 0.45 * sessionValue + 0.40 * weekValue + 0.15 * expiring - 8 * Double(max(0, load))
+        var total = 0.45 * sessionValue + 0.40 * weekValue + lapsing - 8 * Double(max(0, load))
         // Nearly used up, its 5 hours or its week, an account meets the limit within a turn or two and the
         // conversation is then written whole on another: it ranks behind every account that is not,
         // however soon what it used comes back (`handoff` would leave it at the next turn).

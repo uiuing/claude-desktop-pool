@@ -4,6 +4,10 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+### Fixed
+
+- Use an account whose subscription ends soon, or whose week resets soon, even when little of its week is left. Before, its priority shrank with what was left, so an account ending the same day with 9% of its week ranked below accounts with days to go.
+
 ## [0.2.21] - 2026-11-16
 
 ### Changed
