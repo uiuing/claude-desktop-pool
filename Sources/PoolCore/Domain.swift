@@ -226,8 +226,9 @@ public struct PoolAccount: Codable, Equatable, Sendable, Identifiable {
     public var windows: [QuotaWindow]
     public var cooldownUntil: Date?
     public var createdAt: Date
-    /// When the subscription ends, as entered by the user; nil for most accounts. Shown, and within
-    /// `PoolRouting.weekSoon` of it routing spends what the account has left before it lapses.
+    /// When the subscription ends, as entered by the user; nil for most accounts. Shown, and from
+    /// `PoolRouting.weekSoon` before it to `PoolRouting.lapsedFor` after it, while the account still
+    /// serves, routing spends what the account has left before it lapses.
     public var expiresAt: Date?
     public init(id: UUID = UUID(), email: String? = nil, identityFingerprint: String? = nil,
                 plan: String? = nil, state: AccountState = .signedOut,
@@ -827,12 +828,17 @@ public enum PoolRouting {
     /// hours full and 9% of its week left, scored below an account with days to go; at about a day
     /// before it lapses it now passes an account with all of both left that keeps them for later.
     public static let lapseMost = 60.0
-    /// Seconds until the subscription end the person entered, nil when none is entered or it has passed
-    /// (an account still working after it was renewed). Many never enter one: it only adds, as a week
-    /// reset does, and never holds an account back.
+    /// How long after the end the person entered an account that still serves counts as lapsing now:
+    /// Claude can keep a subscription going a while after its end (a payment retried), and the account
+    /// stops at any moment, so it is spent first. Past this the date is taken as not kept up (the
+    /// subscription was renewed and the date left as it was) and the account is read as it is.
+    public static let lapsedFor: TimeInterval = 7 * 86400
+    /// Seconds until the subscription end the person entered, 0 for an end passed within `lapsedFor`,
+    /// nil when none is entered or it passed longer ago. Many never enter one: it only adds, as a week
+    /// reset does, and never holds an account back. An account that can no longer serve is not scored.
     static func subscriptionEnds(_ account: PoolAccount, now: Date) -> TimeInterval? {
-        guard let end = account.expiresAt, end > now else { return nil }
-        return end.timeIntervalSince(now)
+        guard let end = account.expiresAt, now.timeIntervalSince(end) < lapsedFor else { return nil }
+        return max(0, end.timeIntervalSince(now))
     }
     public static func score(_ account: PoolAccount, model: String, now: Date = Date(), load: Int = 0, spentBelow: Double = sessionSpent) -> Double? {
         guard assessment(account, model: model, now: now).state == .available else { return nil }

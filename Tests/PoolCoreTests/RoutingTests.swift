@@ -534,11 +534,18 @@ final class RoutingTests: XCTestCase {
             .init(id: "five_hour", usedPercent: 0, observedAt: now, resetsAt: now.addingTimeInterval(4 * 3600)),
             .init(id: "seven_day", usedPercent: 50, observedAt: now, resetsAt: now.addingTimeInterval(20 * 3600))], createdAt: now)
         XCTAssertEqual(PoolRouting.score(ending, model: "sonnet", now: now), PoolRouting.score(resetting, model: "sonnet", now: now))
-        // An end not entered, passed or days away scores the account as it reads.
+        // An end not entered, days away or passed over a week ago (the date not kept up) scores the account as it reads.
         let plain = PoolRouting.score(pro("plain@example.com", week: 50), model: "sonnet", now: now)
-        for ends: TimeInterval in [-86_400, 3 * 86_400, 30 * 86_400] {
+        for ends: TimeInterval in [-8 * 86_400, 3 * 86_400, 30 * 86_400] {
             XCTAssertEqual(PoolRouting.score(pro("other@example.com", week: 50, ends: ends), model: "sonnet", now: now), plain)
         }
+        // An end passed within the week, on an account that still serves, can stop it at any moment: it lapses now.
+        let lapsingNow = PoolRouting.score(pro("uiuing@foxmail.com", week: 50, ends: 0), model: "sonnet", now: now)
+        for ends: TimeInterval in [-3600, -86_400, -6 * 86_400] {
+            XCTAssertEqual(PoolRouting.score(pro("other@example.com", week: 50, ends: ends), model: "sonnet", now: now), lapsingNow)
+        }
+        let ended = pro("ended@example.com", week: 9, ends: -3600)
+        XCTAssertEqual(PoolRouting.candidates([fresh, ending, ended], model: "sonnet", now: now).first?.id, ended.id)
         // A week nearly gone still ranks behind healthy accounts, however soon its subscription ends.
         let nearlyGone = pro("gone@example.com", week: 1, ends: 3600)
         XCTAssertEqual(PoolRouting.candidates([nearlyGone, fresh], model: "sonnet", now: now).first?.id, fresh.id)

@@ -4,6 +4,10 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+### Fixed
+
+- Use an account first when its entered expiry date has passed but it still serves, since it can stop at any moment. Before, it was routed as if no date was entered and could rank last. A date passed more than a week ago is taken as not kept up and ignored.
+
 ## [0.2.22] - 2026-11-16
 
 ### Fixed
