@@ -19,8 +19,8 @@
 
 <table>
   <tr>
-    <td width="66%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/pool-zh-Hans-dark.png?v=0.2.8"><img alt="Claude Pool：多个 Claude 账号的剩余额度" src="docs/images/pool-zh-Hans-light.png?v=0.2.8"></picture></td>
-    <td width="34%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/menu-zh-Hans-dark.png?v=0.2.8"><img alt="菜单栏里每个账号的剩余额度" src="docs/images/menu-zh-Hans-light.png?v=0.2.8"></picture></td>
+    <td width="66%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/pool-zh-Hans-dark.png?v=0.2.25"><img alt="Claude Pool：多个 Claude 账号的剩余额度" src="docs/images/pool-zh-Hans-light.png?v=0.2.25"></picture></td>
+    <td width="34%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/menu-zh-Hans-dark.png?v=0.2.25"><img alt="菜单栏里每个账号的剩余额度" src="docs/images/menu-zh-Hans-light.png?v=0.2.25"></picture></td>
   </tr>
 </table>
 
@@ -49,12 +49,12 @@
 
 <table>
   <tr>
-    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/accounts-zh-Hans-dark.png?v=0.2.8"><img alt="账号" src="docs/images/accounts-zh-Hans-light.png?v=0.2.8"></picture></td>
-    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/routing-zh-Hans-dark.png?v=0.2.8"><img alt="分配" src="docs/images/routing-zh-Hans-light.png?v=0.2.8"></picture></td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/accounts-zh-Hans-dark.png?v=0.2.25"><img alt="账号" src="docs/images/accounts-zh-Hans-light.png?v=0.2.25"></picture></td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/routing-zh-Hans-dark.png?v=0.2.25"><img alt="分配" src="docs/images/routing-zh-Hans-light.png?v=0.2.25"></picture></td>
   </tr>
   <tr>
-    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/usage-zh-Hans-dark.png?v=0.2.8"><img alt="用量" src="docs/images/usage-zh-Hans-light.png?v=0.2.8"></picture></td>
-    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-zh-Hans-dark.png?v=0.2.8"><img alt="设置" src="docs/images/settings-zh-Hans-light.png?v=0.2.8"></picture></td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/usage-zh-Hans-dark.png?v=0.2.25"><img alt="用量" src="docs/images/usage-zh-Hans-light.png?v=0.2.25"></picture></td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-zh-Hans-dark.png?v=0.2.25"><img alt="设置" src="docs/images/settings-zh-Hans-light.png?v=0.2.25"></picture></td>
   </tr>
 </table>
 

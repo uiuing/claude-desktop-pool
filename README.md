@@ -19,8 +19,8 @@
 
 <table>
   <tr>
-    <td width="66%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/pool-en-dark.png?v=0.2.8"><img alt="Claude Pool: quota left across your Claude accounts" src="docs/images/pool-en-light.png?v=0.2.8"></picture></td>
-    <td width="34%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/menu-en-dark.png?v=0.2.8"><img alt="Every account's quota in the menu bar" src="docs/images/menu-en-light.png?v=0.2.8"></picture></td>
+    <td width="66%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/pool-en-dark.png?v=0.2.25"><img alt="Claude Pool: quota left across your Claude accounts" src="docs/images/pool-en-light.png?v=0.2.25"></picture></td>
+    <td width="34%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/menu-en-dark.png?v=0.2.25"><img alt="Every account's quota in the menu bar" src="docs/images/menu-en-light.png?v=0.2.25"></picture></td>
   </tr>
 </table>
 
@@ -49,12 +49,12 @@ You have more than one Claude account, and in Claude Desktop:
 
 <table>
   <tr>
-    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/accounts-en-dark.png?v=0.2.8"><img alt="Accounts" src="docs/images/accounts-en-light.png?v=0.2.8"></picture></td>
-    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/routing-en-dark.png?v=0.2.8"><img alt="Routing" src="docs/images/routing-en-light.png?v=0.2.8"></picture></td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/accounts-en-dark.png?v=0.2.25"><img alt="Accounts" src="docs/images/accounts-en-light.png?v=0.2.25"></picture></td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/routing-en-dark.png?v=0.2.25"><img alt="Routing" src="docs/images/routing-en-light.png?v=0.2.25"></picture></td>
   </tr>
   <tr>
-    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/usage-en-dark.png?v=0.2.8"><img alt="Usage" src="docs/images/usage-en-light.png?v=0.2.8"></picture></td>
-    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-en-dark.png?v=0.2.8"><img alt="Settings" src="docs/images/settings-en-light.png?v=0.2.8"></picture></td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/usage-en-dark.png?v=0.2.25"><img alt="Usage" src="docs/images/usage-en-light.png?v=0.2.25"></picture></td>
+    <td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-en-dark.png?v=0.2.25"><img alt="Settings" src="docs/images/settings-en-light.png?v=0.2.25"></picture></td>
   </tr>
 </table>
 
