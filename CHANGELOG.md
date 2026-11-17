@@ -4,6 +4,8 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.2.24] - 2026-11-18
+
 ### Fixed
 
 - An account whose sign-in expired is taken out at its first failed turn, and the conversation moves to another account. Claude Code reports an expired login without a status ("Login expired · Please run /login"), which went to Claude Desktop as an ordinary error, so every retry failed on the same account until it was checked by hand.
@@ -14,7 +16,7 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 - A reply is reported as stalled only after 90 seconds of the Mac awake, so time asleep no longer counts. The log marks the Mac's sleep and wake, and names Claude Code's "went to sleep mid-response" error.
 - A warm-up's log reads the limits shown after its reply. Before, it read the figures from before the warm-up and said most warm-ups had not started a limit they had started.
 - Developer recording compresses the files a crash or a forced quit left open when it next starts.
-- Redaction masks account ids written as a UUID or a long hex string when the local model marks them, and masks a short name or account the model found wherever it comes again in the conversation. Text that arrives while the model is busy is read in the background up to four times as far, so less of it is left to the rules alone.
+- Redaction no longer replaces a UUID or a long hex id, as in file paths, session folders and commits, because the local model took it for an account: like a short hex id, it is masked only where a name such as `token=` says what it is. A short name or account the model found is now masked wherever it comes again in the conversation. Text that arrives while the model is busy is read in the background up to four times as far, so less of it is left to the rules alone.
 
 ### Changed
 
@@ -360,7 +362,8 @@ First public release.
 - Update checks against GitHub Releases with verified one-click install.
 - Option to hide email addresses throughout the app.
 
-[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.23...HEAD
+[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.24...HEAD
+[0.2.24]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.23...v0.2.24
 [0.2.23]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.22...v0.2.23
 [0.2.22]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.21...v0.2.22
 [0.2.21]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.20...v0.2.21
