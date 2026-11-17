@@ -24,7 +24,6 @@ struct MenuPanel: View {
         let accounts = model.rankedAccounts
         // Pool-wide facts are worked out once per update, not once per card.
         let showsPlan = model.planQuotas.count > 1
-        let use = model.accountUse
         VStack(alignment: .leading, spacing: 0) {
             header.padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 10)
             if model.updates.showsBanner {
@@ -41,7 +40,7 @@ struct MenuPanel: View {
                     summary
                     sectionTitle(count: accounts.count)
                 }.padding(.horizontal, 12)
-                let cards = ForEach(accounts) { MenuAccountCard(model: model, account: $0, showsPlan: showsPlan, use: use[$0.id]) }
+                let cards = ForEach(Self.cards(model, accounts: accounts, showsPlan: showsPlan), id: \.account.id) { $0.equatable() }
                 if accounts.count > Self.compactCardLimit {
                     // Keep the list out of the menu window's size calculation. Use ordinary layout
                     // inside that viewport: on macOS 26, the menu can stop responding while SwiftUI
@@ -67,6 +66,13 @@ struct MenuPanel: View {
     }
     /// More cards than this overflow the 360-point list, so the viewport stays at full height.
     static let compactCardLimit = 8
+    /// Each account's card as the panel hands it over. A card is given what it shows of the pool, so the
+    /// same inputs make an equal card, which SwiftUI leaves as it was: a run's change of state, many a
+    /// second while many work, then works out and lays out no card again, however many accounts there are.
+    static func cards(_ model: PoolAppModel, accounts: [PoolAccount], showsPlan: Bool) -> [MenuAccountCard] {
+        let use = model.accountUse
+        return accounts.map { MenuAccountCard(model: model, account: $0, showsPlan: showsPlan, use: use[$0.id], canWarmUp: model.canWarmUp($0)) }
+    }
 
     private var header: some View {
         HStack(spacing: 8) {
@@ -231,11 +237,18 @@ struct MenuPanel: View {
 
 /// One account: who, when its next limit resets or why it cannot be used and until when, and a
 /// ring per limit that applies to every model. Accounts out of rotation until a reset or a fix are dimmed.
-struct MenuAccountCard: View {
-    @Bindable var model: PoolAppModel
+/// It reads the model's clock, settings, reads and warm-ups, never the pool's whole snapshot, which
+/// changes with every run: what it needs of the pool comes from the panel (`MenuPanel.cards`).
+struct MenuAccountCard: View, Equatable {
+    let model: PoolAppModel
     let account: PoolAccount
     var showsPlan = false
     var use: AccountUse?
+    /// Whether one short request would start the account's 5-hour limit now (`PoolAppModel.canWarmUp`).
+    var canWarmUp = false
+    static func == (a: Self, b: Self) -> Bool {
+        a.model === b.model && a.account == b.account && a.showsPlan == b.showsPlan && a.use == b.use && a.canWarmUp == b.canWarmUp
+    }
     var body: some View {
         let standing = account.standing(at: model.now)
         let windows = model.displayedWindows(account).filter { $0.isGlobal }.prefix(2).map(\.id)
@@ -243,7 +256,7 @@ struct MenuAccountCard: View {
         let limits = windows.isEmpty ? ["five_hour", "seven_day"] : Array(windows)
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(model.accountName(account.id)).font(.system(size: 12, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+                Text(model.accountName(account)).font(.system(size: 12, weight: .medium)).fixedSize(horizontal: false, vertical: true)
                 if (showsPlan && account.plan != nil) || (use?.conversations ?? 0) > 0 {
                     HStack(spacing: 5) {
                         if showsPlan, let plan = account.plan { chip(model.t(plan), color: .secondary) }
@@ -289,7 +302,7 @@ struct MenuAccountCard: View {
             Text(text).foregroundStyle(tone)
                 .font(.system(size: 10)).monospacedDigit().fixedSize(horizontal: false, vertical: true)
                 .contentTransition(.opacity).poolReading(starting)
-            if model.canWarmUp(account) {
+            if canWarmUp {
                 Button(model.t("Start")) { model.perform(.warmUpNow(account.id)) }
                     .buttonStyle(.plain).font(.system(size: 10, weight: .semibold)).foregroundStyle(PoolPalette.accent)
                     .help(model.t("Start this account's 5-hour limit now with one short request."))

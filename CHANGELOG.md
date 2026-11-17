@@ -4,6 +4,10 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+### Changed
+
+- The menu bar panel no longer works out every account's card again each time a conversation's run changes state. With forty accounts such a change took more than twice as long as with twelve, and now takes about a third of the time it did.
+
 ## [0.2.24] - 2026-11-18
 
 ### Fixed

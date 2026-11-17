@@ -27,8 +27,10 @@ final class MenuPanelLoadTests: XCTestCase {
         }
         return model
     }
-    /// Seconds to take `changes` changes in, each followed by the sizing a menu bar window asks for.
-    private func cost(of model: PoolAppModel, changes: Int, change: (PoolAppModel, Int) -> Void) -> TimeInterval {
+    /// Seconds to take `changes` changes in, each followed by the sizing a menu bar window asks for: the
+    /// fastest of `rounds` rounds, as another process taking the machine for a moment slows one round,
+    /// not all of them.
+    private func cost(of model: PoolAppModel, rounds: Int = 3, changes: Int, change: (PoolAppModel, Int) -> Void) -> TimeInterval {
         let host = NSHostingView(rootView: MenuPanel(model: model))
         let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 340, height: 700), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -36,16 +38,19 @@ final class MenuPanelLoadTests: XCTestCase {
         host.layoutSubtreeIfNeeded()
         RunLoop.current.run(until: Date().addingTimeInterval(0.3))
         _ = host.fittingSize
-        let began = Date()
-        for step in 0..<changes {
-            change(model, step)
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.001))
-            _ = host.fittingSize
-            host.layoutSubtreeIfNeeded()
+        var fastest = TimeInterval.infinity
+        for round in 0..<rounds {
+            let began = Date()
+            for step in 0..<changes {
+                change(model, round * changes + step)
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.001))
+                _ = host.fittingSize
+                host.layoutSubtreeIfNeeded()
+            }
+            fastest = min(fastest, Date().timeIntervalSince(began))
         }
-        let spent = Date().timeIntervalSince(began)
         window.contentView = nil
-        return spent
+        return fastest
     }
     private func flip(_ model: PoolAppModel, _ step: Int) {
         let index = step % model.snapshot.sessions.count
@@ -80,6 +85,27 @@ final class MenuPanelLoadTests: XCTestCase {
         let changed = watchPanel(model)
         flip(model, 0)
         XCTAssertTrue(changed.fired.happened, "A run's change of state must reach the panel")
+    }
+
+    /// A run's change of state reaches the panel but no account's card: a card reads nothing of the whole
+    /// snapshot, and what the panel hands it stays the same, so SwiftUI leaves it as it was. Before, every
+    /// card was worked out and laid out again at each change, and forty accounts cost more than twice what twelve did.
+    /// Read from what the cards observe and are given, not timed.
+    func testARunsChangeOfStateReachesNoAccountCard() {
+        let model = pool(17)
+        let before = MenuPanel.cards(model, accounts: model.rankedAccounts, showsPlan: true)
+        let fired = Fired()
+        let texts = withObservationTracking {
+            before.reduce(0) { $0 + ((try? $1.inspect().findAll(ViewType.Text.self).count) ?? 0) }
+        } onChange: { fired.set() }
+        XCTAssertGreaterThan(texts, before.count, "Every card must have been read")
+        flip(model, 0)
+        XCTAssertFalse(fired.happened, "A run's change of state must not have the cards worked out again")
+        XCTAssertTrue(MenuPanel.cards(model, accounts: model.rankedAccounts, showsPlan: true) == before,
+                      "Nor may it change what the panel hands a card")
+        // What a card does show still reaches it.
+        model.preferences.maskEmail.toggle()
+        XCTAssertTrue(fired.happened, "A change a card shows must reach it")
     }
 
     /// Sizing the panel does not measure every card: a pool of forty accounts costs about what one of
