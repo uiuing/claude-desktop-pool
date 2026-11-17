@@ -4,6 +4,8 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+## [0.2.25] - 2026-11-18
+
 ### Changed
 
 - The menu bar panel no longer works out every account's card again each time a conversation's run changes state. With forty accounts such a change took more than twice as long as with twelve, and now takes about a third of the time it did.
@@ -366,7 +368,8 @@ First public release.
 - Update checks against GitHub Releases with verified one-click install.
 - Option to hide email addresses throughout the app.
 
-[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.24...HEAD
+[Unreleased]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.25...HEAD
+[0.2.25]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.24...v0.2.25
 [0.2.24]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.23...v0.2.24
 [0.2.23]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.22...v0.2.23
 [0.2.22]: https://github.com/uiuing/claude-desktop-pool/compare/v0.2.21...v0.2.22
