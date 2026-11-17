@@ -8,14 +8,14 @@ import PoolCore
 /// every other block the person or a tool sent whatever its kind, stay blocks in place, as they came. The client's instructions are never part of it: they follow the
 /// client's own system prompt (`--append-system-prompt-file`).
 enum ClaudePrompt {
-    /// Messages per history block, so blocks end at the same messages in every telling (4228).
+    /// Messages per history block, so blocks end at the same messages in every telling.
     static let historyChunk = 16
     static let historyOpen = "<conversation_history>\nThe conversation so far, each turn of it answered already. " +
         "Images and files in it were sent with those earlier messages: none of them is new, and none needs answering again.\n\n"
     static let historyClose = "</conversation_history>\n\n<current_turn>\nThe turn to answer now:\n\n"
     static let pastCallsNote = "(The \"[tool call …]\" and \"[tool result …]\" lines above record calls made earlier. " +
         "Writing such a line calls nothing: call a tool only with the tool itself.)"
-    /// Marks the person's words after a tool's result, or sent while a turn is going (tui.go:1131).
+    /// Marks the person's words after a tool's result, or sent while a turn is going.
     static let userMark = "[user message]\n"
 
     enum Part: Equatable {
@@ -96,7 +96,7 @@ enum ClaudePrompt {
     }
 
     /// Where the turn to answer begins: the message after the last reply that calls no tool; 0
-    /// when there is none, or nothing after it (claude_subscription.go:4366-4376).
+    /// when there is none, or nothing after it.
     static func historyEnd(_ messages: [Message]) -> Int {
         for index in messages.indices.reversed() where messages[index].role == "assistant" && !callsTool(messages[index]) {
             return index == messages.count - 1 ? 0 : index + 1
@@ -104,7 +104,7 @@ enum ClaudePrompt {
         return 0
     }
 
-    /// What a reply says (claude_replay.go:96-104).
+    /// What a reply says.
     static func replyWords(_ message: Message) -> String {
         message.parts.compactMap { part -> String? in
             guard case .text(let text) = part, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
@@ -159,8 +159,7 @@ enum ClaudePrompt {
         return close(blocks, text)
     }
 
-    /// The pieces a prompt is pasted in: its words one after another, each image apart
-    /// (tui.go userPieces, 836-884).
+    /// The pieces a prompt is pasted in: its words one after another, each image apart.
     /// A block that is neither words nor an image goes as it came: it cannot be typed (`typeable`).
     enum Piece: Equatable { case text(String), image(JSONValue), block(JSONValue) }
     static func pieces(_ blocks: [JSONValue]) -> [Piece] {
@@ -273,7 +272,7 @@ enum ClaudePrompt {
     private static func textBlock(_ text: String) -> JSONValue { .object(["type": .string("text"), "text": .string(text)]) }
 
     /// Text after a tool's results that is the agent's own, not the person's: empty inside its
-    /// reminder tags (claude_subscription.go agentNotice, 4991).
+    /// reminder tags.
     private static func agentNotice(_ text: String) -> Bool {
         let stripped = text.replacingOccurrences(of: #"<system-reminder>[\s\S]*?</system-reminder>"#, with: "", options: .regularExpression)
         return stripped.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -292,13 +291,13 @@ enum ClaudePrompt {
     }
 
     /// The client's instructions without Claude Code's per-request billing line, whose last part
-    /// hashes the request's first message (claude_subscription.go:4465-4471).
+    /// hashes the request's first message.
     static func withoutBillingHeader(_ system: String) -> String {
         system.replacingOccurrences(of: #"^x-anthropic-billing-header:(\s*[A-Za-z_]+=[^;\s]*;)*\s*"#, with: "", options: .regularExpression)
     }
 
-    /// What follows the client's instructions about where its tools run (claude_subscription.go
-    /// envNote, 4139-4186): the session works in the account's own folder, while the client names
+    /// What follows the client's instructions about where its tools run: the session works in
+    /// the account's own folder, while the client names
     /// the person's. Named in a turn (Claude Code 2.1.296 and later give their environment as a
     /// system message, which joins the user turn here) the folder identifies it.
     static func environmentNote(system: String, messages: [BridgeMessage]) -> String {

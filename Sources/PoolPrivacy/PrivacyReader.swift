@@ -27,8 +27,10 @@ actor PrivacyReader {
     /// second chunk only slows the first; the threads it has go to that one.
     static let turns = 1
     /// How much of what was sent unread before a
-    /// request leaves to be read in the background: one chunk.
-    static let backlogCap = chunkSize
+    /// request leaves to be read in the background: four chunks, about a second of the model's reading,
+    /// which a request that comes interrupts at once. One chunk a request left a quarter of what went
+    /// unread never read at all (11-16 to 11-18).
+    static let backlogCap = 4 * chunkSize
 
     /// 30 s after a failure, doubled for each in a row, 10 minutes at most.
     static func retryAfter(_ fails: Int) -> Duration {

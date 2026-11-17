@@ -54,6 +54,11 @@ final class AstrLinkTokenizerTests: XCTestCase {
         XCTAssertTrue(AstrLinkDetector.spans(tokens: [.init(id: 1, start: 0, end: 1)], labels: [1], scores: [0.799]).isEmpty)
     }
 
+    /// Half the cores, at most six, so the Claude sessions beside the model keep theirs.
+    func testTheModelReadsWithHalfTheCoresUpToSix() {
+        XCTAssertEqual([1, 2, 8, 10, 12, 16, 24].map { AstrLinkDetector.threads(cores: $0) }, [1, 1, 4, 5, 6, 6, 6])
+    }
+
     func testEmptyReadinessNeverSkipsMissingModel() async throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent(".build/privacy-fixtures/\(UUID().uuidString)")

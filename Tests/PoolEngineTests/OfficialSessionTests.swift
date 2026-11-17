@@ -204,8 +204,20 @@ final class OfficialSessionTests: XCTestCase {
             (401, "Please run /login", .accountUnavailable(.signedOut)),
             (529, "Overloaded", .clientReported(status: 529, message: "Overloaded")),
             (400, "Third-party apps now draw from your extra usage", .clientReported(status: 400, message: "Third-party apps now draw from your extra usage"))]
-        let cases = coded + plain.map { ($0.0, $0.1, $0.2, nil) }
-        for (status, text, expected, code) in cases {
+        // Errors Claude Code made itself, as 2.1.325 writes them: no status, only the kind (`error`). A login it
+        // could not refresh is the account's sign-in (11-16: five turns failed as `api_error:0` and stayed on
+        // the signed-out account); the Mac sleeping mid-reply is the conversation's, told on as it came.
+        let slept = "API Error: Your computer went to sleep mid-response. The response above may be incomplete."
+        let lapsedWithCredit = "Failed to authenticate: your claude.ai login expired. Claude Code tried your saved Claude Console API key instead, but it doesn't have enough credit."
+        let kinds: [(Int?, String, BridgeFailure, String)] = [
+            (nil, "Login expired · Please run /login", .accountUnavailable(.signedOut), "authentication_failed"),
+            (nil, lapsedWithCredit, .accountUnavailable(.signedOut), "authentication_failed"),
+            (nil, slept, .clientReported(status: 0, message: slept), "server_error"),
+            (nil, "Your account has been placed on hold.", .accountUnavailable(.suspended), "account_on_hold"),
+            (nil, "Verify your account to continue.", .accountUnavailable(.needsAttention), "verification_required")]
+        let cases = coded.map { ($0.0, $0.1, $0.2, $0.3, String?.none) } + plain.map { ($0.0, $0.1, $0.2, String?.none, String?.none) }
+            + kinds.map { ($0.0, $0.1, $0.2, String?.none, Optional($0.3)) }
+        for (status, text, expected, code, kind) in cases {
             let harness = try SessionHarness(); defer { harness.clean() }
             let session = harness.session(), recorder = SessionObservations()
             let observing = Task { for await event in await session.observations() { await recorder.add(event) } }
@@ -214,7 +226,7 @@ final class OfficialSessionTests: XCTestCase {
             try await waitFor { harness.sentCount == 1 }
             // A refusal whose info names no window says nothing of which limit
             let info: JSONValue? = status == 429 ? .object(["status": .string("rejected")]) : nil
-            try harness.apiError(status: status, text: text, info: info, code: code)
+            try harness.apiError(status: status, text: text, info: info, code: code, kind: kind)
             try harness.turnEnded()
             do { _ = try await reply.value; XCTFail("An API error row finished a turn: \(text)") }
             catch { XCTAssertEqual(error as? BridgeFailure, expected, text) }

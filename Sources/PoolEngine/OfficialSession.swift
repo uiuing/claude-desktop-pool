@@ -146,7 +146,7 @@ public actor OfficialSession: SessionWorker {
     /// Stream events read and not yet told: they wait while a message typed in is not yet taken.
     private var streamQueue: [JSONValue] = []
     /// Transcript rows read and not yet handled: the first waits while its message's stream may
-    /// still begin, or a turn's end while its streams end (tap.go before and settle), and the
+    /// still begin, or a turn's end while its streams end, and the
     /// rest wait behind it.
     private var rows: [ClaudeTranscript.Row] = []
     private var holdUntil: Date?
@@ -226,6 +226,10 @@ public actor OfficialSession: SessionWorker {
         let extraText = extraBlocks.isEmpty ? nil : try RequestContent.text(.array(extraBlocks))
         var pieces: [ClaudePrompt.Piece]?
         if transport == nil {
+            if resumeCut != nil {
+                await waitForForkRows()
+                guard !ended, !invalidated else { throw BridgeFailure.cancelled }
+            }
             do { try start(request) } catch { invalidated = true; throw error }
             pieces = firstPieces
         } else if results.isEmpty {
@@ -347,7 +351,7 @@ public actor OfficialSession: SessionWorker {
             resumeCutAt = nil; resumeDiscard = nil
         }
 
-        // What is typed, and the saved session it goes on from (claude_replay.go:31-93): a
+        // What is typed, and the saved session it goes on from: a
         // conversation with a reply in it is given to the client as its own transcript, and only
         // the turn after the reply is typed. Told whole otherwise, or when that cannot be.
         let messages = try ClaudePrompt.messages(request.messages)
@@ -497,7 +501,7 @@ public actor OfficialSession: SessionWorker {
     }
 
     /// A resumed start the client ended at once (it can refuse a session it cannot load) is
-    /// started again once, told the conversation whole (claude_subscription.go:857-863).
+    /// started again once, told the conversation whole.
     private func relaunchWhole() throws {
         guard let plan, let accountDirectory, let workDirectory, let directory else { throw BridgeFailure.transport }
         Diagnostics.record("session.failed", ["run": runTag, "reason": "replay_failed",
@@ -592,7 +596,7 @@ public actor OfficialSession: SessionWorker {
     }
 
     /// Waits once, at most readyTimeout, for the input box and the helper's tool list, answering
-    /// first-run screens on the way (tui.go ready, 438-564): a message sent before the tools are
+    /// first-run screens on the way: a message sent before the tools are
     /// listed is answered without them.
     private func awaitReady(_ token: UUID) async throws {
         var until = Date().addingTimeInterval(readyTimeout)
@@ -637,7 +641,7 @@ public actor OfficialSession: SessionWorker {
         }
     }
 
-    /// Pastes a message's pieces as a person would and sends it (tui.go send, 949-1118): each
+    /// Pastes a message's pieces as a person would and sends it: each
     /// image once the input shows the one before, the words in one bracketed paste, Return on its
     /// own once the paste shows (or its wait is over), again while the transcript has not taken
     /// the message, at most four times.
@@ -701,7 +705,7 @@ public actor OfficialSession: SessionWorker {
 
     /// Waits for the input to show the paste: one more "Pasted text" mark, or its last line's last
     /// 16 characters, in what was drawn since or in the input as the screen now shows it. A long paste takes a second more per 64 KB. The wait
-    /// ending is not a failure: Return is pressed anyway (tui.go shown, 1081-1118). Whitespace is
+    /// ending is not a failure: Return is pressed anyway. Whitespace is
     /// left out of the comparison, since the terminal wraps the input wherever a line is full.
     private func awaitShown(_ text: String, pastedBefore: Int, responseToken: UUID) async {
         guard !text.isEmpty else { return }
@@ -781,7 +785,7 @@ public actor OfficialSession: SessionWorker {
     /// "[Image #10]" can be drawn as "[Image" and "#10]" on two rows.
     private static let imageMark = try! NSRegularExpression(pattern: "\\[Image#([0-9]+)\\]")
 
-    /// What the client drew since the last paste, its escapes taken out (tui.go plain). The client
+    /// What the client drew since the last paste, its escapes taken out. The client
     /// writes only the cells that changed since its last frame and moves the cursor over the rest,
     /// so a mark next to an earlier one can arrive as "[Imag" and " #27]": a mark missing here is
     /// looked for again in `promptArea`, the input as the screen shows it.
@@ -802,7 +806,7 @@ public actor OfficialSession: SessionWorker {
     }
 
     /// Client text as it can be typed: line endings become new lines and other terminal controls
-    /// are removed, which also keeps the text from ending the paste early (tui.go pasteClean).
+    /// are removed, which also keeps the text from ending the paste early.
     static func typeable(_ text: String) -> String {
         let lines = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
         return String(String.UnicodeScalarView(lines.unicodeScalars.filter {
@@ -812,7 +816,7 @@ public actor OfficialSession: SessionWorker {
 
     /// Typeable text that does not open as what the input takes for a command (/), a shell line
     /// (!), a memory (#) or a background task (&): a new line before it, or, while a turn is going
-    /// (the client queues it and trims it), the person's mark (tui.go pasteable, 949-964).
+    /// (the client queues it and trims it), the person's mark.
     static func pasteable(_ text: String, busy: Bool) -> String {
         let text = typeable(text)
         let trimmed = text.drop { $0 == " " || $0 == "\t" || $0 == "\n" }
@@ -933,10 +937,26 @@ public actor OfficialSession: SessionWorker {
         return max(pace, min(pace << UInt64(quiet), quietLook))
     }
     static let quietLook: UInt64 = 160_000_000
+    /// A session cut before calls is copied from the session that made them, which may not have written
+    /// the answer with those calls yet when their results come back at once (11-17: 110 ms after the
+    /// call the copy found nothing to cut at, and the conversation was told whole): it is waited for,
+    /// at most `forkRowWait`.
+    private func waitForForkRows() async {
+        guard let from = resumeFrom, let calls = resumeCut, !calls.isEmpty,
+              let config = try? workspace.accountDirectory(account.id), let work = try? workspace.workDirectory(account.id) else { return }
+        let began = Date()
+        while !ClaudeReplay.mentions(config: config, work: work, session: from, calls: calls) {
+            guard Date().timeIntervalSince(began) < Self.forkRowWait, (try? await Task.sleep(nanoseconds: 100_000_000)) != nil else { break }
+        }
+        let waited = Date().timeIntervalSince(began)
+        if waited >= 0.1 { Diagnostics.record("session.fork_waited", ["run": runTag, "ms": String(Int(waited * 1000))]) }
+    }
+    static let forkRowWait: TimeInterval = 1.5
     /// A reply that has heard nothing from its client for `stallAfter` is logged once, with what
     /// it waits on and its steps; when the client is heard again, how long it was quiet.
     private func watchForStall() {
-        let now = Date(), quiet = now.timeIntervalSince(trace.lastActivity)
+        // Time the Mac slept is no client gone quiet: only awake time counts toward a stall.
+        let now = Date(), quiet = trace.quietAwake(now: now)
         if let since = stalledSince {
             guard trace.lastActivity > since else { return }
             Diagnostics.record("session.resumed", ["run": runTag, "quiet_s": String(Int(trace.lastActivity.timeIntervalSince(since)))])
@@ -946,7 +966,7 @@ public actor OfficialSession: SessionWorker {
         guard response != nil, quiet >= Self.stallAfter else { return }
         stalledSince = trace.lastActivity
         let on = awaitingAccept ? "accept" : !waiting.isEmpty ? "results" : !outstanding.isEmpty ? "calls" : "model"
-        Diagnostics.record("session.stalled", ["run": runTag, "quiet_s": String(Int(quiet)), "waits_on": on,
+        Diagnostics.record("session.stalled", ["run": runTag, "quiet_s": String(Int(quiet)), "slept_s": String(Int(trace.sleptSinceActivity)), "waits_on": on,
             "calls_waiting": String(waiting.count), "outstanding": String(outstanding.count), "held": String(heldResults.count),
             "tap": tapReported ?? "-", "idle": officialIdle ? "yes" : "no"])
         Diagnostics.dump("session", subject: ("run", runTag), why: "stalled", trace: trace, now: now)
@@ -964,8 +984,8 @@ public actor OfficialSession: SessionWorker {
         let now = Date()
         guard limit.until > now else { siblingLimit = nil; return false }
         guard response != nil, !invalidated, !replyStreamed, tap?.going(bare: false) != true,
-              now.timeIntervalSince(trace.lastActivity) >= limitedQuiet else { return false }
-        Diagnostics.record("session.account_limited", ["run": runTag, "quiet_s": String(Int(now.timeIntervalSince(trace.lastActivity)))])
+              trace.quietAwake(now: now) >= limitedQuiet else { return false }
+        Diagnostics.record("session.account_limited", ["run": runTag, "quiet_s": String(Int(trace.quietAwake(now: now)))])
         invalidated = true; failed("account_limited"); observer?.yield(.attention)
         fail(limit.failure)
         return true
@@ -982,8 +1002,8 @@ public actor OfficialSession: SessionWorker {
     /// Tells the stream's events and the transcript's rows read so far. A stream's events wait
     /// while a message typed in is not taken yet: they are its reply's. An answer's row waits,
     /// at most tapWait, while a stream with no message yet is open, for its stream to begin, and
-    /// is told whole once it does not (tap.go before, 208-229); a turn's end waits for its streams
-    /// to end, and ends one still going then (settle, 231-245). The rows after a waiting one wait.
+    /// is told whole once it does not; a turn's end waits for its streams
+    /// to end, and ends one still going then. The rows after a waiting one wait.
     private func drain() {
         while !ended {
             if !awaitingAccept, !streamQueue.isEmpty {
@@ -1110,7 +1130,9 @@ public actor OfficialSession: SessionWorker {
             endTurn()
             if let rateLimits { forwardQuota(ClientErrorWords.windows(rateLimits, at: Date())) }
             guard response != nil else { return }
-            failed("api_error:\(status ?? 0)")
+            // the client's kind of error beside its status, as the log names it (a short code, never words)
+            let kind = code.flatMap { $0.count <= 48 && $0.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") } ? ":" + $0 : nil } ?? ""
+            failed(ClientErrorWords.sleptMidReply(text) ? "slept_mid_reply" : "api_error:\(status ?? 0)" + kind)
             observer?.yield(.attention)
             fail(classify(status: status ?? 0, text: text, code: code))
         case .turnEnded:
@@ -1133,7 +1155,7 @@ public actor OfficialSession: SessionWorker {
                 return
             }
             if cut {
-                // an attempt cut short that Claude Code did not ask again (claude_subscription.go:3682)
+                // an attempt cut short that Claude Code did not ask again
                 invalidated = true; failed("stream_cut"); observer?.yield(.attention)
                 fail(BridgeFailure.clientReported(status: 502, message: "Claude Code's stream from Anthropic was cut short, and Claude Code ended the turn without asking again."))
                 return
@@ -1166,18 +1188,21 @@ public actor OfficialSession: SessionWorker {
     /// is account evidence, so the turn goes to another account; anything else is the client's own words
     /// and status, 0 when it never asked Anthropic.
     private func classify(status: Int, text: String, code: String?) -> BridgeFailure {
-        if status == 429 || (status < 400 && ClientErrorWords.quotaSaid(text)) {
+        // First, as a lapsed login's words can name credit too ("...doesn't have enough credit")
+        if ClientErrorWords.signedOut(status: status, code: code, text) { return .accountUnavailable(.signedOut) }
+        if status == 429 || code == "rate_limit" || (status < 400 && ClientErrorWords.quotaSaid(text)) {
             let limits = knownQuota.values.filter { $0.applies(to: model.cliAlias) && $0.isExhausted(at: Date()) }.sorted { $0.id < $1.id }
             return limits.isEmpty ? .rateLimited(nil) : .quotaLimited(limits)
-        }
-        if status == 401 || (status < 400 && text.lowercased().contains("authentication")) {
-            return .accountUnavailable(.signedOut)
         }
         // Anthropic turned the account's subscription away (a payment past due): every request of the
         // account meets it, and `claude auth status` still reads it subscribed. Another 403 is the account's
         // too, checked again before its next turn.
         if ClientErrorWords.subscriptionRefused(status: status, code: code, text) { return .accountUnavailable(.subscriptionRequired) }
         if status == 403 { return .accountUnavailable(.needsAttention) }
+        // Anthropic holds the account, or wants it verified: only the person can clear either, so the turn
+        // goes to another account meanwhile.
+        if code == "account_on_hold" { return .accountUnavailable(.suspended) }
+        if code == "verification_required" { return .accountUnavailable(.needsAttention) }
         return .clientReported(status: status, message: text)
     }
 
@@ -1378,7 +1403,7 @@ public actor OfficialSession: SessionWorker {
     }
 
     /// Ends the reply with the usage its messages told, by their stream or their rows. Usage is
-    /// never required: a reply ends with the usage seen, or zero (anthropic.go:1415-1421, 1734-1751).
+    /// never required: a reply ends with the usage seen, or zero.
     private func finish(_ reason: BridgeStopReason) {
         guard response != nil else { return }
         trace.note("finish." + reason.rawValue)

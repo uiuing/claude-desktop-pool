@@ -111,8 +111,11 @@ final class CoordinatorLifecycleTests: XCTestCase {
     }
 
     /// A real conversation (11-06): its run had answered, yet was not idle at the next turn, and the
-    /// turn was refused; Desktop started a new client session and the conversation moved accounts.
-    func testARunThatCannotTakeItsNextTurnIsReplacedOnTheSameAccount() async throws {
+    /// turn was refused. The turn is taken now: a run whose session cannot go on is replaced, and the
+    /// turn, told whole, goes where the pool has the most room. A conversation written whole reads only
+    /// its instructions and tools from the cache (11-16 to 11-18: 13.7% of what such turns sent), so
+    /// going back to its account kept little and spent that account's limits.
+    func testARunThatCannotTakeItsNextTurnIsReplacedWhereThePoolHasRoom() async throws {
         let ended = LoggedLines()
         let (pool, factory, used, first, second) = twoAccountPool(onUpdate: { update in
             if case .session(let session) = update, session.state == .ended { ended.add(session.id.uuidString) }
@@ -121,14 +124,15 @@ final class CoordinatorLifecycleTests: XCTestCase {
         _ = try await drain(pool, opening, id: "conversation")
         let opened = await used.accounts
         let original = try XCTUnwrap(opened.first)
-        // The other account now has more left: the conversation still stays where its cache is.
+        // The other account now has more left: the turn told whole goes there.
+        let other = original == first.id ? second.id : first.id
         await pool.updateAccounts(original == first.id ? [first, better(second)] : [better(first), second])
         let worker = try await factory.worker(0)
         await worker.needAttention()
         try await lifecycleWait { await pool.sessions().contains { $0.id == worker.id && $0.state == .attention } }
         _ = try await drain(pool, followUp(opening), id: "conversation")
         let accounts = await used.accounts
-        XCTAssertEqual(accounts, [original, original])
+        XCTAssertEqual(accounts, [original, other])
         // The replaced run leaves the app's list too, not just the coordinator.
         XCTAssertTrue(ended.all.contains(worker.id.uuidString))
         _ = await pool.shutdown()

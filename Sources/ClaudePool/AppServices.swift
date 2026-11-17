@@ -66,6 +66,8 @@ final class AppServices {
     private var pathMonitor: NWPathMonitor?
     private var lifecycleObservers: [NSObjectProtocol] = []
     private var awake = true
+    /// The Mac's time asleep so far (`SystemSleep.total`) when it last went to sleep, until it wakes.
+    private var sleptBefore: TimeInterval?
     private var sessionActive = true
     private var online = true
     private var officialClient: OfficialCLI?
@@ -1435,10 +1437,21 @@ final class AppServices {
             }
         }
         var failure: Error?
+        var finishedAt: Date?
         do {
             let request = BridgeRequest(model: haiku.id, messages: [.init(role: "user", content: .string(WarmUpPlanner.prompt))], maxTokens: 64)
-            for try await event in try await session.events(for: request) { if case .finished = event { break } }
+            for try await event in try await session.events(for: request) { if case .finished = event { finishedAt = Date(); break } }
         } catch { failure = error }
+        // The status line drawn as the session began shows the limits from before the warm-up; the
+        // client reads them again once the reply is in. That reading is waited for, briefly.
+        var waited: TimeInterval?
+        if failure == nil, let finishedAt {
+            func latest() -> Date { library.accounts.first(where: scope.matches)?.windows.map(\.observedAt).max() ?? .distantPast }
+            while latest() < finishedAt, Date().timeIntervalSince(finishedAt) < 3 {
+                guard (try? await Task.sleep(nanoseconds: 100_000_000)) != nil else { break }
+            }
+            waited = Date().timeIntervalSince(finishedAt)
+        }
         _ = await session.close()
         watching.cancel(); warmUpSession = nil
         if let failure {
@@ -1452,9 +1465,13 @@ final class AppServices {
         // Whether the client's own figures showed the limits running, so a warm-up that a reading
         // still shows idle is visible in the log.
         let idle = after.map { account in account.windows.filter { WarmUpPlanner.idle($0, at: Date()) }.map(\.id).sorted() } ?? []
+        // A reading taken after the reply shows what the warm-up did; one from before it, or none, is
+        // confirmed by a read of the account's panel.
+        let fresh = (readAfter ?? .distantPast) >= (finishedAt ?? .distantFuture)
         Diagnostics.record("warmup.reading", ["account": Diagnostics.id(current.id),
-            "read": readAfter == readBefore ? "none" : "status_line", "still_idle": idle.isEmpty ? "-" : idle.joined(separator: "+")])
-        if readAfter == readBefore { await quotaService?.requestRefresh(accountID: current.id, reason: .manual) }
+            "read": fresh ? "after_reply" : readAfter == readBefore ? "none" : "before_reply",
+            "wait_ms": waited.map { String(Int($0 * 1000)) } ?? "-", "still_idle": idle.isEmpty ? "-" : idle.joined(separator: "+")])
+        if !fresh { await quotaService?.requestRefresh(accountID: current.id, reason: .manual) }
     }
 
     private func receiveQuota(_ update: QuotaRefreshUpdate) async {
@@ -1513,16 +1530,35 @@ final class AppServices {
         }
     }
 
+    /// Runs alive, and those with a reply open, for the sleep and wake lines.
+    private var runCounts: (live: Int, replying: Int) {
+        let live = model.snapshot.sessions.filter { $0.state != .ended }
+        return (live.count, live.filter { [.starting, .running, .waiting].contains($0.state) }.count)
+    }
+
     private func observeAvailability() {
         guard dependencies.observeSystemEvents else { return }
         let center = NSWorkspace.shared.notificationCenter
         lifecycleObservers.append(center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.awake = false; await self?.updateQuotaAvailability() }
+            Task { @MainActor in
+                guard let self else { return }
+                // A sleep cuts every reply streaming then: the log says so, beside what it cut.
+                let runs = self.runCounts
+                self.sleptBefore = SystemSleep.total()
+                Diagnostics.record("system.sleep", ["runs": String(runs.live), "replying": String(runs.replying)])
+                self.awake = false; await self.updateQuotaAvailability()
+            }
         })
         lifecycleObservers.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
-                self?.awake = true; await self?.updateQuotaAvailability()
-                await self?.checkAccountsQuietly()
+                guard let self else { return }
+                let runs = self.runCounts
+                let slept = self.sleptBefore.map { max(0, SystemSleep.total() - $0) }
+                self.sleptBefore = nil
+                Diagnostics.record("system.wake", ["slept_s": slept.map { String(Int($0)) } ?? "-",
+                                                   "runs": String(runs.live), "replying": String(runs.replying)])
+                self.awake = true; await self.updateQuotaAvailability()
+                await self.checkAccountsQuietly()
             }
         })
         lifecycleObservers.append(center.addObserver(forName: NSWorkspace.sessionDidResignActiveNotification, object: nil, queue: .main) { [weak self] _ in

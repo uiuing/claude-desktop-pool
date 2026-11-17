@@ -289,7 +289,11 @@ final class SessionHarness: @unchecked Sendable {
         try row(["type": .string("assistant"), "message": .object(body)])
     }
     func turnEnded() throws { try row(["type": .string("system"), "subtype": .string("turn_duration"), "durationMs": .number(1200)]) }
-    func apiError(status: Int?, text: String, info: JSONValue? = nil, stop: String? = nil, apiError: String? = nil, code: String? = nil) throws {
+    /// `kind` alone is the row as Claude Code 2.1.325 writes an error it made itself, with no status and no
+    /// `apiErrorCode`: `error` "authentication_failed" when its login could not be refreshed, "server_error"
+    /// when the Mac slept mid-reply.
+    func apiError(status: Int?, text: String, info: JSONValue? = nil, stop: String? = nil, apiError: String? = nil, code: String? = nil,
+                  kind: String? = nil) throws {
         var message: [String: JSONValue] = ["id": .string("x"), "model": .string("<synthetic>"),
                                             "content": .array([.object(["type": .string("text"), "text": .string(text)])])]
         if let stop { message["stop_reason"] = .string(stop) }
@@ -300,6 +304,7 @@ final class SessionHarness: @unchecked Sendable {
             fields["apiErrorCode"] = .string(code); fields["error"] = .string("oauth_org_not_allowed")
             fields["apiErrorType"] = .string("permission_error"); fields["failedResponseHadNoToolCall"] = .bool(true)
         }
+        if let kind { fields["error"] = .string(kind) }
         if let status { fields["apiErrorStatus"] = .number(Double(status)) }
         if let info { fields["apiErrorParams"] = .object(["rate_limit_info": info]) }
         try row(fields)

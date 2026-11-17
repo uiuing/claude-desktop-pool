@@ -250,7 +250,7 @@ final class CoordinatorReplayTests: XCTestCase {
         _ = await pool.shutdown()
     }
 
-    /// A run released for a rewritten conversation is kept for its own client's results (#2933), but it
+    /// A run released for a rewritten conversation is kept for its own client's results, but it
     /// does not make a new conversation wait parkLongest for room.
     func testAReleasedRunGivesItsRoomAtOnceWhenRoomIsNeeded() async throws {
         let original = ReplayWorker(steps: [.reply([.text("Reading it."), .toolUse(call), .finished(.toolUse)])])
@@ -538,6 +538,39 @@ final class CoordinatorReplayTests: XCTestCase {
         // why the conversation was told whole, in the log
         XCTAssertTrue(lines.all.contains { $0.contains("decision=hand_on_declined") && $0.contains("why=stopped") &&
                                            $0.contains("reason=not_from_last_reply") }, lines.all.joined(separator: "\n"))
+        _ = await pool.shutdown()
+    }
+
+    /// A run resumed from the shelf whose first reply failed has no reply of its own yet: the retry of
+    /// that turn goes on from its session cut where the turn began, told only that turn, rather than
+    /// the whole conversation in a new session.
+    func testARetryOfAResumedRunsFailedFirstTurnGoesOnFromItsSession() async throws {
+        let lines = LoggedLines()
+        Diagnostics.install { lines.add($0) }
+        defer { Diagnostics.install(nil) }
+        let original = ReplayWorker(steps: [.reply([.text("Three items."), .finished(.endTurn)])], keeps: true)
+        let resumed = ReplayWorker(steps: [.failure([], .transport)], keeps: true)
+        let retried = ReplayWorker(steps: [.reply([.text("The second is longest."), .finished(.endTurn)])], keeps: true)
+        let factory = ReplayFactory([original, resumed, retried])
+        let clock = IdleClock()
+        let pool = PoolCoordinator(accounts: [account()], maximumWorkers: 4, roomWait: 0, duplicateWait: 0.1,
+                                   now: { clock.now }, factory: { _, _ in try await factory.make() })
+        _ = try await collect(pool, first())
+        clock.advance(301); await pool.retireIdle()
+        let next = after("Which is longest?")
+        _ = try? await collect(pool, next)
+        let unshelved = await resumed.resumedFrom
+        XCTAssertEqual(unshelved, "fixture-session-\(original.id.uuidString.prefix(8))")
+        let answer = try await collect(pool, next)
+        XCTAssertEqual(answer, [.text("The second is longest."), .finished(.endTurn)])
+        let kept = await resumed.endShelves, from = await retried.resumedFrom, held = await retried.resumedHeld
+        let cutAt = await retried.resumedCutAt, told = await retried.regular
+        XCTAssertEqual(kept, 1)
+        XCTAssertEqual(from, "fixture-session-\(resumed.id.uuidString.prefix(8))")
+        XCTAssertEqual(held, 2, "Cut where the failed turn began")
+        XCTAssertEqual(cutAt, 102)
+        XCTAssertEqual(told, [next])
+        XCTAssertTrue(lines.all.contains { $0.contains("decision=turn_forked") && $0.contains("why=stopped") }, lines.all.joined(separator: "\n"))
         _ = await pool.shutdown()
     }
 

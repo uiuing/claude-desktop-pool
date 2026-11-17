@@ -99,7 +99,7 @@ enum ClientRequestShape {
             for tool in list {
                 guard let fields = tool.objectValue else { throw BridgeFailure.invalidRequest("Tools need unique names and object schemas.") }
                 if let type = fields["type"]?.stringValue, type != "custom", fields["input_schema"] == nil {
-                    // A server tool means nothing to the interactive client (anthropic.go:1660-1690).
+                    // A server tool means nothing to the interactive client.
                     if type.hasPrefix("web_search") { webSearch = true }
                     if type.hasPrefix("advisor_") { advisorLeftOut = true }
                     continue

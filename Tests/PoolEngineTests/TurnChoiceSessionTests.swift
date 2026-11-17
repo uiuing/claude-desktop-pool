@@ -68,7 +68,7 @@ final class TurnChoiceSessionTests: XCTestCase {
     }
 
     /// A structured answer goes through the answer tool: a call that does not fit is told why, one that
-    /// fits is the answer, and the turn's words are left out (claude_tui_schema.go).
+    /// fits is the answer, and the turn's words are left out.
     func testAStructuredAnswerIsItsAnswerToolsCall() async throws {
         let harness = try SessionHarness(); defer { harness.clean() }
         let session = harness.session()

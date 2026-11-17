@@ -10,7 +10,7 @@ import PoolCore
 /// message's calls in one reply.
 ///
 /// Claude Code may write a message calling a client's tool only once the call is answered, which
-/// only the client can do (3402-3414). A call the helper hands over that no stream or message
+/// only the client can do. A call the helper hands over that no stream or message
 /// told within `callFirst` is then the reply itself, and the message written after it is left out,
 /// its usage told with the reply it comes in.
 ///
@@ -32,11 +32,11 @@ struct ClaudeReply {
     }
 
     /// How long a call the helper hands over waits for its message before it tells the client
-    /// itself (callFirst, 3919-3925): a message written before its call was read 118 to 162 ms
+    /// itself: a message written before its call was read 118 to 162 ms
     /// after the call came in.
     let callFirst: TimeInterval
-    /// How long a message told whole is taken as whole once none of its rows come
-    /// (unstreamedQuiet, 3914-3917): Claude Code writes them together.
+    /// How long a message told whole is taken as whole once none of its rows come:
+    /// Claude Code writes them together.
     let quiet: TimeInterval
     /// The helper's tool names (`mcp__pool__<alias>`'s alias) to the client's.
     var names: [String: String] = [:]
@@ -48,7 +48,7 @@ struct ClaudeReply {
         self.callFirst = callFirst; self.quiet = quiet
     }
 
-    // Calls, across the replies of a turn (3415-3420).
+    // Calls, across the replies of a turn.
     /// The client's calls it was told.
     private var told = Recent()
     /// Calls told by themselves, their message not written yet.
@@ -77,7 +77,7 @@ struct ClaudeReply {
     private var unstreamed: String?
     private var quietUntil: Date?
     /// A stream was cut short before it showed anything: Claude Code asks again, and the reply
-    /// goes on in the attempt that answers (3259-3269).
+    /// goes on in the attempt that answers.
     private(set) var cut = false
     private struct Block {
         var id: String; var name: String; var json = ""; var start: JSONValue?
@@ -126,7 +126,7 @@ struct ClaudeReply {
     // MARK: The helper's calls
 
     /// Claude Code made a call through the helper. One a stream or message told already is the
-    /// client's to answer; another waits `callFirst` for its message (onCall, 3423-3460), and one
+    /// client's to answer; another waits `callFirst` for its message, and one
     /// whose message was left out is due at once, as nothing more is to come for it.
     mutating func made(_ id: String, name: String, input: JSONValue?, now: Date) {
         guard !told.contains(id) else { return }
@@ -163,7 +163,7 @@ struct ClaudeReply {
 
     // MARK: The stream
 
-    /// One event of a reply as Anthropic streamed it (3814-3877).
+    /// One event of a reply as Anthropic streamed it.
     mutating func stream(_ event: JSONValue) -> [Output] {
         var out = settle()
         switch event["type"]?.stringValue {
@@ -232,7 +232,7 @@ struct ClaudeReply {
 
     // MARK: The transcript
 
-    /// A row of a message the transcript has whole (3694-3796). One streamed says nothing but its
+    /// A row of a message the transcript has whole. One streamed says nothing but its
     /// usage; the one written after a call that told the client itself is left out; any other is
     /// told block by block, whole once another line or `quiet` passes.
     mutating func message(_ id: String, blocks rows: [ClaudeTranscript.Block], usage value: BridgeUsage?, stop: String?, now: Date) -> [Output] {
@@ -268,7 +268,7 @@ struct ClaudeReply {
             case .toolUse(let call, let called, let input):
                 awaited.remove(call)
                 guard !told.contains(call) else { continue }
-                // a call held back is told here, whole (#4611)
+                // a call held back is told here, whole
                 unheard.remove(call)
                 guard let name = clientName(called), let whole = input?.objectValue != nil ? input : made[call]?.input else { continue }
                 tell(BridgeToolCall(id: call, name: name, input: whole), into: &out)

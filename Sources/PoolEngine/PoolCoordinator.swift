@@ -75,6 +75,10 @@ public actor PoolCoordinator: BridgeBackend {
     private var bindings: [UUID: Binding] = [:]
     private var aliases: [String: UUID] = [:]
     private var toolOwners: [String: UUID] = [:]
+    /// What became of calls no run waits on any more, by id, for the log when results come for them
+    /// anyway (`no_run_waiting`): taken already, or their run ended. The newest 4,096.
+    private var callFates: [String: (fate: String, run: UUID)] = [:]
+    private var callFateOrder: [String] = []
     private var observationTasks: [UUID: Task<Void, Never>] = [:]
     private var paused = false
     /// Quitting has begun ending runs, or an update waits for the replies under way before it
@@ -455,7 +459,7 @@ public actor PoolCoordinator: BridgeBackend {
                 bindingID = handed
             } else {
                 _ = await releaseStopped(existing)
-                bindingID = try await create(request: request, model: model, generation: generation)
+                bindingID = try await create(request: request, model: model, generation: generation, toldWhole: true)
             }
         } else if !requestAlias.hasPrefix("request:"), let existing = aliases[requestAlias], let binding = bindings[existing] {
             if binding.busy || binding.retiring || !binding.pending.isEmpty {
@@ -470,7 +474,7 @@ public actor PoolCoordinator: BridgeBackend {
                 if !binding.pending.isEmpty, let forked = try await forkBeforeTurn(existing, request: request, model: model,
                                                                                 generation: generation, ending: false) {
                     bindingID = forked
-                } else { bindingID = try await create(request: request, model: model, generation: generation) }
+                } else { bindingID = try await create(request: request, model: model, generation: generation, toldWhole: true) }
             } else {
                 let lowQuota = shouldHandoff(binding, model: model)
                 let turn = compatible(binding, request: request) ? nextTurn(of: binding, request: request, alias: requestAlias) : nil
@@ -631,7 +635,16 @@ public actor PoolCoordinator: BridgeBackend {
     private func toolOwner(_ ids: Set<String>, request: BridgeRequest, concurrent: Bool) -> (UUID?, String) {
         if concurrent { return (nil, "answered_elsewhere") }
         let owners = Set(ids.compactMap { toolOwners[$0] })
-        guard let owner = owners.first, let binding = bindings[owner] else { return (nil, "no_run_waiting") }
+        guard let owner = owners.first, let binding = bindings[owner] else {
+            // Why none waits: the results were taken already (a request sent again), the calls' run ended
+            // (let go on them, replaced, retired), or Pool never saw the calls (made before it started).
+            let fates = Set(ids.map { callFates[$0]?.fate ?? "unseen" })
+            let runs = Set(ids.compactMap { callFates[$0]?.run })
+            Diagnostics.record("coordinator.route", ["decision": "no_run_waiting", "calls": String(ids.count),
+                "seen": fates.sorted().joined(separator: "+"), "run_live": runs.contains { bindings[$0] != nil } ? "yes" : "no",
+                "messages": String(request.messages.count)])
+            return (nil, "no_run_waiting")
+        }
         guard owners.count == 1 else { return (nil, "ambiguous") }
         if binding.stopped { return (nil, "run_stopped") }
         guard !binding.busy, !binding.retiring, ids.isSubset(of: binding.pending), ids.allSatisfy({ toolOwners[$0] == owner }) else {
@@ -905,9 +918,9 @@ public actor PoolCoordinator: BridgeBackend {
         }
     }
 
-    /// A conversation's run that cannot take its next turn ends, and the turn starts a new run told
-    /// the whole conversation. Unless the account is low, the new run stays on the same account, so
-    /// the conversation keeps its prompt cache. A run that does not leave its idle prompt normally
+    /// A conversation's run that cannot take its next turn ends, and the turn goes on from its session in
+    /// a new run on the same account (`handOn`), else starts a new run told the whole conversation where
+    /// the pool has the most room (`toldWhole`); a low account is left. A run that does not leave its idle prompt normally
     /// gets the client's own Ctrl-C; one that still does not end is kept for the user and reported,
     /// and the turn goes on without it rather than being refused.
     private func replaceRun(_ id: UUID, alias: String, request: BridgeRequest, model: PoolModel, generation: UInt64,
@@ -933,13 +946,14 @@ public actor PoolCoordinator: BridgeBackend {
                                     // the same share the move was decided by: never to an account with no more left
                                     minimumHeadroom: max(routingPolicy.reservePercent, PoolRouting.turnNeed(cost: binding.turnCost)))
         }
-        do { return try await create(request: request, model: model, generation: generation, only: account) }
-        catch BridgeFailure.unavailable { return try await create(request: request, model: model, generation: generation) }
+        return try await create(request: request, model: model, generation: generation, toldWhole: true)
     }
 
     /// `continuing`: the run is for tool results already delivered, which pause still lets finish.
+    /// `toldWhole`: the conversation's own turn goes to a run told it whole, with no session of it to go on
+    /// from. It is written whole wherever it goes, so it goes where the pool has the most room.
     private func create(request: BridgeRequest, model: PoolModel, generation: UInt64, excluding: Set<UUID> = [], minimumHeadroom: Double? = nil,
-                        reasonOverride: RoutingReason? = nil, continuing: Bool = false, only: UUID? = nil) async throws -> UUID {
+                        reasonOverride: RoutingReason? = nil, continuing: Bool = false, only: UUID? = nil, toldWhole: Bool = false) async throws -> UUID {
         func blocked() -> Bool { closing || (paused && !continuing) }
         guard !Task.isCancelled, !cancelledGenerations.contains(generation) else { throw BridgeFailure.cancelled }
         guard !blocked() else { throw BridgeFailure.paused }
@@ -962,7 +976,11 @@ public actor PoolCoordinator: BridgeBackend {
         // A task that already had a reply is another matter: told again (its run replaced, its results
         // come when no run waits), it goes back to the account it was on, by its own first exchange, where
         // its instructions and what it has said are cached. Elsewhere it is written whole.
-        let lead = parallel ? (Self.isOneOff(request) ? nil : openingAccount(of: request))
+        // A conversation's own turn told whole again reads only its instructions and tools from the cache
+        // (11-16 to 11-18: 13.7% of what 43 such turns sent, a median 27K tokens each), which an account warm
+        // with them reads as well: it is weighed as a new conversation is, not sent back to its account.
+        let spread = toldWhole && only == nil && !parallel && !Self.isOneOff(request)
+        let lead = spread ? nil : parallel ? (Self.isOneOff(request) ? nil : openingAccount(of: request))
             : conversation.flatMap { leadAccount(of: $0) } ?? (Self.isOneOff(request) ? nil : openingAccount(of: request))
         // A new conversation leans toward an account whose cache already holds its instructions and tools.
         let bonus = lead == nil && only == nil ? warmBonus(request) : [:]
@@ -1010,7 +1028,7 @@ public actor PoolCoordinator: BridgeBackend {
                  })]
             }
             Diagnostics.record("coordinator.pick", ["account": Diagnostics.id(account.id), "conversation": conversation ?? "-",
-                "kept": lead.map { $0 == account.id ? "yes" : "no:" + Diagnostics.id($0) } ?? (parallel ? "parallel" : "none"), "only": only.map(Diagnostics.id) ?? "-",
+                "kept": lead.map { $0 == account.id ? "yes" : "no:" + Diagnostics.id($0) } ?? (parallel ? "parallel" : spread ? "whole" : "none"), "only": only.map(Diagnostics.id) ?? "-",
                 "excluded": String(excluded.count), "candidates": scored.joined(separator: ","),
                 "warm": bonus.isEmpty ? "-" : bonus.sorted { $0.key.uuidString < $1.key.uuidString }
                     .map { Diagnostics.id($0.key) + ":+" + String(Int($0.value.rounded())) }.joined(separator: ",")])
@@ -1110,6 +1128,7 @@ public actor PoolCoordinator: BridgeBackend {
                     // exact completed results. Only then is their ownership consumed here.
                     for callID in resultIDs {
                         bindings[id]?.pending.remove(callID); toolOwners.removeValue(forKey: callID)
+                        noteCallFate(callID, "answered", run: id)
                     }
                     resultsConsumed = bindings[id]?.pending.isEmpty == true
                     source = accepted
@@ -1461,8 +1480,16 @@ public actor PoolCoordinator: BridgeBackend {
         setWorkState(id, state: .ended)
         observationTasks.removeValue(forKey: id)?.cancel()
         bindings.removeValue(forKey: id)
+        for (call, owner) in toolOwners where owner == id { noteCallFate(call, "run_ended", run: id) }
         aliases = aliases.filter { $0.value != id }; toolOwners = toolOwners.filter { $0.value != id }
         if bindings.isEmpty { retirementTask?.cancel(); retirementTask = nil }
+    }
+    private func noteCallFate(_ call: String, _ fate: String, run: UUID) {
+        if callFates.updateValue((fate, run), forKey: call) == nil { callFateOrder.append(call) }
+        if callFateOrder.count > 4096 {
+            for old in callFateOrder.prefix(1024) { callFates.removeValue(forKey: old) }
+            callFateOrder.removeFirst(1024)
+        }
     }
 
     private func shelfKey(_ conversation: [BridgeMessage], model: String) -> String {
@@ -1503,27 +1530,41 @@ public actor PoolCoordinator: BridgeBackend {
     /// conversation written whole. `ending`: the run is ended and its session is cut where it is;
     /// otherwise the run is left as it is, waiting on that turn's calls, and the new run takes a copy.
     /// Nil, the run untouched, when the request does not go on from there, its model, instructions or
-    /// tools changed, its account cannot take it without a handoff, or the session cannot be cut.
-    private func forkBeforeTurn(_ id: UUID, request: BridgeRequest, model: PoolModel, generation: UInt64, ending: Bool) async throws -> UUID? {
-        guard let binding = bindings[id], let before = binding.before, !binding.busy, !binding.retiring, !binding.stopped,
-              sameIdentity(binding), binding.request.model == request.model, binding.request.system == request.system,
-              binding.request.tools == request.tools,
-              binding.request.toolChoice == nil, !binding.request.webSearch, binding.request.answerSchema == nil,
-              request.toolChoice == nil, !request.webSearch, request.answerSchema == nil,
-              eligible(binding, model: model), !shouldHandoff(binding, model: model),
-              let turn = ConversationWords.nextTurn(request.messages), !turn.since.isEmpty, turn.before.count == before.count,
-              // only the person's own messages since: a client's calls since need a run told it whole
-              turn.since.allSatisfy({ $0.role == "user" && !ConversationWords.carriesTools($0) }),
-              ConversationWords.key(turn.before) == before.key else { return nil }
-        guard let at = await binding.worker.liveSession(), at.turn?.held == before.count,
-              let current = bindings[id], !current.busy, !current.retiring, !current.stopped,
-              current.before?.key == before.key, current.before?.count == before.count else { return nil }
+    /// tools changed, its account cannot take it without a handoff, or the session cannot be cut;
+    /// `missed` then hears why, for the log.
+    ///
+    /// A stopped or failed run is ended (`ending`) and cut too: a reply that failed at once, or that the
+    /// person stopped, is asked again as the same turn, and before its run had a reply of its own its
+    /// conversation is known only by where the turn began (11-16 to 11-18: twelve such retries of a
+    /// resumed run's first turn were told whole, 95 to 349 messages each).
+    private func forkBeforeTurn(_ id: UUID, request: BridgeRequest, model: PoolModel, generation: UInt64, ending: Bool,
+                                missed: (String) -> Void = { _ in }) async throws -> UUID? {
+        guard let binding = bindings[id], let before = binding.before else { missed("turn_unknown"); return nil }
+        guard !binding.busy, !binding.retiring, ending || !binding.stopped else { missed("busy"); return nil }
+        guard sameIdentity(binding), binding.request.model == request.model, binding.request.system == request.system,
+              binding.request.tools == request.tools else { missed("request_changed"); return nil }
+        guard binding.request.toolChoice == nil, !binding.request.webSearch, binding.request.answerSchema == nil,
+              request.toolChoice == nil, !request.webSearch, request.answerSchema == nil else { missed("turn_controls"); return nil }
+        guard eligible(binding, model: model), !shouldHandoff(binding, model: model) else { missed("account"); return nil }
+        guard let turn = ConversationWords.nextTurn(request.messages), !turn.since.isEmpty else { missed("no_next_turn"); return nil }
+        guard turn.before.count == before.count, ConversationWords.key(turn.before) == before.key else { missed("other_turn"); return nil }
+        // only the person's own messages since: a client's calls since need a run told it whole
+        guard turn.since.allSatisfy({ $0.role == "user" && !ConversationWords.carriesTools($0) }) else { missed("not_only_user"); return nil }
+        // a stopped run has no live session to look at: its session, once ended, says where the turn began
+        var live: ShelvedSession?
+        if !binding.stopped {
+            guard let at = await binding.worker.liveSession() else { missed("no_live_session"); return nil }
+            guard at.turn?.held == before.count else { missed("session_turn_differs"); return nil }
+            live = at
+        }
+        guard let current = bindings[id], !current.busy, !current.retiring, current.stopped == binding.stopped,
+              current.before?.key == before.key, current.before?.count == before.count else { missed("changed_meanwhile"); return nil }
         let account = binding.session.accountID
         let cut: ShelvedSession
         if ending {
-            guard current.pending.isEmpty else { return nil }
+            guard current.pending.isEmpty else { missed("calls_pending"); return nil }
             bindings[id]?.retiring = true
-            guard let saved = await binding.worker.shelveEnding() else { bindings[id]?.retiring = false; return nil }
+            guard let saved = await binding.worker.shelveEnding() else { bindings[id]?.retiring = false; missed("session_unsaved"); return nil }
             if bindings[id] != nil { bindings[id]?.session.state = .ended; publish(id); remove(id) }
             guard let copy = saved.beforeTurn(), copy.held == before.count else {
                 Diagnostics.record("coordinator.route", ["decision": "turn_fork_lost", "conversation": binding.session.conversation ?? "-",
@@ -1534,7 +1575,7 @@ public actor PoolCoordinator: BridgeBackend {
             }
             cut = copy
         } else {
-            guard let copy = at.beforeTurn(keeping: true) else { return nil }
+            guard let copy = live?.beforeTurn(keeping: true) else { missed("session_uncut"); return nil }
             cut = copy
         }
         let next: UUID
@@ -1545,7 +1586,7 @@ public actor PoolCoordinator: BridgeBackend {
         }
         if bindings[next]?.session.accountID == account, await resumeRun(next, from: cut) {
             noteTurn(next, before: turn.before)
-            Diagnostics.record("coordinator.route", ["decision": "turn_forked", "why": ending ? "replaced" : "pending_calls",
+            Diagnostics.record("coordinator.route", ["decision": "turn_forked", "why": binding.stopped ? "stopped" : ending ? "replaced" : "pending_calls",
                 "conversation": binding.session.conversation ?? "-", "messages": String(request.messages.count), "held": String(before.count)])
         } else { cut.discard() }
         return next
@@ -1588,8 +1629,8 @@ public actor PoolCoordinator: BridgeBackend {
     private func handOn(_ id: UUID, request: BridgeRequest, model: PoolModel, generation: UInt64, why: String) async throws -> UUID? {
         guard let binding = bindings[id] else { return nil }
         // The first thing that keeps the run's session from going on: the turn is then told whole (Pool's own record).
-        func declined(_ reason: String) -> UUID? {
-            Diagnostics.record("coordinator.route", ["decision": "hand_on_declined", "why": why, "reason": reason,
+        func declined(_ reason: String, fork: String = "-") -> UUID? {
+            Diagnostics.record("coordinator.route", ["decision": "hand_on_declined", "why": why, "reason": reason, "fork": fork,
                 "conversation": binding.session.conversation ?? "-", "messages": String(request.messages.count)])
             return nil
         }
@@ -1605,10 +1646,12 @@ public actor PoolCoordinator: BridgeBackend {
         if shouldHandoff(binding, model: model) { return declined("low_quota") }
         guard let held = Self.held(binding.history, in: request.messages) else {
             // it may go on from before the run's last turn: the session is then cut there
-            if let forked = try await forkBeforeTurn(id, request: request, model: model, generation: generation, ending: true) { return forked }
+            var fork = "-"
+            if let forked = try await forkBeforeTurn(id, request: request, model: model, generation: generation, ending: true,
+                                                     missed: { fork = $0 }) { return forked }
             // Where the request leaves what the run has: the shape of it says whether its session could go on cut there.
             recordDivergence(binding.history, request.messages)
-            return declined("not_from_last_reply")
+            return declined("not_from_last_reply", fork: fork)
         }
         let account = binding.session.accountID
         bindings[id]?.retiring = true

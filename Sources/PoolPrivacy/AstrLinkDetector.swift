@@ -292,7 +292,7 @@ public actor AstrLinkDetector: PrivacyModelManaging {
     /// `overlap / 2` tokens around it in the other.
     static let window = 510
     static let overlap = 96
-    static func threads(cores: Int) -> Int { max(1, min(4, cores / 2)) }
+    static func threads(cores: Int) -> Int { max(1, min(6, cores / 2)) }
 
     static func spans(tokens: [AstrLinkTokenizer.Token], labels: [Int], scores: [Double]) -> [PrivacySpan] {
         let kinds: [PrivacyCategory] = [.email, .phone, .account, .bankCard, .ip, .url, .secret, .address, .date, .person]
@@ -325,8 +325,8 @@ private final class AstrLinkSession: AstrLinkInference {
         self.tokenizer = try AstrLinkTokenizer(data: tokenizer)
         environment = try ORTEnv(loggingLevel: .fatal)
         let options = try ORTSessionOptions()
-        // Four threads read a window in about half the time two do; more add little. Half the cores at
-        // most, so the Claude sessions beside it keep theirs.
+        // Four threads read a window in about half the time two do. Up to six, half the cores at most, so
+        // the Claude sessions beside it keep theirs.
         try options.setIntraOpNumThreads(Int32(AstrLinkDetector.threads(cores: ProcessInfo.processInfo.activeProcessorCount)))
         try options.setLogSeverityLevel(.fatal)
         try options.addConfigEntry(withKey: "session.intra_op.allow_spinning", value: "0")

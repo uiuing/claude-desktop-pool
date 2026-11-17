@@ -4,6 +4,25 @@ All notable changes to Claude Pool are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+### Fixed
+
+- An account whose sign-in expired is taken out at its first failed turn, and the conversation moves to another account. Claude Code reports an expired login without a status ("Login expired · Please run /login"), which went to Claude Desktop as an ordinary error, so every retry failed on the same account until it was checked by hand.
+- Usage reads made side by side no longer leave a Claude Code process behind. One of two sessions kept for a quick second read was never ended and stayed open for hours, holding about 200 MB.
+- An account is no longer marked as needing attention for a few seconds after a usage read while Anthropic is slow. Claude Code can take about ten seconds to end then, and its end is now waited for.
+- Retrying a resumed conversation's first turn after it stopped or failed goes on from the saved session. Before, the whole conversation was written to the cache again, up to hundreds of messages.
+- Tool results that come back a moment after their calls go on from the conversation's session. Before, the session could be copied before Claude Code had written the calls, and the whole conversation was written again.
+- A reply is reported as stalled only after 90 seconds of the Mac awake, so time asleep no longer counts. The log marks the Mac's sleep and wake, and names Claude Code's "went to sleep mid-response" error.
+- A warm-up's log reads the limits shown after its reply. Before, it read the figures from before the warm-up and said most warm-ups had not started a limit they had started.
+- Developer recording compresses the files a crash or a forced quit left open when it next starts.
+- Redaction masks account ids written as a UUID or a long hex string when the local model marks them, and masks a short name or account the model found wherever it comes again in the conversation. Text that arrives while the model is busy is read in the background up to four times as far, so less of it is left to the rules alone.
+
+### Changed
+
+- A conversation that has to be told whole again goes to the account with the most room, as a new conversation does, instead of staying on its account. Told whole, it reads little from that account's cache, and the large write could use up an account near its limit.
+- Claude Desktop no longer gives up on a reply that is slow to begin. After 3 seconds with nothing to send, the reply's headers go out, then a keep-alive every 5 seconds (every 15 while it streams); an error within those 3 seconds still returns its real status.
+- The log says why a conversation's session could not be reused and what became of tool calls whose results find no run waiting.
+- Redaction's local model uses up to six threads instead of four on Macs with more than eight cores.
+
 ## [0.2.23] - 2026-11-16
 
 ### Fixed

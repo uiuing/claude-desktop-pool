@@ -9,7 +9,7 @@ import PoolCore
 /// was one pasted message, refused, and its images pasted one by one until the paste timed out.
 enum ClaudeReplay {
     /// The folder Claude Code keeps a working directory's sessions under: the path with everything
-    /// but ASCII letters and digits made "-" (claude_subscription.go claudeProjectName, 420-427).
+    /// but ASCII letters and digits made "-".
     static func projectName(_ path: String) -> String {
         String(String.UnicodeScalarView(path.unicodeScalars.map { scalar -> Unicode.Scalar in
             let value = scalar.value
@@ -26,7 +26,7 @@ enum ClaudeReplay {
     }
 
     /// The account's session folders for a working folder: by its path, and by its real path,
-    /// the one the client uses last (claude_subscription.go claudeSessions, 2644-2656).
+    /// the one the client uses last.
     static func projectDirectories(config: URL, work: URL) -> [URL] {
         var directories: [URL] = []
         for path in [work.path, realPath(work.path)] {
@@ -124,6 +124,16 @@ enum ClaudeReplay {
     /// asks the conversation before the calls as the saved session asked it, a prefix the service has
     /// cached. Rows of a side task are not the answer. False, and nothing written, when the saved
     /// session has no such answer or cannot be read.
+    /// Whether the session `from` has written anything of `calls` yet: the answer that made them is where
+    /// `fork(before:)` cuts, and a run whose results come back at once may not have written it.
+    static func mentions(config: URL, work: URL, session from: String, calls: Set<String>) -> Bool {
+        guard UUID(uuidString: from) != nil,
+              let file = projectDirectories(config: config, work: work).reversed()
+                .map({ $0.appendingPathComponent(from + ".jsonl") })
+                .first(where: { FileManager.default.fileExists(atPath: $0.path) }),
+              let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { return false }
+        return calls.contains { !$0.isEmpty && data.range(of: Data($0.utf8)) != nil }
+    }
     static func fork(config: URL, work: URL, from: String, to session: String, before calls: Set<String>) -> Bool {
         guard !calls.isEmpty, UUID(uuidString: from) != nil, UUID(uuidString: session) != nil,
               let file = projectDirectories(config: config, work: work).reversed()
@@ -237,7 +247,7 @@ enum ClaudeReplay {
     }
 
     /// Removes a session's file and the folder of its own the client may keep beside it, once
-    /// its run has ended (claude_subscription.go removeSession, 2660-2671).
+    /// its run has ended.
     static func remove(config: URL, work: URL, session: String) {
         guard UUID(uuidString: session) != nil else { return }
         for directory in projectDirectories(config: config, work: work) {

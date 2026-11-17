@@ -155,7 +155,7 @@ final class ClaudeStreamTests: XCTestCase {
 
     /// A stream cut short after it showed words fails the reply: they can't be taken back. One cut
     /// before it showed anything is an attempt Claude Code asks again after, and the reply goes on
-    /// in the attempt that answers (claude_subscription.go:3259-3269, 3864-3876).
+    /// in the attempt that answers.
     func testAStreamCutShortFailsOnlyAfterItShowedWords() async throws {
         do {
             let harness = try SessionHarness(); defer { harness.clean() }
@@ -590,7 +590,7 @@ final class ClaudeStreamTests: XCTestCase {
         return folder
     }
 
-    // Anthropic stream events, as the tap writes them (tap_test.go tapReply).
+    // Anthropic stream events, as the tap writes them.
     static func start(_ id: String) -> String {
         #"{"type":"message_start","message":{"id":"\#(id)","model":"claude-sonnet-5-5","usage":{"input_tokens":3,"output_tokens":1}}}"#
     }

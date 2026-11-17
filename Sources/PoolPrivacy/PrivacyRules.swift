@@ -273,10 +273,17 @@ enum PrivacyRules {
     static func shortHex(_ value: String) -> Bool {
         value.count <= 16 && value.allSatisfy(\.isHexDigit) && value.contains(where: \.isNumber) && value.contains(where: \.isLetter)
     }
-    /// A value the local model called an account: a short run of hex digits is one only where it is
+    /// An id a program made, longer than `shortHex` takes: a UUID, or hex digits only, letters and digits
+    /// both (a whole commit, a digest, a session's or a folder's id). The model takes one in a path for an account.
+    static func machineID(_ value: String) -> Bool {
+        let parts = value.split(separator: "-", omittingEmptySubsequences: false)
+        let bare = parts.map(\.count) == [8, 4, 4, 4, 12] ? parts.joined() : value
+        return bare.count > 16 && bare.allSatisfy(\.isHexDigit) && bare.contains(where: \.isNumber) && bare.contains(where: \.isLetter)
+    }
+    /// A value the local model called an account: a run of hex digits or a UUID is one only where it is
     /// given to an account's or a secret's name.
     static func modelAccount(_ value: String, at start: Int, in text: NSString) -> Bool {
-        guard shortHex(value) else { return true }
+        guard shortHex(value) || machineID(value) else { return true }
         let context = before(start, in: text)
         return matches(context, accountNamed) || matches(context, secretNamed)
     }

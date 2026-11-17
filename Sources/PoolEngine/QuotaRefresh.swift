@@ -743,7 +743,13 @@ public actor QuotaRefreshService {
                 if closed, active[account.id]?.id == observer.id { active[account.id] = nil }
                 return
             }
-            if rested { warm = observer; warmSince = self.now() }
+            if rested {
+                // A read that ran beside this one may have kept its session too: one stays warm and the
+                // other ends normally, so no session is left at its prompt with nothing to end it (11-17:
+                // two such sessions lived 9 and 11 hours).
+                while let other = warm, other.id != observer.id { await retireWarm() }
+                warm = observer; warmSince = self.now()
+            }
             if closed { active[account.id] = nil; records[account.id]?.status.phase = .idle; records[account.id]?.status.observerID = nil }
             else {
                 Diagnostics.record("quota.close", ["account": tag, "outcome": "held", "why": cleanupFailed ? "cleanup_failed" : (await observer.heldBecause ?? "-"),
@@ -999,7 +1005,9 @@ private actor QuotaObserver {
                 var exited = ended
                 if cleared, !ended {
                     try transport.exit()
-                    exited = (try? await transport.waitForExit()) != nil || ended
+                    // While Anthropic is slow, Claude Code takes about 11 seconds to end after /exit (26
+                    // times on 11-17, each then reported held for a few seconds): up to three exit waits.
+                    for _ in 0..<3 where !exited { exited = (try? await transport.waitForExit()) != nil || ended }
                 }
                 // Quitting never waits on a panel or prompt that kept /exit from working: the
                 // client's own double Ctrl-C ends it normally.

@@ -74,7 +74,7 @@ struct ClaudeTranscript {
         }
     }
 
-    /// Whether a user row is a message typed in: text, not a tool's result (transcript.go isPrompt).
+    /// Whether a user row is a message typed in: text, not a tool's result.
     private static func isPrompt(_ message: JSONValue?) -> Bool {
         guard let content = message?["content"] else { return false }
         if content.stringValue != nil { return true }
@@ -212,6 +212,23 @@ enum ClientErrorWords {
     /// Words that say out of quota or slow down, unless they say the conversation is too long.
     static func quotaSaid(_ text: String) -> Bool { matches(quota, text) && !tooLong(status: 400, text) }
 
+    /// The client's word that the account's sign-in no longer works: a 401, or a row without a status
+    /// whose kind is `authentication_failed`, as Claude Code 2.1.325 writes when its login could not be
+    /// refreshed ("Login expired · Please run /login", "...login expired. Claude Code tried ... but it
+    /// doesn't have enough credit"), or whose words ask for a new sign-in. A 403 of that kind is the
+    /// subscription's or Anthropic's hold on the account, which the checks after this one tell apart.
+    static func signedOut(status: Int, code: String?, _ text: String) -> Bool {
+        if status == 401 { return true }
+        guard status < 400 else { return false }
+        if code == "authentication_failed" { return true }
+        let lower = text.lowercased()
+        return lower.contains("authentication") || lower.contains("/login") || lower.contains("login expired")
+    }
+
+    /// Claude Code's own word that the Mac slept while the reply streamed (2.1.325, kind `server_error`):
+    /// "Your computer went to sleep mid-response". Nothing the account or the conversation did.
+    static func sleptMidReply(_ text: String) -> Bool { text.lowercased().contains("went to sleep mid-response") }
+
     private static let subscriptionWords = try! NSRegularExpression(pattern:
         #"(?i)subscription|past due|payment|billing|renew|oauth_(org_)?not_allowed"#)
     /// A 403 that says the account's subscription cannot be used now, most often a payment past due
@@ -222,7 +239,7 @@ enum ClientErrorWords {
         status == 403 && (code.map { matches(subscriptionWords, $0) } ?? false || matches(subscriptionWords, text))
     }
 
-    /// The allowance windows a refusal's rate-limit info tells (claude_subscription.go claudeLimits).
+    /// The allowance windows a refusal's rate-limit info tells.
     static func windows(_ info: JSONValue, at now: Date) -> [QuotaWindow] {
         func valid(_ key: String) -> Bool {
             !key.isEmpty && key.utf8.count <= 96 && key.unicodeScalars.allSatisfy { CharacterSet.alphanumerics.contains($0) || $0 == "_" || $0 == "-" }

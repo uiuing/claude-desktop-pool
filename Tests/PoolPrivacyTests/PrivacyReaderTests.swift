@@ -63,7 +63,7 @@ final class PrivacyReaderTests: XCTestCase {
     func testABacklogIsReadALittleARequestWithoutHoldingIt() async throws {
         let detector = GatedDetector(gated: false, delay: .milliseconds(300))
         let reader = PrivacyReader(detector: detector, wait: .seconds(5))
-        let late = (1...5).map { "echo history \($0) " + String(repeating: "e", count: 3_000) }
+        let late = (1...8).map { "echo history \($0) " + String(repeating: "e", count: 3_000) }
         let began = ContinuousClock.now
         let reading = await reader.read(["foxtrot new turn"], lookUp: late, until: ContinuousClock.now.advanced(by: .seconds(5)))
         XCTAssertNotNil(reading.read[0])

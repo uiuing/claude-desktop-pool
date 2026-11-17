@@ -624,6 +624,41 @@ final class QuotaRefreshTests: XCTestCase {
         let stopped = await service.stop(); XCTAssertTrue(stopped)
         XCTAssertEqual(fixture.exitCount, 1, "Quitting ends the kept session normally")
     }
+    /// Two busy accounts read side by side both find their session worth keeping: one stays at its
+    /// prompt and the other is ended, so no session is left running with nothing to end it.
+    func testSideBySideReadsKeepOneSessionAndEndTheOther() async throws {
+        let workspace = try fixtureWorkspace(), clock = QuotaTestClock()
+        let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel)
+        let service = makeService(workspace: workspace, fixture: fixture, now: { clock.value }) { _ in }
+        var first = fixtureAccount()
+        var second = PoolAccount(id: UUID(uuidString: "0a1b2c3d-1111-4aaa-8bbb-000000000002")!, email: nil, plan: "Pro", state: .ready)
+        for index in 0..<2 {
+            let window = QuotaWindow(id: "five_hour", usedPercent: 5, observedAt: clock.value, resetsAt: clock.value.addingTimeInterval(3600))
+            if index == 0 { first.windows = [window] } else { second.windows = [window] }
+        }
+        try await service.start(); await service.setAccounts([first, second])
+        for account in [first, second] {
+            let session = UUID()
+            await service.setWorkState(scope: AccountScope(account), sessionID: session, state: .generating, at: clock.value.addingTimeInterval(-2))
+            await service.recordProgress(scope: AccountScope(account), sessionID: session, progress: fastProgress(at: clock.value))
+        }
+        await service.setAvailability(enabled: true, awake: true, online: true)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(30))
+        clock.advance(11); await service.setAvailability(enabled: true, awake: true, online: true)
+        while fixture.plans.count < 1, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        // the next read may start a second later, while the first is still drawing its panel
+        clock.advance(1); await service.setAvailability(enabled: true, awake: true, online: true)
+        while fixture.plans.count < 2, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(fixture.plans.count, 2)
+        func done() async -> Bool {
+            let statuses = await service.statuses()
+            return [first.id, second.id].allSatisfy { statuses[$0]?.phase == .idle && statuses[$0]?.lastSuccessAt != nil }
+        }
+        while !(await done()), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(fixture.exitCount, 1, "One of the two sessions is ended at once, the other kept at its prompt")
+        let stopped = await service.stop(); XCTAssertTrue(stopped)
+        XCTAssertEqual(fixture.exitCount, 2, "Quitting ends the kept one")
+    }
     func testRetainedIdleAccountFallsBackToBackgroundReadsAndManualStillWorks() async throws {
         let workspace = try fixtureWorkspace(), done = expectation(description: "Explicit manual refresh")
         let fixture = UsageProcessFixture(workspace: workspace, panel: livePanel), clock = QuotaTestClock()
@@ -1110,7 +1145,8 @@ private final class UsageProcessFixture: @unchecked Sendable {
     /// First-run screens of a freshly signed-in account folder, in the official order.
     private var firstRun: [String]
     private var current: SessionLaunch?
-    private var output: AsyncStream<PTYEvent>.Continuation?
+    /// Each started client's output, by its session, until it ends: two accounts can be read side by side.
+    private var live: [UUID: AsyncStream<PTYEvent>.Continuation] = [:]
     private var launched: [SessionLaunch] = []
     private var sent: [Data] = []
     private var exits = 0
@@ -1125,7 +1161,7 @@ private final class UsageProcessFixture: @unchecked Sendable {
     }
     func launch(_ plan: SessionLaunch) throws -> SessionTransport {
         let stream = AsyncStream<PTYEvent>.makeStream()
-        lock.withLock { launched.append(plan); current = plan; output = stream.continuation }
+        lock.withLock { launched.append(plan); current = plan; live[plan.sessionID] = stream.continuation }
         lock.withLock { launchObserver }?()
         if let screen = lock.withLock({ firstRun.first }) {
             stream.continuation.yield(.output(Data(Self.draw(screen).utf8)))
@@ -1136,13 +1172,13 @@ private final class UsageProcessFixture: @unchecked Sendable {
             stream.continuation.yield(.output(Data("> ".utf8))); try hook("SessionStart", plan: plan)
         }
         if blockCleanup { try workspace.write(Data("fixture".utf8), to: plan.runDirectory.appendingPathComponent("unexpected.txt")) }
-        return SessionTransport(events: stream.stream, write: { try self.write($0) }, interrupt: { try self.interrupt() }, exit: { try self.exit() }, waitForExit: {
-            guard self.lock.withLock({ self.output == nil }) else { throw RuntimeError.processUnresponsive }
+        return SessionTransport(events: stream.stream, write: { try self.write($0, plan: plan) }, interrupt: { try self.interrupt() }, exit: { try self.exit(plan) }, waitForExit: {
+            guard self.lock.withLock({ self.live[plan.sessionID] == nil }) else { throw RuntimeError.processUnresponsive }
             return 0
         })
     }
-    private func write(_ data: Data) throws {
-        let state = lock.withLock { () -> (SessionLaunch?, AsyncStream<PTYEvent>.Continuation?) in sent.append(data); return (current, output) }
+    private func write(_ data: Data, plan: SessionLaunch) throws {
+        let state = lock.withLock { () -> (SessionLaunch?, AsyncStream<PTYEvent>.Continuation?) in sent.append(data); return (plan, live[plan.sessionID]) }
         if let screen = lock.withLock({ firstRun.first }) {
             let answered: Bool
             switch screen {
@@ -1184,14 +1220,16 @@ private final class UsageProcessFixture: @unchecked Sendable {
         }
         return "\u{1b}[2J\u{1b}[H" + text
     }
-    private func exit() throws {
-        let (plan, ignored) = lock.withLock { exits += 1; return (current, ignoresExit) }
+    private func exit(_ plan: SessionLaunch) throws {
+        let ignored = lock.withLock { exits += 1; return ignoresExit }
         if ignored { return }
-        if deferExit, let plan { try hook("SessionEnd", plan: plan) }
-        else { completeExit() }
+        if deferExit { try hook("SessionEnd", plan: plan) }
+        else { completeExit(plan.sessionID) }
     }
-    func completeExit() {
-        let sink = lock.withLock { () -> AsyncStream<PTYEvent>.Continuation? in let s = output; output = nil; return s }
+    /// Ends the client started last.
+    func completeExit() { completeExit(lock.withLock { current?.sessionID }) }
+    private func completeExit(_ session: UUID?) {
+        let sink = lock.withLock { () -> AsyncStream<PTYEvent>.Continuation? in session.flatMap { live.removeValue(forKey: $0) } }
         sink?.yield(.exited(0)); sink?.finish()
     }
     private func hook(_ event: String, plan: SessionLaunch) throws {

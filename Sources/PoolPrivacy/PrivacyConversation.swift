@@ -109,6 +109,9 @@ final class PrivacyConversation {
     /// (`-Users-name-project`), a listing's owner column, a prompt. Short ones too, which `minKnown`
     /// would leave.
     var machineUsers: [String] = []
+    /// Stand-ins of names and accounts the model itself found: one shorter than `minKnown` is masked
+    /// again too (`shortKnown`), so a text sent before the model read it still has it masked.
+    private var taught: Set<String> = []
     /// The content-free tag of the conversation this context serves: its client session's, or for a
     /// fork or a new client session of a conversation, the one it was forked from.
     let conversationTag: String?
@@ -143,7 +146,7 @@ final class PrivacyConversation {
         numberCache = other.numberCache; sentNumberKeys = other.sentNumberKeys; sentUnread = other.sentUnread
         bytes = other.bytes; places = other.places; numberPlaces = other.numberPlaces; restored = other.restored
         restoredNumbers = other.restoredNumbers; unbound = other.unbound; unboundNumbers = other.unboundNumbers
-        machineUsers = other.machineUsers
+        machineUsers = other.machineUsers; taught = other.taught
     }
 
     // MARK: Across a restart
@@ -402,11 +405,17 @@ final class PrivacyConversation {
         }
         if !text.isEmpty, let hint, PrivacyRules.fieldValue(text, category: hint) { found.append(.init(start: 0, end: text.utf16.count, category: hint)) }
         let ns = text as NSString
+        var modelFound: Set<String> = []
         for span in model ?? [] where span.score >= 0.6 {
-            if let span = Self.modelSpan(span, in: ns) { found.append(span) }
+            guard let span = Self.modelSpan(span, in: ns) else { continue }
+            found.append(span)
+            if Self.teaches.contains(span.category), Self.valid(span, in: ns) {
+                modelFound.insert(ns.substring(with: NSRange(location: span.start, length: span.end - span.start)))
+            }
         }
-        let known = Array(values.values) + numbers.values.map { Value(original: Self.numberText($0.original), category: $0.category) }
-        for value in known where value.original.utf8.count >= Self.minKnown {
+        let known = values.filter { $0.value.original.utf8.count >= Self.minKnown || taught.contains($0.key) && Self.shortKnown($0.value.original) }.map(\.value)
+            + numbers.values.map { Value(original: Self.numberText($0.original), category: $0.category) }.filter { $0.original.utf8.count >= Self.minKnown }
+        for value in known {
             var remainder = NSRange(location: 0, length: ns.length)
             while remainder.length > 0 {
                 let range = ns.range(of: value.original, options: .literal, range: remainder)
@@ -444,6 +453,7 @@ final class PrivacyConversation {
             offset += span.start - cursor
             let original = ns.substring(with: NSRange(location: span.start, length: span.end - span.start))
             let token = placeholder(original, category: span.category)
+            if modelFound.contains(original), let kept = values[token], Self.teaches.contains(kept.category) { taught.insert(token) }
             at.append(offset); tokens.append(token); offset += (token as NSString).length
             output += token; placeholders.insert(token)
             counts[values[token]!.category, default: 0] += 1
@@ -549,7 +559,8 @@ final class PrivacyConversation {
         let ns = text as NSString
         for span in model where span.score >= 0.6 {
             guard let span = Self.modelSpan(span, in: ns), Self.valid(span, in: ns) else { continue }
-            _ = placeholder(ns.substring(with: NSRange(location: span.start, length: span.end - span.start)), category: span.category)
+            let token = placeholder(ns.substring(with: NSRange(location: span.start, length: span.end - span.start)), category: span.category)
+            if Self.teaches.contains(span.category) { taught.insert(token) }
         }
     }
 
@@ -656,6 +667,15 @@ final class PrivacyConversation {
     /// The shortest value masked again wherever it appears: shorter ones would turn
     /// up all over ordinary text.
     static let minKnown = 8
+    /// The model's labels whose shorter values are learnt too (`taught`).
+    static let teaches: Set<PrivacyCategory> = [.person, .account]
+    /// A name or an account the model found that is shorter than `minKnown` and still masked again where it
+    /// stands alone: two letters or more of a script written without spaces (a Chinese name is most often
+    /// two), else four ASCII characters or more with a letter. Shorter ones are too often a word.
+    static func shortKnown(_ value: String) -> Bool {
+        if value.unicodeScalars.filter({ !$0.isASCII && $0.properties.isAlphabetic }).count >= 2 { return true }
+        return value.allSatisfy(\.isASCII) && value.count >= 4 && value.contains(where: \.isLetter)
+    }
 
     private static let alnum = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".utf16)
     private static let digits = Set("0123456789".utf16)

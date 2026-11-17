@@ -40,12 +40,24 @@ public enum Diagnostics {
         private let capacity: Int
         /// When anything last happened, a step or not (a streamed delta touches without a step).
         public private(set) var lastActivity: Date
+        /// The Mac's time asleep (`SystemSleep.total`) when `lastActivity` last moved.
+        private var sleptAtActivity = SystemSleep.total()
         public init(capacity: Int = 64, now: Date = Date()) { self.capacity = max(1, capacity); lastActivity = now }
         public mutating func note(_ step: String, at date: Date = Date()) {
             steps.append((date, step)); if steps.count > capacity { steps.removeFirst(steps.count - capacity) }
-            lastActivity = max(lastActivity, date)
+            touch(at: date)
         }
-        public mutating func touch(at date: Date = Date()) { lastActivity = max(lastActivity, date) }
+        public mutating func touch(at date: Date = Date()) {
+            guard date >= lastActivity else { return }
+            lastActivity = date; sleptAtActivity = SystemSleep.total()
+        }
+        /// How long the Mac slept since `lastActivity`.
+        public var sleptSinceActivity: TimeInterval { max(0, SystemSleep.total() - sleptAtActivity) }
+        /// How long nothing happened since `lastActivity` while the Mac was awake: a client is not
+        /// quiet while the Mac sleeps.
+        public func quietAwake(now: Date = Date()) -> TimeInterval {
+            max(0, now.timeIntervalSince(lastActivity) - sleptSinceActivity)
+        }
         /// Steps oldest first, each as `name@-seconds` before `now`, in lines short enough for a field.
         public func chunks(now: Date = Date(), width: Int = 150) -> [String] {
             var lines: [String] = [], line = ""

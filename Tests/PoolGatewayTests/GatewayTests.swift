@@ -277,6 +277,43 @@ final class GatewayTests: XCTestCase {
         session.invalidateAndCancel(); await server.stop()
     }
 
+    /// A stream with nothing of its reply yet is sent its 200 and SSE comments once it has waited a moment,
+    /// then its reply; a failure before that moment is still its status, and after it an `error` event.
+    func testAHeldStreamIsKeptAliveAndAFailureKeepsItsStatusOnlyBeforeThat() async throws {
+        let keepAlive = GatewayKeepAlive(heldAfter: .milliseconds(100), heldEvery: .milliseconds(100), answeringEvery: .seconds(15))
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.connectionProxyDictionary = [:]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        func ask(_ backend: SlowBackend, keepAlive: GatewayKeepAlive) async throws -> (String, HTTPURLResponse) {
+            let server = try GatewayServer(port: 0, token: fixtureToken, backend: backend, keepAlive: keepAlive)
+            let port = try await server.start()
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/messages")!)
+            request.httpMethod = "POST"; request.httpBody = try message(stream: true)
+            request.setValue("Bearer " + fixtureToken, forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = 5
+            do {
+                let (data, response) = try await session.data(for: request)
+                await server.stop()
+                return (String(decoding: data, as: UTF8.self), try XCTUnwrap(response as? HTTPURLResponse))
+            } catch { await server.stop(); throw error }
+        }
+        let (answer, answered) = try await ask(SlowBackend(delay: .milliseconds(450), failure: nil), keepAlive: keepAlive)
+        XCTAssertEqual(answered.statusCode, 200)
+        XCTAssertEqual(answered.value(forHTTPHeaderField: "Content-Type"), "text/event-stream")
+        let comment = try XCTUnwrap(answer.range(of: ": keep-alive")), start = try XCTUnwrap(answer.range(of: "event: message_start"))
+        XCTAssertLessThan(comment.lowerBound, start.lowerBound, "Kept alive before the reply")
+        XCTAssertTrue(answer.contains("Slow reply.") && answer.contains("event: message_stop"))
+
+        let (_, refused) = try await ask(SlowBackend(delay: .milliseconds(10), failure: .transport), keepAlive: GatewayKeepAlive())
+        XCTAssertEqual(refused.statusCode, 502, "A failure before the stream is held is its own status")
+
+        let (late, held) = try await ask(SlowBackend(delay: .milliseconds(400), failure: .transport), keepAlive: keepAlive)
+        XCTAssertEqual(held.statusCode, 200)
+        XCTAssertTrue(late.contains(": keep-alive") && late.contains("event: error"), late)
+    }
+
     func testDeveloperRecordingKeepsTheBytesButNeverTheGatewayKey() async throws {
         let lock = NSLock()
         nonisolated(unsafe) var lines: [Data] = []
@@ -512,6 +549,24 @@ private actor FixtureBackend: BridgeBackend {
         return AsyncThrowingStream { continuation in
             continuation.yield(.text("Fixture reply.")); continuation.yield(.usage(.init(inputTokens: 4, outputTokens: 3)))
             continuation.yield(.finished(.endTurn)); continuation.finish()
+        }
+    }
+    func cancel(conversationID: String) async {}
+}
+
+/// Answers, or fails, only after `delay`: a client still starting or a long think.
+private actor SlowBackend: BridgeBackend {
+    let delay: Duration, failure: BridgeFailure?
+    init(delay: Duration, failure: BridgeFailure?) { self.delay = delay; self.failure = failure }
+    func events(for request: BridgeRequest, conversationID: String?) async throws -> AsyncThrowingStream<BridgeEvent, Error> {
+        let delay = self.delay, failure = self.failure
+        return AsyncThrowingStream { continuation in
+            Task {
+                try? await Task.sleep(for: delay)
+                if let failure { continuation.finish(throwing: failure); return }
+                continuation.yield(.text("Slow reply.")); continuation.yield(.usage(.init(inputTokens: 4, outputTokens: 3)))
+                continuation.yield(.finished(.endTurn)); continuation.finish()
+            }
         }
     }
     func cancel(conversationID: String) async {}

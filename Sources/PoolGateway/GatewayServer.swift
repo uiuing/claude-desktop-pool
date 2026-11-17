@@ -2,12 +2,28 @@ import Foundation
 import Network
 import PoolCore
 
+/// When a stream is kept alive: once `heldAfter` passes with nothing of its reply yet (Claude Code
+/// still starting, a long think, an account changed under it), its 200 and an SSE comment go out, then a
+/// comment every `heldEvery` until the reply begins and every `answeringEvery` after. A proxy between
+/// the client and Pool, or the client itself, that gives up on a request with nothing back then sees it
+/// go on (11-16 to 11-18: eight requests with no headers yet were given up after two to six minutes).
+/// A failure before `heldAfter` is still its own status, with its Retry-After; after it, an `error` event.
+public struct GatewayKeepAlive: Sendable {
+    public var heldAfter: Duration
+    public var heldEvery: Duration
+    public var answeringEvery: Duration
+    public init(heldAfter: Duration = .seconds(3), heldEvery: Duration = .seconds(5), answeringEvery: Duration = .seconds(15)) {
+        self.heldAfter = heldAfter; self.heldEvery = heldEvery; self.answeringEvery = answeringEvery
+    }
+}
+
 public actor GatewayServer {
     private let requestedPort: UInt16
     private let token: String
     private let backend: any BridgeBackend
     private var models: [PoolModel]
     private let onCheck: @Sendable (GatewayCheck) -> Void
+    private let keepAlive: GatewayKeepAlive
     private let queue = DispatchQueue(label: "ClaudePool.gateway")
     private var listener: NWListener?
     private var listenerID: UUID?
@@ -22,9 +38,10 @@ public actor GatewayServer {
     public var activeRequestCount: Int { connections.count }
 
     public init(port: UInt16, token: String, backend: any BridgeBackend, models: [PoolModel] = PoolModel.defaults,
-                onCheck: @escaping @Sendable (GatewayCheck) -> Void = { _ in }) throws {
+                keepAlive: GatewayKeepAlive = GatewayKeepAlive(), onCheck: @escaping @Sendable (GatewayCheck) -> Void = { _ in }) throws {
         _ = try GatewayRouter(port: port, token: token, models: models)
         self.requestedPort = port; self.token = token; self.backend = backend; self.models = models; self.onCheck = onCheck
+        self.keepAlive = keepAlive
     }
     /// Clients listing models from now on see these.
     public func updateModels(_ models: [PoolModel]) { self.models = models }
@@ -100,7 +117,8 @@ public actor GatewayServer {
         do { router = try GatewayRouter(port: port, token: token, models: models) }
         catch { connection.cancel(); return }
         accepted += 1
-        let session = GatewayConnection(connection: connection, router: router, backend: backend, queue: queue, onCheck: onCheck, number: accepted)
+        let session = GatewayConnection(connection: connection, router: router, backend: backend, queue: queue, onCheck: onCheck, number: accepted,
+                                        keepAlive: keepAlive)
         connections[id] = Task { [weak self] in
             await session.run()
             await self?.finished(id)
@@ -134,10 +152,11 @@ private final class GatewayConnection: @unchecked Sendable {
     let queue: DispatchQueue
     let onCheck: @Sendable (GatewayCheck) -> Void
     let number: Int
+    let keepAlive: GatewayKeepAlive
     init(connection: NWConnection, router: GatewayRouter, backend: any BridgeBackend, queue: DispatchQueue,
-         onCheck: @escaping @Sendable (GatewayCheck) -> Void, number: Int) {
+         onCheck: @escaping @Sendable (GatewayCheck) -> Void, number: Int, keepAlive: GatewayKeepAlive) {
         self.connection = connection; self.router = router; self.backend = backend; self.queue = queue; self.onCheck = onCheck
-        self.number = number
+        self.number = number; self.keepAlive = keepAlive
     }
     func run() async {
         await DevRecord.$request.withValue(String(number)) { await serveConnection() }
@@ -239,10 +258,10 @@ private final class GatewayConnection: @unchecked Sendable {
         }
     }
 
-    /// Relays one reply. A stream's headers wait for the first of the
-    /// answer: an error before it (a limit, a session that ended without an answer) is a real
-    /// status, never a 200 stream holding nothing but an error. After the headers a failure is an
-    /// `error` event with nothing after it. A reply that is not streamed answers any failure with
+    /// Relays one reply. A stream's headers wait for the first of the answer, at most
+    /// `keepAlive.heldAfter`: an error before then (a limit, a session that ended without an answer) is
+    /// a real status, never a 200 stream holding nothing but an error; past it the stream is kept
+    /// alive (`GatewayKeepAlive`). After the headers a failure is an `error` event with nothing after it. A reply that is not streamed answers any failure with
     /// its status, even after some of its text, which a 200 would pass off as a whole answer.
     /// A failed reply is never cancelled here: the backend settles its own failure, and only a
     /// client that leaves before the reply ends stops it.
@@ -257,7 +276,17 @@ private final class GatewayConnection: @unchecked Sendable {
                 connection.cancel()
             }
         }
-        var heartbeat: Task<Void, Never>?
+        let keepAlive = self.keepAlive
+        let heartbeat: Task<Void, Never>? = stream ? Task {
+            do {
+                try await Task.sleep(for: keepAlive.heldAfter)
+                while !Task.isCancelled, try await writer.keepAlive() {
+                    try await Task.sleep(for: await writer.answering ? keepAlive.answeringEvery : keepAlive.heldEvery)
+                }
+            } catch {
+                if !Task.isCancelled, await lifetime.leave() { await backend.cancel(conversationID: conversationID) }
+            }
+        } : nil
         defer { monitor.cancel(); heartbeat?.cancel() }
         var encoder = MessageResponseEncoder(model: requestedModel)
         do {
@@ -270,20 +299,8 @@ private final class GatewayConnection: @unchecked Sendable {
                 // a tool-use response must not cancel the Claude call parked for its result.
                 if encoder.finished { await lifetime.finish() }
                 if stream, !chunks.isEmpty {
-                    if heartbeat == nil {
-                        try await toClient { try await writer.beginStream() }
-                        heartbeat = Task {
-                            do {
-                                while !Task.isCancelled {
-                                    try await Task.sleep(nanoseconds: 15_000_000_000)
-                                    try await writer.send(Data(": keep-alive\n\n".utf8))
-                                }
-                            } catch {
-                                if !Task.isCancelled, await lifetime.leave() { await backend.cancel(conversationID: conversationID) }
-                            }
-                        }
-                    }
-                    for chunk in chunks { try await toClient { try await writer.send(chunk) } }
+                    try await toClient { try await writer.beginStreamOnce() }
+                    for chunk in chunks { try await toClient { try await writer.sendAnswer(chunk) } }
                 }
                 if encoder.finished { break }
             }
@@ -367,14 +384,14 @@ private struct GatewayRequestLine {
         outcome = reason == "cancelled" ? "cancelled" : "failed"
     }
     func record(_ writer: GatewayWriter) async {
-        let status = await writer.status, headers = await writer.headersAt
+        let status = await writer.status, headers = await writer.headersAt, answered = await writer.answeredAt
         let began = self.began
         func ms(_ end: ContinuousClock.Instant) -> String { String(Int((end - began) / .milliseconds(1))) }
         Diagnostics.record("gateway.request", [
             "req": String(number), "kind": kind, "conv": conversation, "model": model,
             "msgs": String(messages), "tools": String(tools), "images": String(images), "bytes_in": String(bytes),
             "parse_ms": String(Int(parsing / .milliseconds(1))),
-            "stream": stream ? "yes" : "no", "headers_ms": headers.map(ms) ?? "-", "total_ms": ms(.now),
+            "stream": stream ? "yes" : "no", "headers_ms": headers.map(ms) ?? "-", "first_ms": answered.map(ms) ?? "-", "total_ms": ms(.now),
             "events": String(events), "outcome": outcome, "status": status.map(String.init) ?? "-", "type": type, "reason": reason,
             "in": count(usage?.inputTokens), "out": count(usage?.outputTokens),
             "cache_r": count(usage?.cacheReadInputTokens), "cache_w": count(usage?.cacheCreationInputTokens),
@@ -413,12 +430,34 @@ private actor GatewayWriter {
     /// The status the client was answered with, and when its headers went.
     private(set) var status: Int?
     private(set) var headersAt: ContinuousClock.Instant?
+    /// When the first of the reply went out, apart from the headers and comments that kept it alive.
+    private(set) var answeredAt: ContinuousClock.Instant?
+    var answering: Bool { answeredAt != nil }
     private let number: Int
     init(_ connection: NWConnection, number: Int) { self.connection = connection; self.number = number }
     func beginStream() async throws {
         guard !headersSent else { throw BridgeFailure.transport }
         headersSent = true; streaming = true; status = 200; headersAt = .now
         try await send(header(status: 200, fields: ["Content-Type": "text/event-stream", "X-Accel-Buffering": "no"]))
+    }
+    /// The stream's headers, unless they went already.
+    func beginStreamOnce() async throws {
+        if !streaming { try await beginStream() }
+    }
+    /// A piece of the reply.
+    func sendAnswer(_ data: Data) async throws {
+        if answeredAt == nil { answeredAt = .now }
+        try await send(data)
+    }
+    /// The stream's headers if they have not gone, then an SSE comment; false, and nothing sent, when the
+    /// request was answered otherwise (a status), so there is nothing to keep alive.
+    func keepAlive() async throws -> Bool {
+        if !streaming {
+            guard !headersSent else { return false }
+            try await beginStream()
+        }
+        try await send(Data(": keep-alive\n\n".utf8))
+        return true
     }
     func respond(_ response: GatewayHTTPResponse) async throws {
         guard !headersSent else { return }

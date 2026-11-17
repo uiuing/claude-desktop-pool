@@ -80,6 +80,22 @@ final class DeveloperRecorderTests: XCTestCase {
         XCTAssertEqual(recorder.totalBytes(), 0)
     }
 
+    /// A file a run left open (a crash, a forced quit) is compressed once recording starts again.
+    func testAFileLeftOpenIsCompressedAtTheNextStart() throws {
+        let recorder = DeveloperRecorder(root: root)
+        let directory = recorder.directory(.http)
+        try DeveloperRecorder.makePrivateDirectory(directory)
+        let text = String(repeating: "{\"v\":1,\"kind\":\"http.request\"}\n", count: 50)
+        try Data(text.utf8).write(to: directory.appendingPathComponent("http-20261117T010203.000Z-abcd.jsonl"))
+        try recorder.install()
+        recorder.flush()
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        XCTAssertEqual(names, ["http-20261117T010203.000Z-abcd" + DeveloperRecorder.compressedSuffix])
+        let data = try Data(contentsOf: directory.appendingPathComponent(names[0]))
+        XCTAssertEqual(String(data: try (data as NSData).decompressed(using: .zlib) as Data, encoding: .utf8), text)
+        recorder.uninstall()
+    }
+
     func testUninstalledRecorderWritesNothing() throws {
         let recorder = DeveloperRecorder(root: root)
         DevRecord.record(.privacy, "privacy.prepared") { ["sent": .string("text")] }

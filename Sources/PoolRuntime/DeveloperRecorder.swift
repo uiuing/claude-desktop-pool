@@ -43,6 +43,9 @@ public final class DeveloperRecorder: @unchecked Sendable {
     public func install() throws {
         try Self.makePrivateDirectory(root)
         for channel in Channel.allCases { try Self.makePrivateDirectory(directory(channel)) }
+        // A run that ended without closing its files (a crash, a forced quit, a stop by the system) left
+        // them as written: they are compressed now, as a closed file is.
+        queue.async { [self] in compressLeftovers() }
         DevRecord.install { [weak self] entry in self?.take(entry) }
         Diagnostics.record("devrecord.started", ["limits_mb": Channel.allCases.map { "\($0.rawValue):\((limits[$0] ?? 0) >> 20)" }.joined(separator: ",")])
     }
@@ -125,6 +128,22 @@ public final class DeveloperRecorder: @unchecked Sendable {
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         do { try handle.write(contentsOf: packed); try handle.close() } catch { unlink(path); return }
         unlink(url.path)
+    }
+
+    /// Compresses the uncompressed files this recorder does not have open.
+    private func compressLeftovers() {
+        var count = 0, before = 0, after = 0
+        for channel in Channel.allCases {
+            for file in recordFiles(channel) where file.lastPathComponent.hasSuffix(".jsonl") && files[channel]?.url != file {
+                let bytes = size(file)
+                compress(file)
+                let packed = URL(fileURLWithPath: file.path.replacingOccurrences(of: ".jsonl", with: Self.compressedSuffix))
+                guard size(file) == 0, size(packed) > 0 else { continue }
+                count += 1; before += bytes; after += size(packed)
+            }
+        }
+        guard count > 0 else { return }
+        Diagnostics.record("devrecord.compressed", ["files": String(count), "mb_before": String(before >> 20), "mb_after": String(after >> 20)])
     }
 
     /// Removes the oldest closed files until the channel is within its limit, keeping room for a new file.

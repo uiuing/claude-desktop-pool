@@ -291,5 +291,28 @@ extension PrivacyRulesTests {
         XCTAssertTrue(taken("token=9e1c2b7d4a6f0835", "9e1c2b7d4a6f0835", .secret))
         XCTAssertTrue(taken("pay to 6222020200112233", "6222020200112233", .account), "Digits alone stay the model's")
         XCTAssertTrue(taken("ref 9e1c2b7d4a6f0835aa77", "9e1c2b7d4a6f0835aa77", .secret), "Longer runs stay the model's")
+        // A UUID or a whole commit in a path is an id, not an account, unless a name gives it so.
+        let uuid = "3f2a9c4e-7b1d-4e8a-9c0f-5d6e7f8a9b0c", commit = "4be1c0d2a9f3e5b7c6d8e0f1a2b3c4d5e6f7a8b9"
+        XCTAssertFalse(taken("~/.claude/projects/-work/\(uuid).jsonl", uuid, .account))
+        XCTAssertFalse(taken("cd /tmp/build-\(commit)/out", commit, .account))
+        XCTAssertTrue(taken("account_id: \(uuid)", uuid, .account))
+    }
+
+    /// A name or an account the model found that is short (a two-character Chinese name, a login of four
+    /// letters) is masked again where it stands alone, in text the model has not read; three ASCII
+    /// letters are too often a word, and digits alone are left.
+    func testShortNamesAndAccountsTheModelFoundAreMaskedAgain() async throws {
+        let context = PrivacyConversation()
+        let name = "\u{738B}\u{82B3}", login = "qzxv", short = "Kai"
+        let first = try await context.mask("\(name) asked \(login) and \(short)",
+                                           detector: FixtureDetector(words: [name: .person, login: .account, short: .person]))
+        XCTAssertEqual(first.count, 3)
+        let later = try await context.mask("cc \(name), \(login); \(short) too", detector: FixtureDetector())
+        XCTAssertFalse(later.text.contains(name), later.text)
+        XCTAssertFalse(later.text.contains(login), later.text)
+        XCTAssertTrue(later.text.contains(short), later.text)
+        XCTAssertTrue(PrivacyConversation.shortKnown("\u{674E}\u{660E}"))
+        XCTAssertFalse(PrivacyConversation.shortKnown("dev"))
+        XCTAssertFalse(PrivacyConversation.shortKnown("1234"))
     }
 }

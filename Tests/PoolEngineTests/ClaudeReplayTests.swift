@@ -178,6 +178,9 @@ final class ClaudeReplayTests: XCTestCase {
             row("assistant", #"{"id":"msg_three","role":"assistant","content":[{"type":"text","text":"Two notes."}]}"#)]
         let saved = Data((rows.joined(separator: "\n") + "\n").utf8)
         _ = try ClaudeReplay.write(saved, config: config, work: work, session: from)
+        // what a run cut before calls waits for, at most a moment, when their results come back at once
+        XCTAssertTrue(ClaudeReplay.mentions(config: config, work: work, session: from, calls: ["toolu_fixture_02"]))
+        XCTAssertFalse(ClaudeReplay.mentions(config: config, work: work, session: from, calls: ["toolu_fixture_09"]))
 
         XCTAssertTrue(ClaudeReplay.fork(config: config, work: work, from: from, to: to, before: ["toolu_fixture_02"]))
         let folder = try XCTUnwrap(ClaudeReplay.projectDirectories(config: config, work: work).last)
